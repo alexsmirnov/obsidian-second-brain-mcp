@@ -1,5 +1,5 @@
 
-# MCP Python server to use with continue.dev
+# Model Context Protocol ( MCP ) Python server to use with continue.dev
 MCP server that exposes a customizable prompt templates, resources, and tools
 It uses FastMCP to run as server application.
 

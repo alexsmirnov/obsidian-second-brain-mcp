@@ -21,7 +21,7 @@
   # @repo-map
 
 # To learn more, see the full .prompt file reference: https://docs.continue.dev/features/prompt-files
-name: Example
+name: Fastmcp
 description: Example prompt file
 ---
 
@@ -29,11 +29,22 @@ Here is information about the current repo:
 
 @README.md
 
-The full documentation for FastMCP can be found here:
+## documentation for model context protocol:
 @https://modelcontextprotocol.io/llms-full.txt
-README file for FastMCP:
+## README file for FastMCP:
 @https://raw.githubusercontent.com/modelcontextprotocol/python-sdk/refs/heads/main/README.md
-Code example
+# Code examples:
+## Echo example
 @https://raw.githubusercontent.com/modelcontextprotocol/python-sdk/refs/heads/main/examples/fastmcp/echo.py
-Using in continue.dev plugins
+
+## complex inpts
+@https://raw.githubusercontent.com/modelcontextprotocol/python-sdk/refs/heads/main/examples/fastmcp/complex_inputs.py
+
+## memory
+@https://raw.githubusercontent.com/modelcontextprotocol/python-sdk/refs/heads/main/examples/fastmcp/memory.py
+
+## Example from README
+@https://raw.githubusercontent.com/modelcontextprotocol/python-sdk/refs/heads/main/examples/fastmcp/readme-quickstart.py
+
+## Using in continue.dev plugins
 @https://docs.continue.dev/customize/slash-commands#model-context-protocol
