@@ -1,0 +1,39 @@
+# This is an example ".prompt" file
+# It is used to define and reuse prompts within Continue
+# Each .prompt file can be accessed by typing "@prompts" in the Chat input
+
+# A prompt file consists of two parts:
+# 1. Everything above the "---" is YAML. Here you can set "temperature", "description", and other options
+# 2. Everything below the "---" is the prompt body
+
+# If you do not want to set any options, you do not need to include the "---"
+
+# In the body, you can reference:
+# 1. Files, using either absolute or relative paths (based on the workspace root)
+  # @README.md
+  # @src/test/test.py
+  # @/Users/me/Desktop/my-project/src/test/test.py
+# 2. URLs, for example
+  # @https://example.com
+# 3. Context providers, for example
+  # @currentFile
+  # @os
+  # @repo-map
+
+# To learn more, see the full .prompt file reference: https://docs.continue.dev/features/prompt-files
+name: Example
+description: Example prompt file
+---
+
+Here is information about the current repo:
+
+@README.md
+
+The full documentation for FastMCP can be found here:
+@https://modelcontextprotocol.io/llms-full.txt
+README file for FastMCP:
+@https://raw.githubusercontent.com/modelcontextprotocol/python-sdk/refs/heads/main/README.md
+Code example
+@https://raw.githubusercontent.com/modelcontextprotocol/python-sdk/refs/heads/main/examples/fastmcp/echo.py
+Using in continue.dev plugins
+@https://docs.continue.dev/customize/slash-commands#model-context-protocol
