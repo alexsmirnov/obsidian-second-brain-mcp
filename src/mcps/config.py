@@ -25,8 +25,8 @@ def create_config(
     handling default values for library_docs and project_paths.
     """
 
-    for dir_path in [prompts_dir, cache_dir, tests_dir]:
-        dir_path.mkdir(parents=True, exist_ok=True)
+    # for dir_path in [prompts_dir, cache_dir, tests_dir]:
+    #     dir_path.mkdir(parents=True, exist_ok=True)
 
     # Use provided dictionaries or default to empty dictionaries
     library_docs = library_docs if library_docs is not None else {}

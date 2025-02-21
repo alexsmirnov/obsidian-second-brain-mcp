@@ -18,6 +18,8 @@ Initial list of prompts:
 - Draft a detailed, step-by-step blueprint for building project from spec
 
 ### resources
+**NOTE: continue does not understand templates, so resource name should contain all information**
+**resouce name left as is in prompt, so it should not confuse llm**
 - extract url content as markdown
 - full documentation about libraries, preferable from llms-full.txt
 - complete project structure and content, created by `CodeWeawer` or `Repomix`
@@ -25,7 +27,5 @@ Initial list of prompts:
 ### tools
 - web search, using `serper` or  
 - web search results with summary, by `perplexity.io`
-- add dependency by `uv`
-- add dependency by `npm`
 - find missed tests
 - run unit tests and collect errors

@@ -14,4 +14,4 @@ def setup_prompts(mcp, config: ServerConfig):
     """
     @mcp.prompt("echo")
     def echo_prompt(text: str) -> str:
-        return text
+        return "provide short and concise answer: "+text

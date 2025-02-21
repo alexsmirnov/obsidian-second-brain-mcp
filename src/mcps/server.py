@@ -42,6 +42,12 @@ class DevAutomationServer:
         @self.mcp.resource("project://{project_name}")
         async def project_resource_handler(project_name: str) -> str:
             return await project_resource.get_resource(project_name, self.config)
+        @self.mcp.resource("resource://test", name="test/resource", description="Test project resource")
+        async def test_resource_handler() -> str:
+            return "Test project resource"
+        @self.mcp.resource("docs://test/docs")
+        async def test_docs_handler() -> str:
+            return "Test project documentation"
 
     def _setup_tools(self):
         @self.mcp.tool()
