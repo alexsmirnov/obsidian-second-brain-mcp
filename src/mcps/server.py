@@ -1,8 +1,10 @@
 from dataclasses import dataclass
+import logging
 from pathlib import Path
 from typing import Dict
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.session import ServerSession
+from mcp.server.fastmcp import FastMCP, Context
 
 import mcps.prompts as prompts_module
 import mcps.resources.url_resource as url_resource
@@ -13,6 +15,7 @@ import mcps.tools.perplexity_search as perplexity_search
 from mcps.config import ServerConfig, create_config  # Import from config module
 
 
+logger = logging.getLogger("mcps")
 @dataclass
 class AppContext:
     config: ServerConfig
@@ -44,6 +47,10 @@ class DevAutomationServer:
             return await project_resource.get_resource(project_name, self.config)
         @self.mcp.resource("resource://test", name="test/resource", description="Test project resource")
         async def test_resource_handler() -> str:
+            session: ServerSession = self.mcp.get_context().session
+            result = await session.list_roots()
+            for root in result.roots:
+                logger.info(f"Root: {root.name} , {root.uri}")
             return "Test project resource"
         @self.mcp.resource("docs://test/docs")
         async def test_docs_handler() -> str:
