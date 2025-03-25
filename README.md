@@ -1,9 +1,12 @@
-
 # Model Context Protocol ( MCP ) Python server to use with continue.dev
 MCP server that exposes a customizable prompt templates, resources, and tools
 It uses FastMCP to run as server application.
 
 Dependencies, build, and run managed by uv tool.
+
+<a href="https://glama.ai/mcp/servers/@alexsmirnov/mcp-server-continue">
+  <img width="380" height="200" src="https://glama.ai/mcp/servers/@alexsmirnov/mcp-server-continue/badge" alt="Server for continue.dev MCP server" />
+</a>
 
 ## Provided functionality
 ### prompts
