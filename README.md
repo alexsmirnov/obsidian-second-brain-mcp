@@ -1,5 +1,6 @@
-
 # Model Context Protocol ( MCP ) Python server to use with continue.dev
+[![smithery badge](https://smithery.ai/badge/@alexsmirnov/mcp-server-continue)](https://smithery.ai/server/@alexsmirnov/mcp-server-continue)
+
 MCP server that exposes a customizable prompt templates, resources, and tools
 It uses FastMCP to run as server application.
 
