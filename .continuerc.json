@@ -1,0 +1,21 @@
+{
+  "experimental": {
+    "modelContextProtocolServers": [
+      {
+        "transport": {
+          "type": "stdio",
+          "command": "uv",
+          "args": [
+            "run",
+            "--project",
+            "/Users/alsmirnov/work/mcp-server-continue",
+            "mcps"
+          ],
+          "env": {
+            "ROOT": "/Users/alsmirnov/work/mcp-server-continue",
+          }
+        }
+      }
+    ]
+  }
+}

@@ -1,5 +1,9 @@
+import logging
+
 from mcps.config import ServerConfig
 
+
+logger = logging.getLogger("mcps")
 
 async def do_search(query: str, config: ServerConfig) -> str:
     """
@@ -12,4 +16,5 @@ async def do_search(query: str, config: ServerConfig) -> str:
     Returns:
         The search query string back.
     """
+    logger.info(f"Performing search with query: {query}")
     return query

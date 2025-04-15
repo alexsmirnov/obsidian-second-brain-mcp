@@ -1,8 +1,10 @@
 from dataclasses import dataclass
 import logging
+import os
 from pathlib import Path
 from typing import Dict
 
+from mcp import ClientCapabilities, RootsCapability
 from mcp.server.session import ServerSession
 from mcp.server.fastmcp import FastMCP, Context
 
@@ -47,23 +49,50 @@ class DevAutomationServer:
             return await project_resource.get_resource(project_name, self.config)
         @self.mcp.resource("resource://test", name="test/resource", description="Test project resource")
         async def test_resource_handler() -> str:
-            session: ServerSession = self.mcp.get_context().session
-            result = await session.list_roots()
-            for root in result.roots:
-                logger.info(f"Root: {root.name} , {root.uri}")
+            try:
+                session: ServerSession = self.mcp.get_context().session
+                if session.check_client_capability(ClientCapabilities(roots=RootsCapability())) :
+                    result = await session.list_roots()
+                    logger.info(f"Result: {result}")
+                    for root in result.roots:
+                        logger.info(f"Root: {root.name} , {root.uri}")
+            except Exception as e:
+                logger.error(f"Error listing roots: {e}")
             return "Test project resource"
-        @self.mcp.resource("docs://test/docs")
+        @self.mcp.resource("documentation://test/docs")
         async def test_docs_handler() -> str:
             return "Test project documentation"
 
     def _setup_tools(self):
-        @self.mcp.tool()
+        @self.mcp.tool(name="web_search", description="Search the web for information")
         async def web_search(query: str) -> str:
-            return await internet_search.do_search(query, self.config)
-
-        @self.mcp.tool()
-        async def perplexity_summary_search(query: str) -> str:
+            """
+            Performs a web search using the provided query. Find the most relevant pages
+            and return summary result.
+            Args:
+                query: The search query.
+            Returns:
+                The summary of the most relevant search results.
+            """
+            try:
+                session: ServerSession = self.mcp.get_context().session
+                if session.check_client_capability(ClientCapabilities(roots=RootsCapability())) :
+                    result = await session.list_roots()
+                    logger.info(f"Result: {result}")
+                    for root in result.roots:
+                        logger.info(f"Root: {root.name} , location: {root.uri}")
+                else:
+                    logger.info("Client does not support roots capability")
+                    # Try to get the roots from the environment variable ROOT
+                    root_value = os.getenv("ROOT")
+                    logger.info(f"ROOT environment variable: {root_value}")
+            except Exception as e:
+                logger.error(f"Error listing roots: {e}")
             return await perplexity_search.do_search(query, self.config)
+
+        # @self.mcp.tool()
+        # async def perplexity_summary_search(query: str) -> str:
+        #     return await perplexity_search.do_search(query, self.config)
 
     def _setup_prompts(self):
         # Dynamically register prompts from the prompts directory
