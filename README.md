@@ -1,5 +1,5 @@
 
-# Model Context Protocol ( MCP ) Python server to use with continue.dev
+# Model Context Protocol ( MCP ) Python server
 MCP server that exposes a customizable prompt templates, resources, and tools
 It uses FastMCP to run as server application.
 
@@ -18,14 +18,13 @@ Initial list of prompts:
 - Draft a detailed, step-by-step blueprint for building project from spec
 
 ### resources
-**NOTE: continue does not understand templates, so resource name should contain all information**
-**resouce name left as is in prompt, so it should not confuse llm**
-- extract url content as markdown
-- full documentation about libraries, preferable from llms-full.txt
 - complete project structure and content, created by `CodeWeawer` or `Repomix`
 
 ### tools
-- web search, using `serper` or  
-- web search results with summary, by `perplexity.io`
-- find missed tests
-- run unit tests and collect errors
+- web search, using `serper` and `tivily` APIs. One parameter `query`
+- web search results with summary, by `perplexity.io`. First parameter `query`, second is level of research:  `SIMPLE`, `DETAIL`, and `DEEP`
+- Retrivial Augmented Generation search in markdown files. For the query search string, return content that may contain answers. Optional parameter is starting folder
+- Manipulate Files in Obsidian Vault, location from `VAULT` environment variable: 
+    - get list of files and subfolders in folder
+    - get file content by path.
+    - rename or move Obsidian note, update [[Wikilinks]] references if needed. 2 parameters: old and new locations
