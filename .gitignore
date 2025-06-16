@@ -9,3 +9,5 @@ wheels/
 
 # Virtual environments
 .venv
+# test data
+test_content

@@ -1,0 +1,13 @@
+name: mcps
+version: 0.0.1
+schema: v1
+mcpServers:
+  - name: Project MCP server
+    command: uv
+    args:
+            - run
+            - --project
+            - /Users/alsmirnov/work/mcp-server-continue
+            - mcps
+    env: 
+      "ROOT": /Users/alsmirnov/work/mcp-server-continue
