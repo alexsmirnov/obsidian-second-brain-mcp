@@ -56,26 +56,26 @@ class SearchResult:
 
 class IDocumentProcessor(ABC):
     """Interface for document processing."""
-    
+
     @abstractmethod
     async def process(self, file_path: Path) -> Document:
         """Process a single document file."""
         pass
-    
+
 
 
 class IChunker(ABC):
     """Interface for text chunking strategies."""
-    
+
     @abstractmethod
-    async def chunk(self, document: Document) -> list[Chunk]:
+    def chunk(self, document: Document) -> Generator[Chunk, None, None]:
         """Split a document into chunks."""
         pass
 
 
 class IEmbeddingService(ABC):
     """Interface for embedding generation."""
-    
+
     @abstractmethod
     async def generate_embedding(self, text: str) -> list[float]:
         """Generate embedding for a single text."""
@@ -84,22 +84,22 @@ class IEmbeddingService(ABC):
 
 class IVectorStore(ABC):
     """Interface for vector storage operations."""
-    
+
     @abstractmethod
     async def initialize(self) -> None:
         """Initialize the vector store."""
         pass
-    
+
     @abstractmethod
     async def store(self, chunks: list[Chunk]) -> None:
         """Store chunks with their embeddings."""
         pass
-    
+
     @abstractmethod
     async def search(self, query_embedding: list[float], top_k: int = 5) -> list[Chunk]:
         """Search for similar chunks."""
         pass
-    
+
     @abstractmethod
     async def delete(self, chunk_ids: list[str]) -> None:
         """Delete chunks by their IDs."""
@@ -108,7 +108,7 @@ class IVectorStore(ABC):
 
 class ISearchEngine(ABC):
     """Interface for search operations."""
-    
+
     @abstractmethod
     async def search(self, query: SearchQuery) -> list[SearchResult]:
         """Perform a search operation."""
@@ -117,7 +117,7 @@ class ISearchEngine(ABC):
 
 class IResultFormatter(ABC):
     """Interface for formatting search results."""
-    
+
     @abstractmethod
     async def format(self, results: list[SearchResult], query: SearchQuery) -> str:
         """Format search results for display."""
@@ -126,7 +126,7 @@ class IResultFormatter(ABC):
 
 class IFileTraversal(ABC):
     """Interface for file discovery and traversal."""
-    
+
     @abstractmethod
     def find_files(self ) -> Generator[Path]:
         """Find files to process in vault."""

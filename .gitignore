@@ -11,3 +11,7 @@ wheels/
 .venv
 # test data
 test_content
+.roo*
+.mcp.json
+.claude
+.serena
