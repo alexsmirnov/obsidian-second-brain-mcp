@@ -13,6 +13,7 @@ dependencies = [
     "markdown>=3.4.0",
     "rank_bm25",
     "python-dotenv>=1.0.0",
+    "python-frontmatter>=1.1.0",
 ]
 [tool.uv]
 package = true
@@ -25,14 +26,71 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-      packages = ["src/mcps"]
+    packages = ["src/mcps"]
+    sources = ["src", "test"]
 
 [dependency-groups]
-dev = [
-    "pytest>=8.3.4",
+dev = ["pytest==8.3.4", "pytest-asyncio==0.25.3"]
+lint = [
+    "pyrefly>=0.15.2",
+    "ruff>=0.11.10",
 ]
+
+
+[tool.pyright]
+include = ["src"]
+exclude = ["**/node_modules", "**/__pycache__"]
+defineConstant = { DEBUG = true }
+
+reportMissingImports = "error"
+reportMissingTypeStubs = false
+venv = ".venv"
+venvPath = "."
+
+[tool.ruff]
+# Target Python version
+target-version = "py313"
+line-length = 88
+
+[tool.ruff.lint]
+# Enable flake8-bugbear (B) rules, along with others
+select = ["E", "F", "B", "I", "N", "UP", "RUF"]
+ignore = []
+
+# Allow unused variables when they start with an underscore
+dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
+[tool.ruff.format]
+# Use double quotes for strings
+quote-style = "double"
+# Indent with 4 spaces
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
+
+[tool.ruff.lint.isort]
+# Known first parties for import sorting
+known-first-party = ["gptmyway"]
+
+[tool.ruff.lint.flake8-quotes]
+docstring-quotes = "double"
+
+[tool.ruff.lint.per-file-ignores]
+# Allow specific rules to be ignored for test files
+"test/**/*.py" = ["E501"]
+# Imports should not be used in __init__.py
+"__init__.py" = ["F401"]
+[tool.pyrefly]
+project_includes = ["src"]
+project_excludes = [
+    "**/node_modules",
+    "**/__pycache__",
+]
+
+[tool.pyrefly.errors]
+import-error = true
 
 [tool.pytest.ini_options]
 testpaths = ["test"]
 pythonpath = ["src/mcps","test"]
 asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"

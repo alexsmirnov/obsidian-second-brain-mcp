@@ -1,24 +1,21 @@
-from dataclasses import dataclass
 import logging
 import os
-from pathlib import Path
-from typing import Dict
-from pydantic import BaseModel, Field
+from dataclasses import dataclass
 
+from fastmcp import Context, FastMCP
 from mcp import ClientCapabilities, RootsCapability
 from mcp.server.session import ServerSession
-from fastmcp import FastMCP, Context
+from pydantic import Field
 
 import mcps.prompts as prompts_module
-import mcps.resources.url_resource as url_resource
 import mcps.resources.doc_resource as doc_resource
 import mcps.resources.project_resource as project_resource
+import mcps.resources.url_resource as url_resource
 import mcps.tools.internet_search as internet_search
+import mcps.tools.obsidian_vault as obsidian_vault
 import mcps.tools.perplexity_search as perplexity_search
 import mcps.tools.rag_search as rag_search
-import mcps.tools.obsidian_vault as obsidian_vault
 from mcps.config import ServerConfig, create_config  # Import from config module
-
 
 logger = logging.getLogger("mcps")
 @dataclass

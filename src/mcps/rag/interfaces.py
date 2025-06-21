@@ -3,10 +3,11 @@ Abstract interfaces for the RAG search system components.
 """
 
 from abc import ABC, abstractmethod
-from typing import List, Dict, Any, Optional
-from pathlib import Path
+from collections.abc import Generator
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
+from typing import Any
 
 
 @dataclass
@@ -14,9 +15,9 @@ class Document:
     """Represents a document with its content and metadata."""
     id: str
     content: str
-    metadata: Dict[str, Any]
-    outgoing_links: List[str]  # Wikilinks
-    tags: List[str]
+    metadata: dict[str, Any]
+    outgoing_links: list[str]  # Wikilinks
+    tags: list[str]
     source_path: Path
     created_at: datetime
     modified_at: datetime
@@ -27,36 +28,21 @@ class Chunk:
     """Represents a chunk of text with metadata from document."""
     id: str
     content: str
-    metadata: Dict[str, Any]
-    outgoing_links: List[str]  # Wikilinks
-    tags: List[str]
+    metadata: dict[str, Any]
+    outgoing_links: list[str]  # Wikilinks
+    tags: list[str]
     source_path: Path
     created_at: datetime
     modified_at: datetime
     position: int
-    embeddings: Optional[List[float]] = None
-
-    def with_embeddings(self, embeddings: List[float]) -> 'Chunk':
-        """Create a new chunk with the same fields and embeddings"""
-        return Chunk(
-            id=self.id,
-            content=self.content,
-            metadata=self.metadata,
-            outgoing_links=self.outgoing_links,
-            tags=self.tags,
-            source_path=self.source_path,
-            created_at=self.created_at,
-            modified_at=self.modified_at,
-            position=self.position,
-            embeddings=embeddings
-        )
+    embeddings: list[float] | None = None
 
 
 @dataclass
 class SearchQuery:
     """Represents a search query."""
     text: str
-    filters: Optional[Dict[str, Any]] = None
+    filters: dict[str, Any] | None = None
     top_k: int = 5
     similarity_threshold: float = 0.7
 
@@ -76,17 +62,13 @@ class IDocumentProcessor(ABC):
         """Process a single document file."""
         pass
     
-    @abstractmethod
-    def supports_file_type(self, file_path: Path) -> bool:
-        """Check if this processor supports the given file type."""
-        pass
 
 
 class IChunker(ABC):
     """Interface for text chunking strategies."""
     
     @abstractmethod
-    async def chunk(self, document: Document) -> List[Chunk]:
+    async def chunk(self, document: Document) -> list[Chunk]:
         """Split a document into chunks."""
         pass
 
@@ -95,7 +77,7 @@ class IEmbeddingService(ABC):
     """Interface for embedding generation."""
     
     @abstractmethod
-    async def generate_embedding(self, text: str) -> List[float]:
+    async def generate_embedding(self, text: str) -> list[float]:
         """Generate embedding for a single text."""
         pass
 
@@ -109,17 +91,17 @@ class IVectorStore(ABC):
         pass
     
     @abstractmethod
-    async def store(self, chunks: List[Chunk]) -> None:
+    async def store(self, chunks: list[Chunk]) -> None:
         """Store chunks with their embeddings."""
         pass
     
     @abstractmethod
-    async def search(self, query_embedding: List[float], top_k: int = 5) -> List[Chunk]:
+    async def search(self, query_embedding: list[float], top_k: int = 5) -> list[Chunk]:
         """Search for similar chunks."""
         pass
     
     @abstractmethod
-    async def delete(self, chunk_ids: List[str]) -> None:
+    async def delete(self, chunk_ids: list[str]) -> None:
         """Delete chunks by their IDs."""
         pass
 
@@ -128,7 +110,7 @@ class ISearchEngine(ABC):
     """Interface for search operations."""
     
     @abstractmethod
-    async def search(self, query: SearchQuery) -> List[SearchResult]:
+    async def search(self, query: SearchQuery) -> list[SearchResult]:
         """Perform a search operation."""
         pass
 
@@ -137,7 +119,7 @@ class IResultFormatter(ABC):
     """Interface for formatting search results."""
     
     @abstractmethod
-    async def format(self, results: List[SearchResult], query: SearchQuery) -> str:
+    async def format(self, results: list[SearchResult], query: SearchQuery) -> str:
         """Format search results for display."""
         pass
 
@@ -146,6 +128,6 @@ class IFileTraversal(ABC):
     """Interface for file discovery and traversal."""
     
     @abstractmethod
-    async def find_files(self, start_folder: Optional[str] = None, skip_patterns: Optional[List[str]] = None) -> List[Path]:
-        """Find files to process."""
+    def find_files(self ) -> Generator[Path]:
+        """Find files to process in vault."""
         pass

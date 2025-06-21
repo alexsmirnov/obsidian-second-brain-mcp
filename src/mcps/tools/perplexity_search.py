@@ -1,5 +1,7 @@
-from mcps.config import ServerConfig
 import httpx
+
+from mcps.config import ServerConfig
+
 
 async def do_search(query: str, config: ServerConfig) -> str:
     """

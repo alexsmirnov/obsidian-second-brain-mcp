@@ -1,6 +1,7 @@
-import os
 import logging
 import logging.handlers
+import os
+
 
 def setup_logging():
     """

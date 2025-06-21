@@ -3,12 +3,17 @@ Search engine and result formatting implementations for the RAG search system.
 """
 
 import logging
-from typing import List, Dict, Any, Optional
 from datetime import datetime
+from typing import Any, Optional
 
 from .interfaces import (
-    SearchQuery, SearchResult, Chunk, ISearchEngine, IResultFormatter, 
-    IEmbeddingService, IVectorStore
+    Chunk,
+    IEmbeddingService,
+    IResultFormatter,
+    ISearchEngine,
+    IVectorStore,
+    SearchQuery,
+    SearchResult,
 )
 
 logger = logging.getLogger("mcps")
@@ -27,7 +32,7 @@ class SemanticSearchEngine(ISearchEngine):
         self.vector_store = vector_store
         self.reranker = reranker
     
-    async def search(self, query: SearchQuery) -> List[SearchResult]:
+    async def search(self, query: SearchQuery) -> list[SearchResult]:
         """Perform a semantic search operation."""
         try:
             # Generate query embedding
@@ -70,7 +75,7 @@ class SemanticSearchEngine(ISearchEngine):
             logger.error(f"Search failed for query '{query.text}': {e}")
             return []
     
-    def _calculate_similarity(self, vec1: List[float], vec2: List[float]) -> float:
+    def _calculate_similarity(self, vec1: list[float], vec2: list[float]) -> float:
         """Calculate cosine similarity between two vectors."""
         try:
             import numpy as np
@@ -89,7 +94,7 @@ class SemanticSearchEngine(ISearchEngine):
             
         except ImportError:
             # Fallback implementation without numpy
-            dot_product = sum(a * b for a, b in zip(vec1, vec2))
+            dot_product = sum(a * b for a, b in zip(vec1, vec2, strict=False))
             norm1 = sum(a * a for a in vec1) ** 0.5
             norm2 = sum(b * b for b in vec2) ** 0.5
             
@@ -98,7 +103,7 @@ class SemanticSearchEngine(ISearchEngine):
             
             return dot_product / (norm1 * norm2)
     
-    def _apply_filters(self, results: List[SearchResult], filters: Dict[str, Any]) -> List[SearchResult]:
+    def _apply_filters(self, results: list[SearchResult], filters: dict[str, Any]) -> list[SearchResult]:
         """Apply filters to search results."""
         filtered_results = []
         
@@ -160,7 +165,7 @@ class HybridSearchEngine(ISearchEngine):
         self.keyword_weight = keyword_weight
         self.semantic_weight = semantic_weight
     
-    async def search(self, query: SearchQuery) -> List[SearchResult]:
+    async def search(self, query: SearchQuery) -> list[SearchResult]:
         """Perform hybrid search combining semantic and keyword matching."""
         # Get semantic results
         semantic_results = await self.semantic_engine.search(query)
@@ -175,7 +180,7 @@ class HybridSearchEngine(ISearchEngine):
         combined_results.sort(key=lambda x: x.score, reverse=True)
         return combined_results[:query.top_k]
     
-    def _keyword_search(self, query: SearchQuery) -> List[SearchResult]:
+    def _keyword_search(self, query: SearchQuery) -> list[SearchResult]:
         """Perform simple keyword-based search."""
         # This is a simplified implementation
         # In practice, you might use a proper text search engine like Elasticsearch
@@ -189,13 +194,13 @@ class HybridSearchEngine(ISearchEngine):
     
     def _combine_results(
         self, 
-        semantic_results: List[SearchResult], 
-        keyword_results: List[SearchResult]
-    ) -> List[SearchResult]:
+        semantic_results: list[SearchResult], 
+        keyword_results: list[SearchResult]
+    ) -> list[SearchResult]:
         """Combine semantic and keyword search results."""
         # Create a map of chunk ID to combined score
-        score_map: Dict[str, float] = {}
-        chunk_map: Dict[str, Chunk] = {}
+        score_map: dict[str, float] = {}
+        chunk_map: dict[str, Chunk] = {}
         
         # Add semantic scores
         for result in semantic_results:
@@ -228,7 +233,7 @@ class MarkdownResultFormatter(IResultFormatter):
         self.max_content_length = max_content_length
         self.include_metadata = include_metadata
     
-    async def format(self, results: List[SearchResult], query: SearchQuery) -> str:
+    async def format(self, results: list[SearchResult], query: SearchQuery) -> str:
         """Format search results as markdown."""
         if not results:
             return f"No results found for query: **{query.text}**"
@@ -298,7 +303,7 @@ class CompactResultFormatter(IResultFormatter):
         self.max_results = max_results
         self.snippet_length = snippet_length
     
-    async def format(self, results: List[SearchResult], query: SearchQuery) -> str:
+    async def format(self, results: list[SearchResult], query: SearchQuery) -> str:
         """Format search results in a compact format."""
         if not results:
             return f"No results found for: {query.text}"
@@ -337,7 +342,7 @@ class CompactResultFormatter(IResultFormatter):
 class JSONResultFormatter(IResultFormatter):
     """JSON result formatter for API responses."""
     
-    async def format(self, results: List[SearchResult], query: SearchQuery) -> str:
+    async def format(self, results: list[SearchResult], query: SearchQuery) -> str:
         """Format search results as JSON."""
         import json
         

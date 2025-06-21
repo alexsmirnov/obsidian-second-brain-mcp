@@ -1,9 +1,9 @@
 # mcps/config.py
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict
+
 from dotenv import load_dotenv
-import os
 
 
 @dataclass
@@ -11,8 +11,8 @@ class ServerConfig:
     prompts_dir: Path = field(default_factory=lambda: Path(__file__).parent / "prompts")
     cache_dir: Path = field(default_factory=lambda: Path(__file__).parent / "cache")
     tests_dir: Path = field(default_factory=lambda: Path(__file__).parent / "tests")
-    library_docs: Dict[str, str] = field(default_factory=dict)
-    project_paths: Dict[str, str] = field(default_factory=dict)
+    library_docs: dict[str, str] = field(default_factory=dict)
+    project_paths: dict[str, str] = field(default_factory=dict)
     openai_api_key: str = ""
     anthropic_api_key: str = ""
     perplexity_api_key: str = ""
@@ -22,8 +22,8 @@ def create_config(
     prompts_dir: Path = Path("./prompts"),
     cache_dir: Path = Path("./cache"),
     tests_dir: Path = Path("./tests"),
-    library_docs: Dict[str, str] | None = None,
-    project_paths: Dict[str, str] | None = None,
+    library_docs: dict[str, str] | None = None,
+    project_paths: dict[str, str] | None = None,
 ) -> ServerConfig:
     """
     Creates a ServerConfig instance, ensuring directories exist and

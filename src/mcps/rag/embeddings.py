@@ -2,9 +2,9 @@
 Embedding service implementations for the RAG search system.
 """
 
-import logging
 import asyncio
-from typing import List, Optional
+import logging
+
 import numpy as np
 
 from .interfaces import IEmbeddingService
@@ -20,7 +20,7 @@ class HuggingFaceEmbedding(IEmbeddingService):
         self.model = None
         self._model_loaded = False
     
-    async def generate_embedding(self, text: str) -> List[float]:
+    async def generate_embedding(self, text: str) -> list[float]:
         """Generate embedding for a single text."""
         if not self._model_loaded:
             await self._load_model()
@@ -70,12 +70,12 @@ class HuggingFaceEmbedding(IEmbeddingService):
 class OpenAIEmbedding(IEmbeddingService):
     """OpenAI embedding service."""
     
-    def __init__(self, model_name: str = "text-embedding-3-small", api_key: Optional[str] = None):
+    def __init__(self, model_name: str = "text-embedding-3-small", api_key: str | None = None):
         self.model_name = model_name
         self.api_key = api_key
         self.client = None
     
-    async def generate_embedding(self, text: str) -> List[float]:
+    async def generate_embedding(self, text: str) -> list[float]:
         """Generate embedding for a single text using OpenAI API."""
         if not self.client:
             await self._initialize_client()
@@ -94,8 +94,9 @@ class OpenAIEmbedding(IEmbeddingService):
     async def _initialize_client(self):
         """Initialize OpenAI client."""
         try:
-            import openai
             import os
+
+            import openai
             
             api_key = self.api_key or os.getenv("OPENAI_API_KEY")
             if not api_key:
@@ -118,7 +119,7 @@ class MockEmbedding(IEmbeddingService):
     def __init__(self, dimension: int = 384):
         self.dimension = dimension
     
-    async def generate_embedding(self, text: str) -> List[float]:
+    async def generate_embedding(self, text: str) -> list[float]:
         """Generate mock embedding based on text hash."""
         # Simple hash-based mock embedding
         import hashlib
@@ -146,7 +147,7 @@ class BatchEmbeddingService:
         self.embedding_service = embedding_service
         self.batch_size = batch_size
     
-    async def generate_embeddings(self, texts: List[str]) -> List[List[float]]:
+    async def generate_embeddings(self, texts: list[str]) -> list[list[float]]:
         """Generate embeddings for multiple texts in batches."""
         embeddings = []
         

@@ -2,89 +2,78 @@
 Document processing module containing file discovery, traversal, document processing, and chunking.
 """
 
+import hashlib
 import logging
 import re
-import hashlib
-from pathlib import Path
-from typing import List, Dict, Any, Optional
+from collections.abc import Generator
 from datetime import datetime
+from pathlib import Path
+from yaml.parser import ParserError
 
-from .interfaces import (
-    Document, Chunk, IDocumentProcessor, IChunker, IFileTraversal
-)
+import frontmatter
+from overrides import override, overrides
+
+from .interfaces import Chunk, Document, IChunker, IDocumentProcessor, IFileTraversal
 
 logger = logging.getLogger("mcps")
+        # Default skip patterns
+default_skip_patterns = [
+            r'^\..*',
+            r'node_modules/',
+            r'__pycache__/',
+            r'^scripts/',
+            r'^templates/',
+            r'^prompts/',
+        ]
 
 
 class MarkdownFileTraversal(IFileTraversal):
     """File traversal implementation for markdown files."""
     
-    def __init__(self, base_path: Path):
+    def __init__(self, base_path: Path, skip_patterns: list[str] = default_skip_patterns):
         self.base_path = base_path
+        self.skip_patterns = skip_patterns
+
+    def _is_path_allowed(self, path: Path) -> bool:
+        """Check if the path is allowed based on skip patterns."""
+        relative_path = str(path.relative_to(self.base_path))
+        return not any(re.search(pattern, relative_path) for pattern in self.skip_patterns)
     
-    async def find_files(self, start_folder: Optional[str] = None, skip_patterns: Optional[List[str]] = None) -> List[Path]:
+    @override
+    def find_files(self) -> Generator[Path]:
         """Find markdown files to process."""
-        if start_folder:
-            search_path = self.base_path / start_folder
-        else:
-            search_path = self.base_path
         
-        if not search_path.exists():
-            logger.warning(f"Search path does not exist: {search_path}")
-            return []
+        if not self.base_path.exists():
+            logger.warning(f"Search path does not exist: {self.base_path}")
+            yield from ()
         
-        # Default skip patterns
-        default_skip_patterns = [
-            r'\.git/',
-            r'node_modules/',
-            r'__pycache__/',
-            r'\.vscode/',
-            r'\.idea/',
-            r'build/',
-            r'dist/',
-            r'cache/',
-        ]
-        
-        skip_patterns = skip_patterns or []
-        all_skip_patterns = default_skip_patterns + skip_patterns
-        
-        markdown_files = []
-        
-        for file_path in search_path.rglob("*.md"):
-            # Check if file should be skipped
-            relative_path = str(file_path.relative_to(self.base_path))
-            should_skip = any(re.search(pattern, relative_path) for pattern in all_skip_patterns)
-            
-            if not should_skip:
-                markdown_files.append(file_path)
-        
-        logger.info(f"Found {len(markdown_files)} markdown files")
-        return markdown_files
+        yield from  (path for path in self.base_path.rglob("*.md") if self._is_path_allowed(path))
 
 
 class MarkdownProcessor(IDocumentProcessor):
     """Markdown document processor."""
     
-    def supports_file_type(self, file_path: Path) -> bool:
-        """Check if this processor supports the given file type."""
-        return file_path.suffix.lower() == '.md'
-    
+    @overrides
     async def process(self, file_path: Path) -> Document:
         """Process a single markdown document file."""
         try:
-            content = file_path.read_text(encoding='utf-8')
-        except UnicodeDecodeError:
-            logger.warning(f"Failed to read file with UTF-8 encoding: {file_path}")
-            content = file_path.read_text(encoding='utf-8', errors='ignore')
-        
+            with open(file_path, encoding='utf-8') as f:
+                post = frontmatter.load(f)
+        except ParserError as e:
+                # Handle frontmatter parsing errors gracefully
+                post = frontmatter.Post(content=file_path.read_text(encoding='utf-8', errors='replace'))
         # Extract metadata
-        metadata = self._extract_metadata(file_path, content)
+        metadata = {
+            "created_at": datetime.fromtimestamp(file_path.stat().st_ctime),
+            "modified_at": datetime.fromtimestamp(file_path.stat().st_mtime),
+            **{ k:str(v) for k,v in post.metadata.items() if k not in { 'tags' } }
+        }
         
         # Extract wikilinks
-        outgoing_links = self._extract_wikilinks(content)
+        outgoing_links = self._extract_wikilinks(post.content)
         
         # Extract tags
-        tags = self._extract_tags(content)
+        tags = self._extract_tags(post)
         
         # Get file stats
         stat = file_path.stat()
@@ -96,7 +85,7 @@ class MarkdownProcessor(IDocumentProcessor):
         
         return Document(
             id=doc_id,
-            content=content,
+            content=post.content,
             metadata=metadata,
             outgoing_links=outgoing_links,
             tags=tags,
@@ -105,43 +94,30 @@ class MarkdownProcessor(IDocumentProcessor):
             modified_at=modified_at
         )
     
-    def _extract_metadata(self, file_path: Path, content: str) -> Dict[str, Any]:
-        """Extract metadata from markdown file."""
-        metadata = {
-            'filename': file_path.name,
-            'file_size': len(content),
-            'file_extension': file_path.suffix,
-        }
-        
-        # Extract YAML frontmatter if present
-        if content.startswith('---'):
-            try:
-                end_marker = content.find('---', 3)
-                if end_marker != -1:
-                    frontmatter = content[3:end_marker].strip()
-                    # Simple key-value extraction (could use yaml library for full parsing)
-                    for line in frontmatter.split('\n'):
-                        if ':' in line:
-                            key, value = line.split(':', 1)
-                            metadata[key.strip()] = value.strip()
-            except Exception as e:
-                logger.warning(f"Failed to parse frontmatter in {file_path}: {e}")
-        
-        return metadata
     
-    def _extract_wikilinks(self, content: str) -> List[str]:
+    def _extract_wikilinks(self, content: str) -> list[str]:
         """Extract wikilinks from markdown content."""
-        # Pattern for [[link]] or [[link|display text]]
-        wikilink_pattern = r'\[\[([^\]|]+)(?:\|[^\]]+)?\]\]'
+        # Pattern for wikilinks: !?[[note name#heading|display text]]
+        # Captures only the note name portion (before # or |)
+        # Allows brackets inside link names but stops at # or |
+        wikilink_pattern = r'!?\[\[([^#|]*?)(?:[#|][^\]]*)?\]\]'
         matches = re.findall(wikilink_pattern, content)
-        return list(set(matches))  # Remove duplicates
+        # Filter out empty matches but preserve trailing spaces for compatibility
+        filtered_matches = [match for match in matches if match.strip()]
+        return list(set(filtered_matches))  # Remove duplicates
     
-    def _extract_tags(self, content: str) -> List[str]:
+    def _extract_tags(self, content: frontmatter.Post) -> list[str]:
         """Extract tags from markdown content."""
         # Pattern for #tag (hashtags)
-        tag_pattern = r'#([a-zA-Z0-9_-]+)'
-        matches = re.findall(tag_pattern, content)
-        return list(set(matches))  # Remove duplicates
+        tag_pattern = r'#([a-zA-Z][a-zA-Z0-9_-]*)'
+        matches = re.findall(tag_pattern, content.content) 
+        fm_tags = content.metadata.get('tags', [])
+        # convert string or list of tags to a set to avoid duplicates
+        if isinstance(fm_tags, str):
+            fm_tags = [fm_tags]
+        elif not isinstance(fm_tags, list):
+            fm_tags = []
+        return list(set(matches + fm_tags))  # Remove duplicates
     
     def _generate_document_id(self, file_path: Path) -> str:
         """Generate a unique document ID."""
@@ -157,7 +133,7 @@ class FixedSizeChunker(IChunker):
         self.chunk_size = chunk_size
         self.overlap = overlap
     
-    async def chunk(self, document: Document) -> List[Chunk]:
+    async def chunk(self, document: Document) -> list[Chunk]:
         """Split a document into fixed-size chunks with overlap."""
         content = document.content
         chunks = []
@@ -210,7 +186,7 @@ class SemanticChunker(IChunker):
         self.max_chunk_size = max_chunk_size
         self.min_chunk_size = min_chunk_size
     
-    async def chunk(self, document: Document) -> List[Chunk]:
+    async def chunk(self, document: Document) -> list[Chunk]:
         """Split document into semantic chunks based on markdown structure."""
         content = document.content
         chunks = []
@@ -239,7 +215,7 @@ class SemanticChunker(IChunker):
         logger.debug(f"Created {len(chunks)} semantic chunks from document {document.id}")
         return chunks
     
-    def _split_by_headers(self, content: str) -> List[str]:
+    def _split_by_headers(self, content: str) -> list[str]:
         """Split content by markdown headers."""
         # Split by headers while keeping the header with the content
         header_pattern = r'^(#{1,6}\s+.+)$'
@@ -260,7 +236,7 @@ class SemanticChunker(IChunker):
         
         return sections
     
-    def _split_large_section(self, section: str) -> List[str]:
+    def _split_large_section(self, section: str) -> list[str]:
         """Split large sections into smaller chunks."""
         # Simple paragraph-based splitting for large sections
         paragraphs = section.split('\n\n')

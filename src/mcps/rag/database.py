@@ -2,12 +2,11 @@
 Vector database implementations for the RAG search system.
 """
 
-import logging
+import asyncio
 import json
+import logging
 import pickle
 from pathlib import Path
-from typing import List, Dict, Any, Optional
-import asyncio
 
 from .interfaces import Chunk, IVectorStore
 
@@ -78,7 +77,7 @@ class LanceDBStore(IVectorStore):
             logger.error(f"Failed to initialize LanceDB: {e}")
             raise
     
-    async def store(self, chunks: List[Chunk]) -> None:
+    async def store(self, chunks: list[Chunk]) -> None:
         """Store chunks with their embeddings."""
         if not self._initialized:
             await self.initialize()
@@ -117,7 +116,7 @@ class LanceDBStore(IVectorStore):
             logger.error(f"Failed to store chunks in LanceDB: {e}")
             raise
     
-    async def search(self, query_embedding: List[float], top_k: int = 5) -> List[Chunk]:
+    async def search(self, query_embedding: list[float], top_k: int = 5) -> list[Chunk]:
         """Search for similar chunks."""
         if not self._initialized:
             await self.initialize()
@@ -152,7 +151,7 @@ class LanceDBStore(IVectorStore):
             logger.error(f"Failed to search in LanceDB: {e}")
             return []
     
-    async def delete(self, chunk_ids: List[str]) -> None:
+    async def delete(self, chunk_ids: list[str]) -> None:
         """Delete chunks by their IDs."""
         if not self._initialized:
             await self.initialize()
@@ -176,7 +175,7 @@ class InMemoryVectorStore(IVectorStore):
     """Simple in-memory vector store for testing and small datasets."""
     
     def __init__(self):
-        self.chunks: Dict[str, Chunk] = {}
+        self.chunks: dict[str, Chunk] = {}
         self._initialized = False
     
     async def initialize(self) -> None:
@@ -184,7 +183,7 @@ class InMemoryVectorStore(IVectorStore):
         self._initialized = True
         logger.info("In-memory vector store initialized")
     
-    async def store(self, chunks: List[Chunk]) -> None:
+    async def store(self, chunks: list[Chunk]) -> None:
         """Store chunks with their embeddings."""
         if not self._initialized:
             await self.initialize()
@@ -197,7 +196,7 @@ class InMemoryVectorStore(IVectorStore):
         
         logger.info(f"Stored {len(chunks)} chunks in memory")
     
-    async def search(self, query_embedding: List[float], top_k: int = 5) -> List[Chunk]:
+    async def search(self, query_embedding: list[float], top_k: int = 5) -> list[Chunk]:
         """Search for similar chunks using cosine similarity."""
         if not self._initialized:
             await self.initialize()
@@ -219,7 +218,7 @@ class InMemoryVectorStore(IVectorStore):
         logger.debug(f"Found {len(top_chunks)} similar chunks")
         return top_chunks
     
-    async def delete(self, chunk_ids: List[str]) -> None:
+    async def delete(self, chunk_ids: list[str]) -> None:
         """Delete chunks by their IDs."""
         if not self._initialized:
             await self.initialize()
@@ -232,7 +231,7 @@ class InMemoryVectorStore(IVectorStore):
         
         logger.info(f"Deleted {deleted_count} chunks from memory")
     
-    def _cosine_similarity(self, vec1: List[float], vec2: List[float]) -> float:
+    def _cosine_similarity(self, vec1: list[float], vec2: list[float]) -> float:
         """Calculate cosine similarity between two vectors."""
         try:
             import numpy as np
@@ -251,7 +250,7 @@ class InMemoryVectorStore(IVectorStore):
             
         except ImportError:
             # Fallback implementation without numpy
-            dot_product = sum(a * b for a, b in zip(vec1, vec2))
+            dot_product = sum(a * b for a, b in zip(vec1, vec2, strict=False))
             norm1 = sum(a * a for a in vec1) ** 0.5
             norm2 = sum(b * b for b in vec2) ** 0.5
             
@@ -266,7 +265,7 @@ class FileBasedVectorStore(IVectorStore):
     
     def __init__(self, storage_path: Path):
         self.storage_path = storage_path
-        self.chunks: Dict[str, Chunk] = {}
+        self.chunks: dict[str, Chunk] = {}
         self._initialized = False
     
     async def initialize(self) -> None:
@@ -286,7 +285,7 @@ class FileBasedVectorStore(IVectorStore):
         self._initialized = True
         logger.info("File-based vector store initialized")
     
-    async def store(self, chunks: List[Chunk]) -> None:
+    async def store(self, chunks: list[Chunk]) -> None:
         """Store chunks with their embeddings."""
         if not self._initialized:
             await self.initialize()
@@ -301,7 +300,7 @@ class FileBasedVectorStore(IVectorStore):
         await self._save_to_file()
         logger.info(f"Stored {len(chunks)} chunks to file")
     
-    async def search(self, query_embedding: List[float], top_k: int = 5) -> List[Chunk]:
+    async def search(self, query_embedding: list[float], top_k: int = 5) -> list[Chunk]:
         """Search for similar chunks using cosine similarity."""
         if not self._initialized:
             await self.initialize()
@@ -322,7 +321,7 @@ class FileBasedVectorStore(IVectorStore):
         logger.debug(f"Found {len(top_chunks)} similar chunks")
         return top_chunks
     
-    async def delete(self, chunk_ids: List[str]) -> None:
+    async def delete(self, chunk_ids: list[str]) -> None:
         """Delete chunks by their IDs."""
         if not self._initialized:
             await self.initialize()
@@ -355,7 +354,7 @@ class FileBasedVectorStore(IVectorStore):
         with open(self.storage_path, 'wb') as f:
             pickle.dump(self.chunks, f)
     
-    def _cosine_similarity(self, vec1: List[float], vec2: List[float]) -> float:
+    def _cosine_similarity(self, vec1: list[float], vec2: list[float]) -> float:
         """Calculate cosine similarity between two vectors."""
         # Same implementation as InMemoryVectorStore
         try:
@@ -374,7 +373,7 @@ class FileBasedVectorStore(IVectorStore):
             return dot_product / (norm1 * norm2)
             
         except ImportError:
-            dot_product = sum(a * b for a, b in zip(vec1, vec2))
+            dot_product = sum(a * b for a, b in zip(vec1, vec2, strict=False))
             norm1 = sum(a * a for a in vec1) ** 0.5
             norm2 = sum(b * b for b in vec2) ** 0.5
             

@@ -1,29 +1,25 @@
 import logging
-import os
 from pathlib import Path
-import re
-from typing import List, Optional
-import asyncio
 
 from mcps.config import ServerConfig
 from mcps.rag import (
-    SearchQuery,
-    MarkdownFileTraversal,
-    MarkdownProcessor,
-    FixedSizeChunker,
-    SemanticChunker,
-    HuggingFaceEmbedding,
-    MockEmbedding,
-    InMemoryVectorStore,
-    FileBasedVectorStore,
-    SemanticSearchEngine,
-    MarkdownResultFormatter,
-    CompactResultFormatter,
     BatchEmbeddingService,
+    CompactResultFormatter,
+    FileBasedVectorStore,
+    FixedSizeChunker,
+    HuggingFaceEmbedding,
     IChunker,
     IEmbeddingService,
-    IVectorStore,
+    InMemoryVectorStore,
     IResultFormatter,
+    IVectorStore,
+    MarkdownFileTraversal,
+    MarkdownProcessor,
+    MarkdownResultFormatter,
+    MockEmbedding,
+    SearchQuery,
+    SemanticChunker,
+    SemanticSearchEngine,
 )
 
 logger = logging.getLogger("mcps")
@@ -33,7 +29,7 @@ class ComponentFactory:
     """Factory for creating RAG components."""
     
     @staticmethod
-    def create_file_traversal(config: Optional[ServerConfig] = None) -> MarkdownFileTraversal:
+    def create_file_traversal(config: ServerConfig | None = None) -> MarkdownFileTraversal:
         """Create file traversal component."""
         base_path = Path.cwd()
         if config and hasattr(config, 'vault_dir') and config.vault_dir:
@@ -66,7 +62,7 @@ class ComponentFactory:
                 return MockEmbedding(dimension=384)
     
     @staticmethod
-    def create_vector_store(config: Optional[ServerConfig] = None, use_memory: bool = False) -> IVectorStore:
+    def create_vector_store(config: ServerConfig | None = None, use_memory: bool = False) -> IVectorStore:
         """Create vector store."""
         if use_memory:
             return InMemoryVectorStore()
@@ -109,7 +105,7 @@ class RAGSearchOrchestrator:
         vector_store: IVectorStore,
         search_engine: SemanticSearchEngine,
         result_formatter: IResultFormatter,
-        config: Optional[ServerConfig] = None
+        config: ServerConfig | None = None
     ):
         self.file_traversal = file_traversal
         self.document_processor = document_processor
@@ -121,7 +117,7 @@ class RAGSearchOrchestrator:
         self.config = config
         self.batch_embedding_service = BatchEmbeddingService(embedding_service, batch_size=16)
         
-    async def index_documents(self, file_paths: List[Path]) -> None:
+    async def index_documents(self, file_paths: list[Path]) -> None:
         """Index a list of documents."""
         if not file_paths:
             logger.info("No files to index")
@@ -166,7 +162,7 @@ class RAGSearchOrchestrator:
             
             # Add embeddings to chunks
             chunks_with_embeddings = []
-            for chunk, embedding in zip(all_chunks, embeddings):
+            for chunk, embedding in zip(all_chunks, embeddings, strict=False):
                 chunk_with_emb = chunk.with_embeddings(embedding)
                 chunks_with_embeddings.append(chunk_with_emb)
             
@@ -203,7 +199,7 @@ class RAGSearchOrchestrator:
             
         except Exception as e:
             logger.error(f"Search failed for query '{query}': {e}")
-            return f"Search failed: {str(e)}"
+            return f"Search failed: {e!s}"
 
 
 class RagSearch:
@@ -211,8 +207,8 @@ class RagSearch:
     
     def __init__(
         self,
-        config: Optional[ServerConfig] = None,
-        skip_patterns: Optional[List[str]] = None,
+        config: ServerConfig | None = None,
+        skip_patterns: list[str] | None = None,
         force_reindex: bool = False,
         use_mock_embedding: bool = False,
         use_memory_store: bool = False
@@ -249,7 +245,7 @@ class RagSearch:
         
         self._initialized = False
     
-    async def _ensure_initialized(self, start_folder: Optional[str] = None):
+    async def _ensure_initialized(self, start_folder: str | None = None):
         """Ensure the RAG system is initialized and indexed."""
         if self._initialized and not self.force_reindex:
             return
@@ -282,7 +278,7 @@ class RagSearch:
     async def search_markdown_files(
         self,
         query: str,
-        start_folder: Optional[str] = None,
+        start_folder: str | None = None,
         top_k: int = 5,
         similarity_threshold: float = 0.3
     ) -> str:
@@ -300,10 +296,10 @@ class RagSearch:
             
         except Exception as e:
             logger.error(f"RAG search failed: {e}")
-            return f"Search failed: {str(e)}"
+            return f"Search failed: {e!s}"
 
 
-async def search_markdown_files(query: str, start_folder: Optional[str] = None, config: Optional[ServerConfig] = None) -> str:
+async def search_markdown_files(query: str, start_folder: str | None = None, config: ServerConfig | None = None) -> str:
     """
     Performs a RAG search in markdown files for content related to the query.
     
@@ -335,4 +331,4 @@ async def search_markdown_files(query: str, start_folder: Optional[str] = None, 
         
     except Exception as e:
         logger.error(f"RAG search failed: {e}")
-        return f"RAG search failed: {str(e)}"
+        return f"RAG search failed: {e!s}"
