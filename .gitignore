@@ -15,3 +15,4 @@ test_content
 .mcp.json
 .claude
 .serena
+.ruff*

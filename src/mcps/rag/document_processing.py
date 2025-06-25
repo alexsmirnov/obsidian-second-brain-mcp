@@ -195,24 +195,58 @@ class SemanticChunker(IChunker):
 
         position = 0
         chunk_count = 0
-        for section in sections:
-            if len(section.strip()) < self.min_chunk_size:
-                continue
-
-            # If section is too large, split it further
-            if len(section) > self.max_chunk_size:
-                sub_chunks = self._split_large_section(section)
-                for sub_chunk in sub_chunks:
-                    if len(sub_chunk.strip()) >= self.min_chunk_size:
-                        chunk = self._create_chunk(document, sub_chunk, position)
+        i = 0
+        
+        while i < len(sections):
+            current_section = sections[i]
+            
+            # If section is too small, merge with next sections until min_chunk_size is reached
+            if len(current_section.strip()) < self.min_chunk_size:
+                merged_content = current_section
+                j = i + 1
+                
+                # Keep merging sections until we reach min_chunk_size or run out of sections
+                while j < len(sections) and len(merged_content.strip()) < self.min_chunk_size:
+                    merged_content += "\n\n" + sections[j]
+                    j += 1
+                
+                # Only create chunk if we have content and it meets min size after merging
+                if len(merged_content.strip()) >= self.min_chunk_size:
+                    # If merged content is too large, split it further
+                    if len(merged_content) > self.max_chunk_size:
+                        sub_chunks = self._split_large_section(merged_content)
+                        for sub_chunk in sub_chunks:
+                            if len(sub_chunk.strip()) >= self.min_chunk_size:
+                                chunk = self._create_chunk(document, sub_chunk, position)
+                                yield chunk
+                                position += 1
+                                chunk_count += 1
+                    else:
+                        chunk = self._create_chunk(document, merged_content, position)
                         yield chunk
                         position += 1
                         chunk_count += 1
+                
+                # Move to the next unprocessed section
+                i = j
             else:
-                chunk = self._create_chunk(document, section, position)
-                yield chunk
-                position += 1
-                chunk_count += 1
+                # Section is large enough on its own
+                # If section is too large, split it further
+                if len(current_section) > self.max_chunk_size:
+                    sub_chunks = self._split_large_section(current_section)
+                    for sub_chunk in sub_chunks:
+                        if len(sub_chunk.strip()) >= self.min_chunk_size:
+                            chunk = self._create_chunk(document, sub_chunk, position)
+                            yield chunk
+                            position += 1
+                            chunk_count += 1
+                else:
+                    chunk = self._create_chunk(document, current_section, position)
+                    yield chunk
+                    position += 1
+                    chunk_count += 1
+                
+                i += 1
 
         logger.debug(f"Created {chunk_count} semantic chunks from document {document.id}")
 
