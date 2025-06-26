@@ -5,12 +5,10 @@ from mcps.config import ServerConfig
 from mcps.rag import (
     BatchEmbeddingService,
     CompactResultFormatter,
-    FileBasedVectorStore,
     FixedSizeChunker,
     HuggingFaceEmbedding,
     IChunker,
     IEmbeddingService,
-    InMemoryVectorStore,
     IResultFormatter,
     IVectorStore,
     MarkdownFileTraversal,
@@ -21,6 +19,7 @@ from mcps.rag import (
     SemanticChunker,
     SemanticSearchEngine,
 )
+from mcps.rag.database import LanceDBStore
 
 logger = logging.getLogger("mcps")
 
@@ -64,14 +63,10 @@ class ComponentFactory:
     @staticmethod
     def create_vector_store(config: ServerConfig | None = None, use_memory: bool = False) -> IVectorStore:
         """Create vector store."""
-        if use_memory:
-            return InMemoryVectorStore()
-        else:
-            # Use file-based storage in cache directory
-            cache_dir = Path("cache/rag")
-            cache_dir.mkdir(parents=True, exist_ok=True)
-            storage_path = cache_dir / "vector_store.pkl"
-            return FileBasedVectorStore(storage_path)
+        cache_dir = Path("cache/rag")
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        storage_path = cache_dir / "vector_store"
+        return LanceDBStore(storage_path,None)
     
     @staticmethod
     def create_search_engine(

@@ -3,8 +3,6 @@ RAG (Retrieval-Augmented Generation) search system package.
 """
 
 from .database import (
-    FileBasedVectorStore,
-    InMemoryVectorStore,
     LanceDBStore,
 )
 from .document_processing import (
@@ -68,8 +66,6 @@ __all__ = [
     
     # Database
     "LanceDBStore",
-    "InMemoryVectorStore",
-    "FileBasedVectorStore",
     
     # Search
     "SemanticSearchEngine",

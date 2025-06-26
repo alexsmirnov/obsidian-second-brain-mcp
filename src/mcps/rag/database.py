@@ -137,7 +137,7 @@ class LanceDBStore(IVectorStore):
             )
             if where:
                 result = result.where(where)
-            results = await result.limit(limit).to_arrow()
+            results = await result.limit(limit).to_list()
             # Convert results to Chunk objects
             return [Chunk.model_validate(result) for result in results]
         

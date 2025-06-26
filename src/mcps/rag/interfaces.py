@@ -125,7 +125,13 @@ class IVectorStore(ABC):
 
     @abstractmethod
     async def search(self, query: str, where: None | str = None, limit: int = 5) -> list[Chunk]:
-        """Search for similar chunks."""
+        """Search for chunks that contain text from query.
+
+        Args:
+            query (str): The search query text.
+            where (None | str, optional): Optional filter condition. Defaults to None.
+            limit (int, optional): Maximum number of results to return. Defaults to 5.
+        """
         pass
 
     @abstractmethod
