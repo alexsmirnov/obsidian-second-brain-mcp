@@ -21,10 +21,14 @@ from unittest.mock import patch
 import hashlib
 import numpy as np
 import pytest
+from dotenv import load_dotenv, find_dotenv
 
 from src.mcps.rag.database import LanceDBStore
 from src.mcps.rag.interfaces import Chunk, IVectorStore, Metadata
-from lancedb.embeddings import EmbeddingFunction
+from lancedb.embeddings import EmbeddingFunction, get_registry
+
+load_dotenv(find_dotenv())
+load_dotenv(find_dotenv(usecwd=True))
 
 
 # Test fixtures
@@ -48,8 +52,6 @@ def sample_chunks():
                 source="AI Tutorial",
                 description="Machine learning basics",
                 title="ML Introduction",
-                created_at=base_time,
-                modified_at=base_time
             ),
             outgoing_links=["artificial_intelligence"],
             tags=["machine-learning", "ai"],
@@ -65,8 +67,6 @@ def sample_chunks():
                 source="Deep Learning Guide",
                 description="Neural networks and deep learning",
                 title="Deep Learning Basics",
-                created_at=base_time,
-                modified_at=base_time
             ),
             outgoing_links=["neural_networks"],
             tags=["deep-learning", "neural-networks"],
@@ -82,8 +82,6 @@ def sample_chunks():
                 source="NLP Handbook",
                 description="Natural language processing techniques",
                 title="NLP Overview",
-                created_at=base_time,
-                modified_at=base_time
             ),
             outgoing_links=["language_models"],
             tags=["nlp", "language"],
@@ -99,8 +97,6 @@ def sample_chunks():
                 source="Python Guide",
                 description="Python programming for data science",
                 title="Python Basics",
-                created_at=base_time,
-                modified_at=base_time
             ),
             outgoing_links=["python", "data_science"],
             tags=["python", "programming"],
@@ -119,6 +115,10 @@ def dummy_embedding_function() -> EmbeddingFunction:
     """Create a dummy embedding function for testing.
         The only assumption that embeddings for the same text will always be the same.
     """
+    ollama_base_url = os.getenv("OLLAMA_BASE_URL")
+    if ollama_base_url:
+        return get_registry().get("ollama").create(name="bge-m3", host=ollama_base_url)
+
     class DummyEmbeddingFunction(EmbeddingFunction):
         def _generate_embedding(self, text: str) -> np.ndarray:
             hash_digest = hashlib.sha256(text.encode('utf-8')).digest()
@@ -223,9 +223,10 @@ async def test_search(lancedb_store_with_data):
 @pytest.mark.asyncio
 async def test_search_empty_results(lancedb_store_with_data):
     """Test search with query that should return no results."""
-    results = await lancedb_store_with_data.search("nonexistent gibberish text")
+    results = await lancedb_store_with_data.search("nonexistent gibberish")
     assert isinstance(results, list)
-    # TODO: refine search assert len(results) == 0
+    # TODO: refine search 
+    assert len(results) == 0
 
 
 @pytest.mark.asyncio

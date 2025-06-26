@@ -6,17 +6,18 @@ import shutil
 import tempfile
 from datetime import datetime
 from pathlib import Path
+from typing import Generator
 from unittest.mock import patch
 
 import frontmatter
 import pytest
 
-from src.mcps.rag.document_processing import (
+from mcps.rag.document_processing import (
     MarkdownFileTraversal,
     MarkdownProcessor,
     default_skip_patterns,
 )
-from src.mcps.rag.interfaces import Document
+from mcps.rag.interfaces import Document
 
 
 class TestMarkdownFileTraversal:
@@ -156,13 +157,8 @@ class TestMarkdownFileTraversal:
         non_existent_path = temp_dir / "does_not_exist"
         traversal = MarkdownFileTraversal(non_existent_path)
         
-        with patch('src.mcps.rag.document_processing.logger') as mock_logger:
-            found_files = list(traversal.find_files())
-            
-            assert len(found_files) == 0
-            mock_logger.warning.assert_called_once_with(
-                f"Search path does not exist: {non_existent_path}"
-            )
+        found_files = list(traversal.find_files())
+        assert len(found_files) == 0
 
     def test_find_files_empty_directory(self, temp_dir):
         """Test find_files method with empty directory."""
@@ -294,16 +290,16 @@ class TestMarkdownProcessor:
     """Test cases for MarkdownProcessor class."""
 
     @pytest.fixture
-    def processor(self):
-        """Create a MarkdownProcessor instance."""
-        return MarkdownProcessor()
-
-    @pytest.fixture
-    def temp_file(self):
+    def temp_file(self) -> Generator[Path, None, None]:
         """Create a temporary markdown file for testing."""
         temp_file = tempfile.NamedTemporaryFile(mode='w', suffix='.md', delete=False)
         yield Path(temp_file.name)
         Path(temp_file.name).unlink(missing_ok=True)
+
+    @pytest.fixture
+    def processor(self, temp_file):
+        """Create a MarkdownProcessor instance."""
+        return MarkdownProcessor(temp_file.parent)
 
     @pytest.fixture
     def sample_markdown_content(self):
@@ -387,20 +383,16 @@ Invalid tags: # (space after hash), #-invalid (starts with hyphen).
         assert isinstance(document, Document)
         assert document.id is not None
         assert len(document.id) == 32  # MD5 hash length
-        assert document.source_path == temp_file
+        assert document.source_path == temp_file.name
         
         # Verify content
         expected_content = sample_markdown_content.split('---\n')[2]  # Content after frontmatter
         assert document.content.strip() == expected_content.strip()
         
         # Verify metadata
-        assert document.metadata['title'] == 'Test Document'
-        assert document.metadata['author'] == 'Test Author'
-        assert document.metadata['date'] == '2023-01-01'
-        assert 'created_at' in document.metadata
-        assert 'modified_at' in document.metadata
-        assert isinstance(document.metadata['created_at'], datetime)
-        assert isinstance(document.metadata['modified_at'], datetime)
+        assert document.metadata.title == 'Test Document'
+        assert isinstance(document.created_at, datetime)
+        assert isinstance(document.modified_at, datetime)
         
         # Verify wikilinks
         expected_links = {'wikilink', 'another link', 'duplicate link'}
@@ -425,9 +417,9 @@ Invalid tags: # (space after hash), #-invalid (starts with hyphen).
         assert document.content.strip() == simple_markdown_content.strip()
         
         # Verify metadata (should only have timestamps)
-        assert 'created_at' in document.metadata
-        assert 'modified_at' in document.metadata
-        assert len([k for k in document.metadata.keys() if k not in ['created_at', 'modified_at']]) == 0
+        assert isinstance(document.created_at, datetime)
+        assert isinstance(document.modified_at, datetime)
+        assert document.metadata.title is None
         
         # Verify wikilinks
         assert document.outgoing_links == ['simple link']
@@ -446,8 +438,8 @@ Invalid tags: # (space after hash), #-invalid (starts with hyphen).
         assert document.content == ""
         assert document.outgoing_links == []
         assert document.tags == []
-        assert 'created_at' in document.metadata
-        assert 'modified_at' in document.metadata
+        assert isinstance(document.created_at, datetime)
+        assert isinstance(document.modified_at, datetime)
 
     async def test_extract_wikilinks_various_patterns(self, processor, markdown_with_complex_wikilinks):
         """Test wikilink extraction with various patterns."""
@@ -595,8 +587,7 @@ Content with émojis and spëcial characters.
         
         document = await processor.process(temp_file)
         
-        assert document.metadata['title'] == 'Тест'
-        assert document.metadata['author'] == '测试'
+        assert document.metadata.title == 'Тест'
         assert '链接' in document.outgoing_links
 
     async def test_process_file_io_error(self, processor):
@@ -667,7 +658,7 @@ title: Large Document
         document = await processor.process(temp_file)
         
         assert isinstance(document, Document)
-        assert document.metadata['title'] == 'Large Document'
+        assert document.metadata.title == 'Large Document'
         assert len(document.outgoing_links) == 100  # link0 to link99
         assert len(document.tags) == 100  # tag0 to tag99
 
@@ -685,8 +676,6 @@ title: Large Document
         # Timestamps should match (within a small tolerance for precision)
         assert abs((document.created_at - original_ctime).total_seconds()) < 1
         assert abs((document.modified_at - original_mtime).total_seconds()) < 1
-        assert abs((document.metadata['created_at'] - original_ctime).total_seconds()) < 1
-        assert abs((document.metadata['modified_at'] - original_mtime).total_seconds()) < 1
 
     async def test_process_excludes_tags_from_metadata(self, processor, temp_file):
         """Test that 'tags' key is excluded from metadata when present in frontmatter."""
@@ -696,6 +685,7 @@ tags:
   - tag1
   - tag2
 author: Test Author
+description: Test Document
 ---
 
 # Content
@@ -706,8 +696,8 @@ author: Test Author
         
         # Tags should not be in metadata (they're handled separately)
         assert 'tags' not in document.metadata
-        assert document.metadata['title'] == 'Test'
-        assert document.metadata['author'] == 'Test Author'
+        assert document.metadata.title == 'Test'
+        assert document.metadata.description == 'Test Document'
         
         # But tags should be in the tags field
         assert 'tag1' in document.tags

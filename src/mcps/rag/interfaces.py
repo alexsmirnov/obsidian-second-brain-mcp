@@ -18,8 +18,6 @@ class Metadata(BaseModel):
     source: str | None = Field(default=None)
     description: str | None = Field(default=None)
     title: str | None = Field(default=None)
-    created_at: datetime
-    modified_at: datetime
 
 
 class Document(BaseModel):
@@ -30,19 +28,9 @@ class Document(BaseModel):
     metadata: Metadata
     outgoing_links: list[str] = Field(default_factory=list)  # Wikilinks
     tags: list[str] = Field(default_factory=list)
-    source_path: str  # Changed from Path to str for JSON serialization
+    source_path: str  # file path relative to vault root
     created_at: datetime
     modified_at: datetime
-    
-    @classmethod
-    def from_path(cls, source_path: Path, **kwargs):
-        """Create Document with Path converted to string."""
-        return cls(source_path=str(source_path), **kwargs)
-    
-    @property
-    def source_path_as_path(self) -> Path:
-        """Get source_path as Path object."""
-        return Path(self.source_path)
 
 
 class Chunk(BaseModel):
@@ -54,17 +42,11 @@ class Chunk(BaseModel):
     metadata: Metadata
     outgoing_links: list[str] = Field(default_factory=list)  # Wikilinks
     tags: list[str] = Field(default_factory=list)
-    source_path: str  # Changed from Path to str for JSON serialization
+    source_path: str  # file path relative to vault root
     created_at: datetime
     modified_at: datetime
     position: int
     
-    
-    @property
-    def source_path_as_path(self) -> Path:
-        """Get source_path as Path object."""
-        return Path(self.source_path)
-
 
 @dataclass
 class SearchQuery:

@@ -9,8 +9,8 @@ from typing import Generator
 
 import pytest
 
-from src.mcps.rag.document_processing import FixedSizeChunker, SemanticChunker
-from src.mcps.rag.interfaces import Document, Chunk
+from mcps.rag.document_processing import FixedSizeChunker, SemanticChunker
+from mcps.rag.interfaces import Document, Chunk, Metadata
 
 
 class TestLazyChunking:
@@ -22,10 +22,10 @@ class TestLazyChunking:
         return Document(
             id="test_doc_123",
             content="# Test Document\n\nThis is a test document with multiple paragraphs.\n\n## Section 1\n\nFirst section content here.\n\n## Section 2\n\nSecond section with more content to test chunking behavior.",
-            metadata={"title": "Test Document", "author": "Test Author"},
+            metadata=Metadata(title= "Test Document", description = "Test document for chunking", created_at=datetime.now(), modified_at=datetime.now()),
             outgoing_links=["link1", "link2"],
             tags=["test", "document"],
-            source_path=Path("/tmp/test.md"),
+            source_path="/tmp/test.md",
             created_at=datetime.now(),
             modified_at=datetime.now()
         )
@@ -39,10 +39,10 @@ class TestLazyChunking:
         return Document(
             id="large_doc_456",
             content=content,
-            metadata={"title": "Large Document"},
+            metadata=Metadata(title= "Large Document", description = "A large document for testing chunking", created_at=datetime.now(), modified_at=datetime.now()),
             outgoing_links=[],
             tags=["large", "test"],
-            source_path=Path("/tmp/large.md"),
+            source_path="/tmp/large.md",
             created_at=datetime.now(),
             modified_at=datetime.now()
         )
@@ -56,7 +56,7 @@ class TestLazyChunking:
             metadata={},
             outgoing_links=[],
             tags=[],
-            source_path=Path("/tmp/empty.md"),
+            source_path="/tmp/empty.md",
             created_at=datetime.now(),
             modified_at=datetime.now()
         )

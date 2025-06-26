@@ -8,12 +8,13 @@ import re
 from collections.abc import Generator
 from datetime import datetime
 from pathlib import Path
+from typing import Dict
 from yaml.parser import ParserError
 
 import frontmatter
 from overrides import override, overrides
 
-from .interfaces import Chunk, Document, IChunker, IDocumentProcessor, IFileTraversal
+from .interfaces import Chunk, Document, IChunker, IDocumentProcessor, IFileTraversal, Metadata
 
 logger = logging.getLogger("mcps")
         # Default skip patterns
@@ -52,6 +53,8 @@ class MarkdownFileTraversal(IFileTraversal):
 
 class MarkdownProcessor(IDocumentProcessor):
     """Markdown document processor."""
+    def __init__(self, base_path: Path):
+        self.base_path = base_path
 
     @overrides
     async def process(self, file_path: Path) -> Document:
@@ -63,11 +66,11 @@ class MarkdownProcessor(IDocumentProcessor):
                 # Handle frontmatter parsing errors gracefully
                 post = frontmatter.Post(content=file_path.read_text(encoding='utf-8', errors='replace'))
         # Extract metadata
-        metadata = {
-            "created_at": datetime.fromtimestamp(file_path.stat().st_ctime),
-            "modified_at": datetime.fromtimestamp(file_path.stat().st_mtime),
-            **{ k:str(v) for k,v in post.metadata.items() if k not in { 'tags' } }
-        }
+        metadata = Metadata(
+            source = self._metadata_as_str(post.metadata,'source'),
+            title = self._metadata_as_str(post.metadata,'title'),
+            description = self._metadata_as_str(post.metadata,'description'),
+        )
 
         # Extract wikilinks
         outgoing_links = self._extract_wikilinks(post.content)
@@ -89,11 +92,14 @@ class MarkdownProcessor(IDocumentProcessor):
             metadata=metadata,
             outgoing_links=outgoing_links,
             tags=tags,
-            source_path=file_path,
+            source_path=file_path.relative_to(self.base_path).as_posix(),
             created_at=created_at,
             modified_at=modified_at
         )
 
+    def _metadata_as_str(self, metadata: Dict[str,object], field) -> str | None:
+        """Convert metadata dictionary value to a string representation."""
+        return str(metadata.get(field, '')) if field in metadata else None
 
     def _extract_wikilinks(self, content: str) -> list[str]:
         """Extract wikilinks from markdown content."""
@@ -160,7 +166,7 @@ class FixedSizeChunker(IChunker):
                 chunk = Chunk(
                     id=chunk_id,
                     content=chunk_content,
-                    metadata=document.metadata.copy(),
+                    metadata=document.metadata,
                     outgoing_links=document.outgoing_links.copy(),
                     tags=document.tags.copy(),
                     source_path=document.source_path,
