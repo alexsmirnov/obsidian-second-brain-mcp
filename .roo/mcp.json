@@ -3,14 +3,17 @@
     "mcps": {
       "command": "uv",
       "args": [
-            "run",
-            "--project",
-            "/Users/alsmirnov/work/mcp-server-continue",
-            "mcps"
+        "run",
+        "--project",
+        "/Users/alsmirnov/work/mcp-server-continue",
+        "mcps"
       ],
       "env": {
         "ROOT": "/Users/alsmirnov/work/mcp-server-continue",
         "VAULT": "/Users/alsmirnov/Obsidian_Vault"
-      }
+      },
+      "disabled": true,
+      "alwaysAllow": []
     }
+  }
 }

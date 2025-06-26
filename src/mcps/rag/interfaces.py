@@ -7,35 +7,63 @@ from collections.abc import Generator
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Annotated
+
+from pydantic import Field, ConfigDict, BaseModel
 
 
-@dataclass
-class Document:
-    """Represents a document with its content and metadata."""
-    id: str
-    content: str
-    metadata: dict[str, Any]
-    outgoing_links: list[str]  # Wikilinks
-    tags: list[str]
-    source_path: Path
+class Metadata(BaseModel):
+    """Represents metadata with fixed fields compatible with LanceDB."""
+    
+    source: str | None = Field(default=None)
+    description: str | None = Field(default=None)
+    title: str | None = Field(default=None)
     created_at: datetime
     modified_at: datetime
 
 
-@dataclass
-class Chunk:
-    """Represents a chunk of text with metadata from document."""
+class Document(BaseModel):
+    """Represents a document with its content and metadata."""
+    
     id: str
     content: str
-    metadata: dict[str, Any]
-    outgoing_links: list[str]  # Wikilinks
-    tags: list[str]
-    source_path: Path
+    metadata: Metadata
+    outgoing_links: list[str] = Field(default_factory=list)  # Wikilinks
+    tags: list[str] = Field(default_factory=list)
+    source_path: str  # Changed from Path to str for JSON serialization
+    created_at: datetime
+    modified_at: datetime
+    
+    @classmethod
+    def from_path(cls, source_path: Path, **kwargs):
+        """Create Document with Path converted to string."""
+        return cls(source_path=str(source_path), **kwargs)
+    
+    @property
+    def source_path_as_path(self) -> Path:
+        """Get source_path as Path object."""
+        return Path(self.source_path)
+
+
+class Chunk(BaseModel):
+    """Represents a chunk of text with metadata from document."""
+    model_config = ConfigDict(extra='allow') 
+    
+    id: str
+    content: str
+    metadata: Metadata
+    outgoing_links: list[str] = Field(default_factory=list)  # Wikilinks
+    tags: list[str] = Field(default_factory=list)
+    source_path: str  # Changed from Path to str for JSON serialization
     created_at: datetime
     modified_at: datetime
     position: int
-    embeddings: list[float] | None = None
+    
+    
+    @property
+    def source_path_as_path(self) -> Path:
+        """Get source_path as Path object."""
+        return Path(self.source_path)
 
 
 @dataclass
@@ -96,7 +124,7 @@ class IVectorStore(ABC):
         pass
 
     @abstractmethod
-    async def search(self, query_embedding: list[float], top_k: int = 5) -> list[Chunk]:
+    async def search(self, query: str, where: None | str = None, limit: int = 5) -> list[Chunk]:
         """Search for similar chunks."""
         pass
 

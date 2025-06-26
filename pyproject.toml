@@ -41,9 +41,12 @@ lint = [
 include = ["src"]
 exclude = ["**/node_modules", "**/__pycache__"]
 defineConstant = { DEBUG = true }
+typeCheckingMode = "basic"
 
 reportMissingImports = "error"
 reportMissingTypeStubs = false
+reportAttributeAccessIssue = "information"
+reportOptionalMemberAccess = "information"
 venv = ".venv"
 venvPath = "."
 

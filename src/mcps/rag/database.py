@@ -7,6 +7,13 @@ import json
 import logging
 import pickle
 from pathlib import Path
+from typing import Optional, Any
+
+from lancedb import AsyncConnection, AsyncTable
+from lancedb.embeddings import EmbeddingFunction
+from lancedb.pydantic import pydantic_to_schema
+from lancedb.index import FTS
+import pyarrow as pa
 
 from .interfaces import Chunk, IVectorStore
 
@@ -14,20 +21,45 @@ logger = logging.getLogger("mcps")
 
 
 class LanceDBStore(IVectorStore):
-    """LanceDB vector store implementation."""
+    """
+    LanceDB vector store implementation with full text search (FTS) capabilities.
     
-    def __init__(self, db_path: Path, table_name: str = "chunks"):
+    This class provides both vector similarity search and full text search using
+    LanceDB's Tantivy-based FTS engine. It supports:
+    - Vector embeddings for semantic search
+    - Full text search with English stemming
+    - Hybrid search combining both approaches
+    - Configurable FTS indexing on multiple columns
+    
+    Example usage:
+        store = LanceDBStore(Path("./db"), "chunks")
+        await store.initialize(create_fts_index=True)
+        
+        # Text search
+        results = await store.search_text("machine learning", limit=10)
+        
+        # Hybrid search
+        results = await store.hybrid_search("deep learning", top_k=5)
+    """
+    
+    def __init__(self, db_path: Path, embedding_function: EmbeddingFunction, table_name: str = "chunks"):
         self.db_path = db_path
         self.table_name = table_name
-        self.db = None
-        self.table = None
+        self.db: None | AsyncConnection = None
+        self.table: AsyncTable | None = None
+        self.embedding_function: EmbeddingFunction = embedding_function
         self._initialized = False
+
     
-    async def initialize(self) -> None:
-        """Initialize the LanceDB vector store."""
+    async def initialize(self, create_fts_index: bool = True) -> None:
+        """
+        Initialize the LanceDB vector store.
+        
+        Args:
+            create_fts_index: Whether to automatically create FTS index on 'content' column
+        """
         try:
             import lancedb
-            import pyarrow as pa
             
             logger.info(f"Initializing LanceDB at {self.db_path}")
             
@@ -35,43 +67,32 @@ class LanceDBStore(IVectorStore):
             self.db_path.parent.mkdir(parents=True, exist_ok=True)
             
             # Connect to database
-            loop = asyncio.get_event_loop()
-            self.db = await loop.run_in_executor(None, lancedb.connect, str(self.db_path))
+            self.db = await lancedb.connect_async(self.db_path)
             
-            # Define schema
-            schema = pa.schema([
-                pa.field("id", pa.string()),
-                pa.field("content", pa.string()),
-                pa.field("metadata", pa.string()),  # JSON string
-                pa.field("outgoing_links", pa.string()),  # JSON string
-                pa.field("tags", pa.string()),  # JSON string
-                pa.field("source_path", pa.string()),
-                pa.field("created_at", pa.string()),
-                pa.field("modified_at", pa.string()),
-                pa.field("position", pa.int64()),
-                pa.field("embeddings", pa.list_(pa.float64())),
-            ])
-            
-            # Create or open table
+            # Create or open table using Pydantic schema
             try:
-                self.table = self.db.open_table(self.table_name)
+                self.table = await self.db.open_table(self.table_name)
                 logger.info(f"Opened existing table: {self.table_name}")
             except Exception:
-                # Table doesn't exist, create it
-                self.table = await loop.run_in_executor(
-                    None,
-                    self.db.create_table,
-                    self.table_name,
-                    [],  # Empty data
-                    schema
-                )
+                # Table doesn't exist, create it using Pydantic schema
+                schema: pa.Schema = pydantic_to_schema(Chunk)
+                schema = schema.append(pa.field("embeddings", pa.list_(pa.float16(), self.embedding_function.ndims())))
+                self.table = await self.db.create_table(self.table_name, schema=schema)
                 logger.info(f"Created new table: {self.table_name}")
+            
+            # Create FTS index if requested
+            if create_fts_index:
+                try:
+                    await self.create_fts_index()
+                except Exception as e:
+                    logger.warning(f"Failed to create FTS index during initialization: {e}")
+                    logger.warning("FTS functionality will not be available")
             
             self._initialized = True
             logger.info("LanceDB initialized successfully")
             
         except ImportError:
-            logger.error("lancedb or pyarrow not installed. Install with: pip install lancedb pyarrow")
+            logger.error("lancedb not installed. Install with: pip install lancedb")
             raise
         except Exception as e:
             logger.error(f"Failed to initialize LanceDB: {e}")
@@ -84,72 +105,46 @@ class LanceDBStore(IVectorStore):
         
         if not chunks:
             return
-        
         try:
-            # Convert chunks to records
-            records = []
-            for chunk in chunks:
-                if chunk.embeddings is None:
-                    logger.warning(f"Chunk {chunk.id} has no embeddings, skipping")
-                    continue
-                
-                record = {
-                    "id": chunk.id,
-                    "content": chunk.content,
-                    "metadata": json.dumps(chunk.metadata),
-                    "outgoing_links": json.dumps(chunk.outgoing_links),
-                    "tags": json.dumps(chunk.tags),
-                    "source_path": str(chunk.source_path),
-                    "created_at": chunk.created_at.isoformat(),
-                    "modified_at": chunk.modified_at.isoformat(),
-                    "position": chunk.position,
-                    "embeddings": chunk.embeddings,
-                }
-                records.append(record)
+            # Process chunks and generate embeddings if needed
+            processed_chunks = [ self._dump_with_embeddings(chunk) for chunk in chunks if isinstance(chunk, Chunk) ]
             
-            if records:
-                loop = asyncio.get_event_loop()
-                await loop.run_in_executor(None, self.table.add, records)
-                logger.info(f"Stored {len(records)} chunks in LanceDB")
+            if processed_chunks:
+                await self.table.add(processed_chunks)
             
         except Exception as e:
             logger.error(f"Failed to store chunks in LanceDB: {e}")
             raise
     
-    async def search(self, query_embedding: list[float], top_k: int = 5) -> list[Chunk]:
+    def _dump_with_embeddings(self, chunk: Chunk) -> dict[str, Any]:
+        """Helper to dump chunk with embeddings."""
+        chunk_dict = chunk.model_dump()
+        if "embeddings" not in chunk_dict:
+            chunk_dict['embeddings'] = self.embedding_function.compute_query_embeddings(chunk.content)[0]
+        return chunk_dict
+
+    async def search(self, query: str, where: None | str = None, limit: int = 5) -> list[Chunk]:
         """Search for similar chunks."""
         if not self._initialized:
             await self.initialize()
-        
+        # Vector similarity search using embeddings
+        # Calculate embedding for the query
+        query_embedding = self.embedding_function.compute_query_embeddings(query)[0]
+        # Perform the search
         try:
-            loop = asyncio.get_event_loop()
-            results = await loop.run_in_executor(
-                None,
-                lambda: self.table.search(query_embedding).limit(top_k).to_pandas()
+            result = await self.table.search(
+                query_embedding
             )
-            
-            chunks = []
-            for _, row in results.iterrows():
-                chunk = Chunk(
-                    id=row["id"],
-                    content=row["content"],
-                    metadata=json.loads(row["metadata"]),
-                    outgoing_links=json.loads(row["outgoing_links"]),
-                    tags=json.loads(row["tags"]),
-                    source_path=Path(row["source_path"]),
-                    created_at=row["created_at"],
-                    modified_at=row["modified_at"],
-                    position=row["position"],
-                    embeddings=row["embeddings"]
-                )
-                chunks.append(chunk)
-            
-            logger.debug(f"Found {len(chunks)} similar chunks")
-            return chunks
-            
+            if where:
+                result = result.where(where)
+            results = await result.limit(limit).to_arrow()
+            # Convert results to Chunk objects
+            return [Chunk.model_validate(result) for result in results]
+        
         except Exception as e:
-            logger.error(f"Failed to search in LanceDB: {e}")
-            return []
+            logger.error(f"Failed to search chunks in LanceDB: {e}")
+            raise
+        return []
     
     async def delete(self, chunk_ids: list[str]) -> None:
         """Delete chunks by their IDs."""
@@ -157,227 +152,44 @@ class LanceDBStore(IVectorStore):
             await self.initialize()
         
         try:
-            for chunk_id in chunk_ids:
-                loop = asyncio.get_event_loop()
-                await loop.run_in_executor(
-                    None,
-                    lambda: self.table.delete(f"id = '{chunk_id}'")
-                )
+            await self.table.delete(f"id IN ({', '.join(map(lambda x: f'\"{x}\"', chunk_ids))})")
             
             logger.info(f"Deleted {len(chunk_ids)} chunks from LanceDB")
             
         except Exception as e:
             logger.error(f"Failed to delete chunks from LanceDB: {e}")
             raise
-
-
-class InMemoryVectorStore(IVectorStore):
-    """Simple in-memory vector store for testing and small datasets."""
     
-    def __init__(self):
-        self.chunks: dict[str, Chunk] = {}
-        self._initialized = False
-    
-    async def initialize(self) -> None:
-        """Initialize the in-memory vector store."""
-        self._initialized = True
-        logger.info("In-memory vector store initialized")
-    
-    async def store(self, chunks: list[Chunk]) -> None:
-        """Store chunks with their embeddings."""
-        if not self._initialized:
-            await self.initialize()
+    async def create_fts_index(
+        self,
+        column: str = "content",
+        replace: bool = True
+    ) -> None:
+        """
+        Create a full text search (FTS) index on specified columns.
         
-        for chunk in chunks:
-            if chunk.embeddings is None:
-                logger.warning(f"Chunk {chunk.id} has no embeddings, skipping")
-                continue
-            self.chunks[chunk.id] = chunk
+        Args:
+            column: column to index (default: ["content"])
+            replace: Replace existing index if it exists (default: True)
+            
+        Raises:
+            Exception: If FTS index creation fails
+            
+        Example:
+            # Create FTS index on content column
+            await store.create_fts_index()
+            
+        """
         
-        logger.info(f"Stored {len(chunks)} chunks in memory")
-    
-    async def search(self, query_embedding: list[float], top_k: int = 5) -> list[Chunk]:
-        """Search for similar chunks using cosine similarity."""
-        if not self._initialized:
-            await self.initialize()
-        
-        if not self.chunks:
-            return []
-        
-        # Calculate cosine similarity for all chunks
-        similarities = []
-        for chunk in self.chunks.values():
-            if chunk.embeddings:
-                similarity = self._cosine_similarity(query_embedding, chunk.embeddings)
-                similarities.append((similarity, chunk))
-        
-        # Sort by similarity and return top_k
-        similarities.sort(key=lambda x: x[0], reverse=True)
-        top_chunks = [chunk for _, chunk in similarities[:top_k]]
-        
-        logger.debug(f"Found {len(top_chunks)} similar chunks")
-        return top_chunks
-    
-    async def delete(self, chunk_ids: list[str]) -> None:
-        """Delete chunks by their IDs."""
-        if not self._initialized:
-            await self.initialize()
-        
-        deleted_count = 0
-        for chunk_id in chunk_ids:
-            if chunk_id in self.chunks:
-                del self.chunks[chunk_id]
-                deleted_count += 1
-        
-        logger.info(f"Deleted {deleted_count} chunks from memory")
-    
-    def _cosine_similarity(self, vec1: list[float], vec2: list[float]) -> float:
-        """Calculate cosine similarity between two vectors."""
         try:
-            import numpy as np
+                await self.table.create_index(
+                        column,
+                        config=FTS(base_tokenizer='simple'),
+                        replace=replace
+                    )
+                logger.info(f"Created FTS index on column '{column}'")
             
-            v1 = np.array(vec1)
-            v2 = np.array(vec2)
-            
-            dot_product = np.dot(v1, v2)
-            norm1 = np.linalg.norm(v1)
-            norm2 = np.linalg.norm(v2)
-            
-            if norm1 == 0 or norm2 == 0:
-                return 0.0
-            
-            return dot_product / (norm1 * norm2)
-            
-        except ImportError:
-            # Fallback implementation without numpy
-            dot_product = sum(a * b for a, b in zip(vec1, vec2, strict=False))
-            norm1 = sum(a * a for a in vec1) ** 0.5
-            norm2 = sum(b * b for b in vec2) ** 0.5
-            
-            if norm1 == 0 or norm2 == 0:
-                return 0.0
-            
-            return dot_product / (norm1 * norm2)
-
-
-class FileBasedVectorStore(IVectorStore):
-    """File-based vector store using pickle for persistence."""
-    
-    def __init__(self, storage_path: Path):
-        self.storage_path = storage_path
-        self.chunks: dict[str, Chunk] = {}
-        self._initialized = False
-    
-    async def initialize(self) -> None:
-        """Initialize the file-based vector store."""
-        self.storage_path.parent.mkdir(parents=True, exist_ok=True)
-        
-        # Load existing data if available
-        if self.storage_path.exists():
-            try:
-                with open(self.storage_path, 'rb') as f:
-                    self.chunks = pickle.load(f)
-                logger.info(f"Loaded {len(self.chunks)} chunks from {self.storage_path}")
-            except Exception as e:
-                logger.warning(f"Failed to load existing data: {e}")
-                self.chunks = {}
-        
-        self._initialized = True
-        logger.info("File-based vector store initialized")
-    
-    async def store(self, chunks: list[Chunk]) -> None:
-        """Store chunks with their embeddings."""
-        if not self._initialized:
-            await self.initialize()
-        
-        for chunk in chunks:
-            if chunk.embeddings is None:
-                logger.warning(f"Chunk {chunk.id} has no embeddings, skipping")
-                continue
-            self.chunks[chunk.id] = chunk
-        
-        # Persist to file
-        await self._save_to_file()
-        logger.info(f"Stored {len(chunks)} chunks to file")
-    
-    async def search(self, query_embedding: list[float], top_k: int = 5) -> list[Chunk]:
-        """Search for similar chunks using cosine similarity."""
-        if not self._initialized:
-            await self.initialize()
-        
-        if not self.chunks:
-            return []
-        
-        # Use same similarity calculation as InMemoryVectorStore
-        similarities = []
-        for chunk in self.chunks.values():
-            if chunk.embeddings:
-                similarity = self._cosine_similarity(query_embedding, chunk.embeddings)
-                similarities.append((similarity, chunk))
-        
-        similarities.sort(key=lambda x: x[0], reverse=True)
-        top_chunks = [chunk for _, chunk in similarities[:top_k]]
-        
-        logger.debug(f"Found {len(top_chunks)} similar chunks")
-        return top_chunks
-    
-    async def delete(self, chunk_ids: list[str]) -> None:
-        """Delete chunks by their IDs."""
-        if not self._initialized:
-            await self.initialize()
-        
-        deleted_count = 0
-        for chunk_id in chunk_ids:
-            if chunk_id in self.chunks:
-                del self.chunks[chunk_id]
-                deleted_count += 1
-        
-        if deleted_count > 0:
-            await self._save_to_file()
-        
-        logger.info(f"Deleted {deleted_count} chunks from file")
-    
-    async def _save_to_file(self):
-        """Save chunks to file."""
-        try:
-            loop = asyncio.get_event_loop()
-            await loop.run_in_executor(
-                None,
-                self._save_sync
-            )
         except Exception as e:
-            logger.error(f"Failed to save chunks to file: {e}")
+            logger.error(f"Failed to create FTS index: {e}")
             raise
     
-    def _save_sync(self):
-        """Synchronous save operation."""
-        with open(self.storage_path, 'wb') as f:
-            pickle.dump(self.chunks, f)
-    
-    def _cosine_similarity(self, vec1: list[float], vec2: list[float]) -> float:
-        """Calculate cosine similarity between two vectors."""
-        # Same implementation as InMemoryVectorStore
-        try:
-            import numpy as np
-            
-            v1 = np.array(vec1)
-            v2 = np.array(vec2)
-            
-            dot_product = np.dot(v1, v2)
-            norm1 = np.linalg.norm(v1)
-            norm2 = np.linalg.norm(v2)
-            
-            if norm1 == 0 or norm2 == 0:
-                return 0.0
-            
-            return dot_product / (norm1 * norm2)
-            
-        except ImportError:
-            dot_product = sum(a * b for a, b in zip(vec1, vec2, strict=False))
-            norm1 = sum(a * a for a in vec1) ** 0.5
-            norm2 = sum(b * b for b in vec2) ** 0.5
-            
-            if norm1 == 0 or norm2 == 0:
-                return 0.0
-            
-            return dot_product / (norm1 * norm2)
