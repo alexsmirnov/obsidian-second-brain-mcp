@@ -10,7 +10,6 @@ Tests cover:
 - Error handling and edge cases
 """
 
-import asyncio
 import os
 import tempfile
 from datetime import datetime
@@ -115,7 +114,7 @@ def dummy_embedding_function() -> EmbeddingFunction:
     """Create a dummy embedding function for testing.
         The only assumption that embeddings for the same text will always be the same.
     """
-    ollama_base_url = os.getenv("OLLAMA_BASE_URL")
+    ollama_base_url = os.getenv("OLLAMA_API_BASE")
     if ollama_base_url:
         return get_registry().get("ollama").create(name="bge-m3", host=ollama_base_url)
 
