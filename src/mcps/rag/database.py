@@ -2,9 +2,11 @@
 Vector database implementations for the RAG search system.
 """
 
+from datetime import timedelta
 import json
 import logging
 from pathlib import Path
+import time
 from typing import Any
 
 import lancedb
@@ -60,7 +62,7 @@ class LanceDBStore(IVectorStore):
             self.db_path.parent.mkdir(parents=True, exist_ok=True)
             
             # Connect to database
-            self.db = await lancedb.connect_async(self.db_path)
+            self.db = await lancedb.connect_async(self.db_path, read_consistency_interval= timedelta(seconds=1))
             
             # Create or open table using Pydantic schema
             try:
@@ -70,24 +72,10 @@ class LanceDBStore(IVectorStore):
                 # Table doesn't exist, create it using Pydantic schema
                 schema: pa.Schema = pydantic_to_schema(Chunk)
                 schema = schema.append(pa.field("embeddings", pa.list_(pa.float16(), self.embedding_function.ndims())))
-                self.table = await self.db.create_table(self.table_name, schema=schema)
+                self.table = await self.db.create_table(self.table_name, schema=schema )
                 logger.info(f"Created new table: {self.table_name}")
                 # Create indexes
-                try:
-                    await self.create_fts_index()
-                    await self.create_fts_index('title')
-                    await self.create_fts_index('description')
-                    await self.table.create_index(
-                        column="embeddings",
-                        config=IvfPq(
-                            ),  # Number of sub-vectors
-                    )
-                    await self.table.create_index(
-                        column="tags",
-                        config=LabelList()
-                    )
-                except Exception as e:
-                    logger.warning(f"Failed to create FTS index during initialization: {e}")
+                await self._reindex()
             
             self._initialized = True
             logger.info("LanceDB initialized successfully")
@@ -172,39 +160,37 @@ class LanceDBStore(IVectorStore):
             raise
         
     
-    async def delete(self, chunk_ids: list[str]) -> None:
-        """Delete chunks by their IDs."""
+    async def delete(self, source_paths: list[str]) -> None:
+        """Delete chunks by their IDs.
+        WARNING: delete operaton in lancedb may corrupt indexes, so it will be followed by reindexing.
+        """
         if not self._initialized:
             raise NotInitializedError("LanceDBStore is not initialized. Call await store.initialize() first.")
         
         try:
-            await self.table.delete(f"id IN ({', '.join(map(lambda x: f'\"{x}\"', chunk_ids))})")
+
+            in_list = ','.join([f"'p'" for p in source_paths])
+            result = await self.table.delete(f"id IN ({in_list})")
             
-            logger.info(f"Deleted {len(chunk_ids)} chunks from LanceDB")
+            logger.warning(f"Deleted {len(source_paths)} chunks from LanceDB with {result}")
             # List all indices to check if FTS index exists
             indices = await self.table.list_indices()
-            logger.warning([idx for idx in indices])
+            logger.warning([f"index {idx.name}," for idx in indices])
 
-            # Check specific index statistics
-            # fts_index_stats = await self.table.index_stats("your_text_column_idx")
-            # if fts_index_stats is None:
-            #     print("FTS index does not exist")
-            # else:
-            #     print(f"Index stats: {fts_index_stats}")
+            await self._reindex(replace=True)  # Recreate indexes after deletion
+
         except Exception as e:
             logger.error(f"Failed to delete chunks from LanceDB: {e}")
             raise
     
-    async def create_fts_index(
+    async def _reindex(
         self,
-        column: str = "content",
         replace: bool = True
     ) -> None:
         """
-        Create a full text search (FTS) index on specified columns.
+        Create database indexes
         
         Args:
-            column: column to index (default: ["content"])
             replace: Replace existing index if it exists (default: True)
             
         Raises:
@@ -215,16 +201,37 @@ class LanceDBStore(IVectorStore):
             await store.create_fts_index()
             
         """
-        
-        try:
+        wait_time=timedelta(seconds=5)
+        for column in ["content", "title", "description"]: 
+            try:
                 await self.table.create_index(
                         column,
                         config=FTS(base_tokenizer='simple'),
-                        replace=replace
+                        replace=replace,
+                        wait_timeout=wait_time
                     )
-                logger.info(f"Created FTS index on column '{column}'")
-            
+                
+            except Exception as e:
+                logger.error(f"Failed to create FTS index for column {column}: {e}")
+                raise
+        try:
+            pass
+            # await self.table.create_index(
+            #     column="embeddings",
+            #     config=IvfPq()
+            # )
         except Exception as e:
-            logger.error(f"Failed to create FTS index: {e}")
+            logger.error(f"Failed to create IvPf index for embeddings: {e}")
             raise
+        try:
+            await self.table.create_index(
+                column="tags",
+                config=LabelList(),
+                wait_timeout=wait_time
+            )
+        except Exception as e:
+            logger.error(f"Failed to create list index for tags: {e}")
+            raise
+        indices = await self.table.list_indices()
+        logger.warning([f"index {idx}," for idx in indices])
     

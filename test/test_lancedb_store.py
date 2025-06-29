@@ -12,6 +12,7 @@ Tests cover:
 
 import os
 import tempfile
+import asyncio
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Generator
@@ -226,7 +227,8 @@ async def test_delete_chunks(lancedb_store_with_data, sample_chunks):
     # Delete the first chunk
     if chunk_ids:
         await lancedb_store_with_data.delete([chunk_ids[0]])
-        
+        # Pause for 2 seconds to ensure deletion is processed
+        await asyncio.sleep(2)
         # Verify it was deleted (this is an indirect test since we're working with the interface)
         results_after = await lancedb_store_with_data.search("machine learning")
         after_ids = [chunk.id for chunk in results_after]
