@@ -16,8 +16,53 @@ from overrides import override, overrides
 
 from .interfaces import Chunk, Document, IChunker, IDocumentProcessor, IFileTraversal, Metadata
 
+
+def extract_wikilinks(content: str) -> list[str]:
+    """Extract wikilinks from markdown content."""
+    # Pattern for wikilinks: !?[[note name#heading|display text]]
+    # Captures only the note name portion (before # or |)
+    # Allows brackets inside link names but stops at # or |
+    wikilink_pattern = r'!?\[\[([^#|]*?)(?:[#|][^\]]*)?"]\]'
+    matches = re.findall(wikilink_pattern, content)
+    # Filter out empty matches but preserve trailing spaces for compatibility
+    filtered_matches = [match for match in matches if match.strip()]
+    return list(set(filtered_matches))  # Remove duplicates
+
+
+def extract_content_tags(text: str) -> list[str]:
+    """Extract hashtags from markdown content."""
+    # Pattern for #tag (hashtags)
+    tag_pattern = r'#([a-zA-Z][a-zA-Z0-9_-]*)'
+    matches = re.findall(tag_pattern, text)
+    return list(set(matches))  # Remove duplicates
+
+
+def create_chunk(document: Document, content: str, position: int) -> Chunk:
+    """Create a chunk from document and content."""
+    chunk_id = f"{document.id}_{position}"
+    
+    # Extract wikilinks from chunk content
+    outgoing_links = extract_wikilinks(content)
+    
+    # Extract tags from chunk content and combine with document tags
+    content_tags = extract_content_tags(content)
+    combined_tags = list(set(document.tags + content_tags))
+
+    return Chunk(
+        id=chunk_id,
+        content=content.strip(),
+        title=document.metadata.title,
+        description=document.metadata.description,
+        source=document.metadata.source,
+        outgoing_links=outgoing_links,
+        tags=combined_tags,
+        source_path=document.source_path,
+        modified_at=document.modified_at,
+        position=position
+    )
+
 logger = logging.getLogger("mcps")
-        # Default skip patterns
+        
 default_skip_patterns = [
             r'^\..*',
             r'node_modules/',
@@ -72,15 +117,11 @@ class MarkdownProcessor(IDocumentProcessor):
             description = self._metadata_as_str(post.metadata,'description'),
         )
 
-        # Extract wikilinks
-        outgoing_links = self._extract_wikilinks(post.content)
+        # Extract tags from frontmatter only
+        tags = self._extract_frontmatter_tags(post)
 
-        # Extract tags
-        tags = self._extract_tags(post)
-
-        # Get file stats
+        # Get file modification time
         stat = file_path.stat()
-        created_at = datetime.fromtimestamp(stat.st_ctime)
         modified_at = datetime.fromtimestamp(stat.st_mtime)
 
         # Generate document ID
@@ -90,10 +131,8 @@ class MarkdownProcessor(IDocumentProcessor):
             id=doc_id,
             content=post.content,
             metadata=metadata,
-            outgoing_links=outgoing_links,
             tags=tags,
             source_path=file_path.relative_to(self.base_path).as_posix(),
-            created_at=created_at,
             modified_at=modified_at
         )
 
@@ -101,29 +140,17 @@ class MarkdownProcessor(IDocumentProcessor):
         """Convert metadata dictionary value to a string representation."""
         return str(metadata.get(field, '')) if field in metadata else None
 
-    def _extract_wikilinks(self, content: str) -> list[str]:
-        """Extract wikilinks from markdown content."""
-        # Pattern for wikilinks: !?[[note name#heading|display text]]
-        # Captures only the note name portion (before # or |)
-        # Allows brackets inside link names but stops at # or |
-        wikilink_pattern = r'!?\[\[([^#|]*?)(?:[#|][^\]]*)?\]\]'
-        matches = re.findall(wikilink_pattern, content)
-        # Filter out empty matches but preserve trailing spaces for compatibility
-        filtered_matches = [match for match in matches if match.strip()]
-        return list(set(filtered_matches))  # Remove duplicates
 
-    def _extract_tags(self, content: frontmatter.Post) -> list[str]:
-        """Extract tags from markdown content."""
-        # Pattern for #tag (hashtags)
-        tag_pattern = r'#([a-zA-Z][a-zA-Z0-9_-]*)'
-        matches = re.findall(tag_pattern, content.content)
+    def _extract_frontmatter_tags(self, content: frontmatter.Post) -> list[str]:
+        """Extract tags from frontmatter only."""
         fm_tags = content.metadata.get('tags', [])
         # convert string or list of tags to a set to avoid duplicates
         if isinstance(fm_tags, str):
             fm_tags = [fm_tags]
         elif not isinstance(fm_tags, list):
             fm_tags = []
-        return list(set(matches + fm_tags))  # Remove duplicates
+        return list(set(fm_tags))  # Remove duplicates
+        
 
     def _generate_document_id(self, file_path: Path) -> str:
         """Generate a unique document ID."""
@@ -161,19 +188,8 @@ class FixedSizeChunker(IChunker):
             chunk_content = content[start:end].strip()
 
             if chunk_content:  # Only create non-empty chunks
-                chunk_id = f"{document.id}_{position}"
-
-                chunk = Chunk(
-                    id=chunk_id,
-                    content=chunk_content,
-                    metadata=document.metadata,
-                    outgoing_links=document.outgoing_links.copy(),
-                    tags=document.tags.copy(),
-                    source_path=document.source_path,
-                    created_at=document.created_at,
-                    modified_at=document.modified_at,
-                    position=position
-                )
+                # Use the create_chunk helper function to create chunk with appropriate tags and links
+                chunk = create_chunk(document, chunk_content, position)
 
                 yield chunk
                 position += 1
@@ -223,12 +239,12 @@ class SemanticChunker(IChunker):
                         sub_chunks = self._split_large_section(merged_content)
                         for sub_chunk in sub_chunks:
                             if len(sub_chunk.strip()) >= self.min_chunk_size:
-                                chunk = self._create_chunk(document, sub_chunk, position)
+                                chunk = create_chunk(document, sub_chunk, position)
                                 yield chunk
                                 position += 1
                                 chunk_count += 1
                     else:
-                        chunk = self._create_chunk(document, merged_content, position)
+                        chunk = create_chunk(document, merged_content, position)
                         yield chunk
                         position += 1
                         chunk_count += 1
@@ -242,12 +258,12 @@ class SemanticChunker(IChunker):
                     sub_chunks = self._split_large_section(current_section)
                     for sub_chunk in sub_chunks:
                         if len(sub_chunk.strip()) >= self.min_chunk_size:
-                            chunk = self._create_chunk(document, sub_chunk, position)
+                            chunk = create_chunk(document, sub_chunk, position)
                             yield chunk
                             position += 1
                             chunk_count += 1
                 else:
-                    chunk = self._create_chunk(document, current_section, position)
+                    chunk = create_chunk(document, current_section, position)
                     yield chunk
                     position += 1
                     chunk_count += 1
@@ -259,7 +275,7 @@ class SemanticChunker(IChunker):
     def _split_by_headers(self, content: str) -> list[str]:
         """Split content by markdown headers."""
         # Split by headers while keeping the header with the content
-        header_pattern = r'^(#{1,6}\s+.+)$'
+        header_pattern = r'^(#{1,2}\s+.+)$'
         lines = content.split('\n')
         sections = []
         current_section = []
@@ -301,18 +317,3 @@ class SemanticChunker(IChunker):
 
         return chunks
 
-    def _create_chunk(self, document: Document, content: str, position: int) -> Chunk:
-        """Create a chunk from document and content."""
-        chunk_id = f"{document.id}_{position}"
-
-        return Chunk(
-            id=chunk_id,
-            content=content.strip(),
-            metadata=document.metadata.copy(),
-            outgoing_links=document.outgoing_links.copy(),
-            tags=document.tags.copy(),
-            source_path=document.source_path,
-            created_at=document.created_at,
-            modified_at=document.modified_at,
-            position=position
-        )

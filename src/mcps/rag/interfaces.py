@@ -6,10 +6,19 @@ from abc import ABC, abstractmethod
 from collections.abc import Generator
 from dataclasses import dataclass
 from datetime import datetime
+from enum import Enum, auto
 from pathlib import Path
 from typing import Any, Annotated
 
 from pydantic import Field, ConfigDict, BaseModel
+
+
+class SearchScope(Enum):
+    """Enum for search scope options."""
+    CONTENT = auto()    # Search only in content
+    TITLE = auto()      # Search only in title
+    DESCRIPTION = auto() # Search only in description
+    ALL = auto()        # Search in all fields
 
 
 class Metadata(BaseModel):
@@ -26,10 +35,8 @@ class Document(BaseModel):
     id: str
     content: str
     metadata: Metadata
-    outgoing_links: list[str] = Field(default_factory=list)  # Wikilinks
-    tags: list[str] = Field(default_factory=list)
+    tags: list[str] = Field(default_factory=list)  # Tags from frontmatter only
     source_path: str  # file path relative to vault root
-    created_at: datetime
     modified_at: datetime
 
 
@@ -39,11 +46,12 @@ class Chunk(BaseModel):
     
     id: str
     content: str
-    metadata: Metadata
+    title: str | None
+    description: str | None
+    source: str | None = None
     outgoing_links: list[str] = Field(default_factory=list)  # Wikilinks
     tags: list[str] = Field(default_factory=list)
     source_path: str  # file path relative to vault root
-    created_at: datetime
     modified_at: datetime
     position: int
     
@@ -63,6 +71,11 @@ class SearchResult:
     chunk: Chunk
     score: float
 
+class NotInitializedError(RuntimeError):
+    """Exception raised when an operation is attempted on an uninitialized object."""
+    def __init__(self, message="Service has not been initialized. Please call initialize() first."):
+        self.message = message
+        super().__init__(self.message)
 
 class IDocumentProcessor(ABC):
     """Interface for document processing."""
@@ -106,12 +119,14 @@ class IVectorStore(ABC):
         pass
 
     @abstractmethod
-    async def search(self, query: str, where: None | str = None, limit: int = 5) -> list[Chunk]:
+    async def search(self, query: str, tags: list[str] = [], file_path: str | None = None, scope: SearchScope = SearchScope.ALL, limit: int = 5) -> list[Chunk]:
         """Search for chunks that contain text from query.
 
         Args:
             query (str): The search query text.
-            where (None | str, optional): Optional filter condition. Defaults to None.
+            tags (list[str], optional): List of tags to filter by (all must be present). Defaults to empty list.
+            file_path (str | None, optional): Substring of source_path to filter results. Defaults to None.
+            scope (SearchScope enum, optional): Where to search (CONTENT, TITLE, DESCRIPTION, or ALL). Defaults to ALL.
             limit (int, optional): Maximum number of results to return. Defaults to 5.
         """
         pass

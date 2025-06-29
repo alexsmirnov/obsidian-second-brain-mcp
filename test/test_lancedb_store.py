@@ -23,7 +23,7 @@ import pytest
 from dotenv import load_dotenv, find_dotenv
 
 from src.mcps.rag.database import LanceDBStore
-from src.mcps.rag.interfaces import Chunk, IVectorStore, Metadata
+from src.mcps.rag.interfaces import Chunk, IVectorStore, SearchScope
 from lancedb.embeddings import EmbeddingFunction, get_registry
 
 load_dotenv(find_dotenv())
@@ -47,60 +47,48 @@ def sample_chunks():
         Chunk(
             id="chunk_1",
             content="Machine learning is a subset of artificial intelligence that focuses on algorithms.",
-            metadata=Metadata(
-                source="AI Tutorial",
-                description="Machine learning basics",
-                title="ML Introduction",
-            ),
+            source="AI Tutorial",
+            description="Machine learning basics",
+            title="ML Introduction",
             outgoing_links=["artificial_intelligence"],
             tags=["machine-learning", "ai"],
             source_path="/test/doc1.md",
-            created_at=base_time,
             modified_at=base_time,
             position=0,
         ),
         Chunk(
             id="chunk_2", 
             content="Deep learning uses neural networks with multiple layers to process data.",
-            metadata=Metadata(
                 source="Deep Learning Guide",
                 description="Neural networks and deep learning",
                 title="Deep Learning Basics",
-            ),
             outgoing_links=["neural_networks"],
             tags=["deep-learning", "neural-networks"],
             source_path="/test/doc2.md",
-            created_at=base_time,
             modified_at=base_time,
             position=1,
         ),
         Chunk(
             id="chunk_3",
             content="Natural language processing enables computers to understand human language.",
-            metadata=Metadata(
                 source="NLP Handbook",
                 description="Natural language processing techniques",
                 title="NLP Overview",
-            ),
             outgoing_links=["language_models"],
             tags=["nlp", "language"],
             source_path="/test/doc3.md",
-            created_at=base_time,
             modified_at=base_time,
             position=0,
         ),
         Chunk(
             id="chunk_4",
             content="Python programming language is widely used for data science and machine learning.",
-            metadata=Metadata(
                 source="Python Guide",
                 description="Python programming for data science",
                 title="Python Basics",
-            ),
             outgoing_links=["python", "data_science"],
             tags=["python", "programming"],
             source_path="/test/doc4.md",
-            created_at=base_time,
             modified_at=base_time,
             position=0,
         )
@@ -150,7 +138,7 @@ def lancedb_store(temp_db_path,dummy_embedding_function) -> IVectorStore:
 async def lancedb_store_with_data(temp_db_path, dummy_embedding_function, sample_chunks):
     """Create a LanceDBStore instance with pre-loaded test data."""
     store = LanceDBStore(temp_db_path, dummy_embedding_function, "test_chunks")
-    await store.initialize(create_fts_index=False)  # Initialize without FTS first
+    await store.initialize()  # Initialize without FTS first
     
     # Store chunks with embeddings only
     await store.store(sample_chunks)
@@ -213,7 +201,7 @@ async def test_search(lancedb_store_with_data):
     # Search with where clause
     results = await lancedb_store_with_data.search(
         "machine learning", 
-        where="array_has(tags,'machine-learning')"
+        tags=['machine-learning']
     )
     for chunk in results:
         assert "machine-learning" in chunk.tags
@@ -274,16 +262,16 @@ async def test_search_with_filters(lancedb_store_with_data):
     # Search with source filter
     results = await lancedb_store_with_data.search(
         "learning", 
-        where="metadata.source = 'Deep Learning Guide'"
+        scope=SearchScope.TITLE,
     )
     
     for chunk in results:
-        assert chunk.metadata.source == "Deep Learning Guide"
+        assert chunk.source == "Deep Learning Guide"
     
     # Search with tag filter
     results = await lancedb_store_with_data.search(
         "neural", 
-        where="array_has(tags,'neural-networks')"
+        tags=['neural-networks']
     )
     
     for chunk in results:

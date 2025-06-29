@@ -391,19 +391,13 @@ Invalid tags: # (space after hash), #-invalid (starts with hyphen).
         
         # Verify metadata
         assert document.metadata.title == 'Test Document'
-        assert isinstance(document.created_at, datetime)
         assert isinstance(document.modified_at, datetime)
-        
-        # Verify wikilinks
-        expected_links = {'wikilink', 'another link', 'duplicate link'}
-        assert set(document.outgoing_links) == expected_links
         
         # Verify tags (frontmatter + hashtags)
         expected_tags = {'python', 'testing', 'hashtags', 'python-related', 'automation'}
         assert set(document.tags) == expected_tags
         
         # Verify timestamps
-        assert isinstance(document.created_at, datetime)
         assert isinstance(document.modified_at, datetime)
 
     async def test_process_simple_markdown_without_frontmatter(self, processor, temp_file, simple_markdown_content):
@@ -417,12 +411,9 @@ Invalid tags: # (space after hash), #-invalid (starts with hyphen).
         assert document.content.strip() == simple_markdown_content.strip()
         
         # Verify metadata (should only have timestamps)
-        assert isinstance(document.created_at, datetime)
         assert isinstance(document.modified_at, datetime)
         assert document.metadata.title is None
         
-        # Verify wikilinks
-        assert document.outgoing_links == ['simple link']
         
         # Verify tags
         expected_tags = {'simple', 'test'}
@@ -436,9 +427,7 @@ Invalid tags: # (space after hash), #-invalid (starts with hyphen).
         
         assert isinstance(document, Document)
         assert document.content == ""
-        assert document.outgoing_links == []
         assert document.tags == []
-        assert isinstance(document.created_at, datetime)
         assert isinstance(document.modified_at, datetime)
 
     async def test_extract_wikilinks_various_patterns(self, processor, markdown_with_complex_wikilinks):
@@ -469,13 +458,8 @@ Invalid tags: # (space after hash), #-invalid (starts with hyphen).
         links = processor._extract_wikilinks("")
         assert links == []
 
-    async def test_extract_wikilinks_no_links(self, processor):
-        """Test wikilink extraction from content without links."""
-        content = "This is regular markdown content without any wikilinks."
-        links = processor._extract_wikilinks(content)
-        assert links == []
 
-    async def test_extract_tags_from_frontmatter_and_content(self, processor, markdown_with_various_tags):
+    async def test_extract_tags_from_frontmatter(self, processor, markdown_with_various_tags):
         """Test tag extraction from both frontmatter and content."""
         # Parse the content using frontmatter
         post = frontmatter.loads(markdown_with_various_tags)
@@ -588,7 +572,6 @@ Content with émojis and spëcial characters.
         document = await processor.process(temp_file)
         
         assert document.metadata.title == 'Тест'
-        assert '链接' in document.outgoing_links
 
     async def test_process_file_io_error(self, processor):
         """Test handling of file I/O errors."""
@@ -659,7 +642,6 @@ title: Large Document
         
         assert isinstance(document, Document)
         assert document.metadata.title == 'Large Document'
-        assert len(document.outgoing_links) == 100  # link0 to link99
         assert len(document.tags) == 100  # tag0 to tag99
 
     async def test_process_preserves_file_timestamps(self, processor, temp_file):
@@ -674,7 +656,6 @@ title: Large Document
         document = await processor.process(temp_file)
         
         # Timestamps should match (within a small tolerance for precision)
-        assert abs((document.created_at - original_ctime).total_seconds()) < 1
         assert abs((document.modified_at - original_mtime).total_seconds()) < 1
 
     async def test_process_excludes_tags_from_metadata(self, processor, temp_file):

@@ -2,20 +2,20 @@
 Vector database implementations for the RAG search system.
 """
 
-import asyncio
 import json
 import logging
-import pickle
 from pathlib import Path
-from typing import Optional, Any
+from typing import Any
 
+import lancedb
 from lancedb import AsyncConnection, AsyncTable
 from lancedb.embeddings import EmbeddingFunction
 from lancedb.pydantic import pydantic_to_schema
-from lancedb.index import FTS
+from lancedb.index import FTS, IvfPq, LabelList
+from lancedb.rerankers import RRFReranker, VoyageAIReranker
 import pyarrow as pa
 
-from .interfaces import Chunk, IVectorStore
+from .interfaces import Chunk, IVectorStore, NotInitializedError, SearchScope
 
 logger = logging.getLogger("mcps")
 
@@ -35,32 +35,25 @@ class LanceDBStore(IVectorStore):
         store = LanceDBStore(Path("./db"), "chunks")
         await store.initialize(create_fts_index=True)
         
-        # Text search
-        results = await store.search_text("machine learning", limit=10)
-        
         # Hybrid search
-        results = await store.hybrid_search("deep learning", top_k=5)
+        results = await store.search("deep learning")
     """
     
-    def __init__(self, db_path: Path, embedding_function: EmbeddingFunction, table_name: str = "chunks"):
+    def __init__(self, db_path: Path, embedding_function: EmbeddingFunction, table_name: str = "chunks", reranker = RRFReranker()):
         self.db_path = db_path
         self.table_name = table_name
+        self.reranker = reranker
         self.db: None | AsyncConnection = None
         self.table: AsyncTable | None = None
         self.embedding_function: EmbeddingFunction = embedding_function
         self._initialized = False
 
     
-    async def initialize(self, create_fts_index: bool = True) -> None:
+    async def initialize(self) -> None:
         """
         Initialize the LanceDB vector store.
-        
-        Args:
-            create_fts_index: Whether to automatically create FTS index on 'content' column
         """
         try:
-            import lancedb
-            
             logger.info(f"Initializing LanceDB at {self.db_path}")
             
             # Create database directory if it doesn't exist
@@ -79,21 +72,26 @@ class LanceDBStore(IVectorStore):
                 schema = schema.append(pa.field("embeddings", pa.list_(pa.float16(), self.embedding_function.ndims())))
                 self.table = await self.db.create_table(self.table_name, schema=schema)
                 logger.info(f"Created new table: {self.table_name}")
-            
-            # Create FTS index if requested
-            if create_fts_index:
+                # Create indexes
                 try:
                     await self.create_fts_index()
+                    await self.create_fts_index('title')
+                    await self.create_fts_index('description')
+                    await self.table.create_index(
+                        column="embeddings",
+                        config=IvfPq(
+                            ),  # Number of sub-vectors
+                    )
+                    await self.table.create_index(
+                        column="tags",
+                        config=LabelList()
+                    )
                 except Exception as e:
                     logger.warning(f"Failed to create FTS index during initialization: {e}")
-                    logger.warning("FTS functionality will not be available")
             
             self._initialized = True
             logger.info("LanceDB initialized successfully")
             
-        except ImportError:
-            logger.error("lancedb not installed. Install with: pip install lancedb")
-            raise
         except Exception as e:
             logger.error(f"Failed to initialize LanceDB: {e}")
             raise
@@ -101,7 +99,7 @@ class LanceDBStore(IVectorStore):
     async def store(self, chunks: list[Chunk]) -> None:
         """Store chunks with their embeddings."""
         if not self._initialized:
-            await self.initialize()
+            raise NotInitializedError("LanceDBStore is not initialized. Call await store.initialize() first.")
         
         if not chunks:
             return
@@ -123,39 +121,76 @@ class LanceDBStore(IVectorStore):
             chunk_dict['embeddings'] = self.embedding_function.compute_query_embeddings(chunk.content)[0]
         return chunk_dict
 
-    async def search(self, query: str, where: None | str = None, limit: int = 5) -> list[Chunk]:
-        """Search for similar chunks."""
+    async def search(self, query: str, tags: list[str] = [], file_path: str | None = None, scope: SearchScope = SearchScope.ALL, limit: int = 5) -> list[Chunk]:
+        """Search for chunks that match query and filters.
+        
+        Args:
+            query (str): The search query text.
+            tags (list[str], optional): List of tags to filter by (all must be present). Defaults to None.
+            file_path (str | None, optional): Substring of source_path to filter results. Defaults to None.
+            scope (ScopeEnum, optional): Where to search (CONTENT, TITLE, DESCRIPTION, or ALL). Defaults to ScopeEnum.ALL.
+            limit (int, optional): Maximum number of results to return. Defaults to 5.
+        """
         if not self._initialized:
-            await self.initialize()
-        # Vector similarity search using embeddings
+            raise NotInitializedError("LanceDBStore is not initialized. Call await store.initialize() first.")
+            
         # Calculate embedding for the query
         query_embedding = self.embedding_function.compute_query_embeddings(query)[0]
-        # Perform the search
+        
+    # Apply scope filter
+        if scope == SearchScope.CONTENT:
+            columns = ["content"]
+        elif scope == SearchScope.TITLE:
+            columns = ["title"]
+        elif scope == SearchScope.DESCRIPTION:
+            columns = ["description"]
+        else:
+            columns = ["content", "title", "description"]
+        # Start the search query
         try:
-            result = await self.table.search(
-                query_embedding
-            )
-            if where:
-                result = result.where(where)
-            results = await result.limit(limit).to_list()
-            # Convert results to Chunk objects
+            query_builder = self.table.query()
+
+            query_builder = query_builder.nearest_to(query_embedding).column("embeddings") # .distance_range()
+            query_builder = query_builder.nearest_to_text(query, columns = columns)
+            
+            # Apply filters based on parameters
+            # Filter by tags if provided
+            if tags:
+                query_builder = query_builder.where(f"array_has_all(tags, {json.dumps(tags)})")
+            
+            # Filter by file path if provided
+            if file_path:
+                query_builder = query_builder.where(f"source_path LIKE '%{file_path}%'")
+            
+            query_builder = query_builder.rerank(self.reranker)
+            # Go!
+            results = await query_builder.limit(limit).to_list()
             return [Chunk.model_validate(result) for result in results]
         
         except Exception as e:
             logger.error(f"Failed to search chunks in LanceDB: {e}")
             raise
-        return []
+        
     
     async def delete(self, chunk_ids: list[str]) -> None:
         """Delete chunks by their IDs."""
         if not self._initialized:
-            await self.initialize()
+            raise NotInitializedError("LanceDBStore is not initialized. Call await store.initialize() first.")
         
         try:
             await self.table.delete(f"id IN ({', '.join(map(lambda x: f'\"{x}\"', chunk_ids))})")
             
             logger.info(f"Deleted {len(chunk_ids)} chunks from LanceDB")
-            
+            # List all indices to check if FTS index exists
+            indices = await self.table.list_indices()
+            logger.warning([idx for idx in indices])
+
+            # Check specific index statistics
+            # fts_index_stats = await self.table.index_stats("your_text_column_idx")
+            # if fts_index_stats is None:
+            #     print("FTS index does not exist")
+            # else:
+            #     print(f"Index stats: {fts_index_stats}")
         except Exception as e:
             logger.error(f"Failed to delete chunks from LanceDB: {e}")
             raise

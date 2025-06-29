@@ -153,3 +153,25 @@ Full dependencies tree:
 │   └── pluggy v1.6.0
 └── pytest-asyncio v0.25.3 (group: dev)
     └── pytest v8.3.4 (*)
+## High Priority Tasks
+
+  1. Implement Ollama Embeddings Service
+    - Add OllamaEmbedding class in embeddings.py
+    - Support configurable models via OLLAMA_BASE_URL
+  2. Complete Hybrid Search Implementation
+    - Implement keyword search in HybridSearchEngine
+    - Integrate BM25 algorithm using rank-bm25 library
+    - Combine vector and keyword search results
+  3. Implement Information Update Process
+    - Create file change detection system
+    - Track file modification times
+    - Implement efficient database updates
+
+  ## Medium Priority Tasks
+
+  4. Implement Query Rewriting
+    - Add preprocessing step to improve search queries
+    - Support query expansion and reformulation
+  5. Enhance Search Results Reranking
+    - Implement re-ranking algorithm for better relevance
+    - Add configurable result size limits
