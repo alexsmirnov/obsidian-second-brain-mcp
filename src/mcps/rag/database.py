@@ -5,6 +5,7 @@ Vector database implementations for the RAG search system.
 from datetime import timedelta
 import json
 import logging
+from math import log
 from pathlib import Path
 import time
 from typing import Any
@@ -169,10 +170,13 @@ class LanceDBStore(IVectorStore):
         
         try:
 
-            in_list = ','.join([f"'p'" for p in source_paths])
-            result = await self.table.delete(f"id IN ({in_list})")
+            in_list = ','.join([f"'{p}'" for p in source_paths])
+            delete_clause = f"id IN ({in_list})"
+            logger.warning(f"Deleting chunks with source paths: {source_paths} using clause: {delete_clause}")
+            result = await self.table.delete(delete_clause)
             
             logger.warning(f"Deleted {len(source_paths)} chunks from LanceDB with {result}")
+            # await self.table.optimize(retrain=True)  # Commit the changes
             # List all indices to check if FTS index exists
             indices = await self.table.list_indices()
             logger.warning([f"index {idx.name}," for idx in indices])
