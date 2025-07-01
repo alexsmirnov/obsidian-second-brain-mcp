@@ -26,11 +26,5 @@
         }
     },
     "python.experiments.enabled": false,
-    "python.analysis.typeEvaluation.deprecateTypingAliases": true,
-    "python.analysis.typeCheckingMode": "basic",
-    "python.analysis.diagnosticSeverityOverrides": {
-       "reportAttributeAccessIssue": "information",
-       "reportOptionalMemberAccess": "information"
-    },
     "python.analysis.diagnosticsSource": "Pyright"
 }

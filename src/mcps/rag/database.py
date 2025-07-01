@@ -2,23 +2,23 @@
 Vector database implementations for the RAG search system.
 """
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 import json
 import logging
 from math import log
 from pathlib import Path
 import time
-from typing import Any
+from typing import Any, Dict
 
 import lancedb
 from lancedb import AsyncConnection, AsyncTable
 from lancedb.embeddings import EmbeddingFunction
 from lancedb.pydantic import pydantic_to_schema
 from lancedb.index import FTS, IvfPq, LabelList
-from lancedb.rerankers import RRFReranker, VoyageAIReranker
+from lancedb.rerankers import RRFReranker, VoyageAIReranker, Reranker
 import pyarrow as pa
 
-from .interfaces import Chunk, IVectorStore, NotInitializedError, SearchScope
+from .interfaces import Chunk, IVectorStore, NotInitializedError, SearchScope, SourceUpdates
 
 logger = logging.getLogger("mcps")
 
@@ -42,7 +42,7 @@ class LanceDBStore(IVectorStore):
         results = await store.search("deep learning")
     """
     
-    def __init__(self, db_path: Path, embedding_function: EmbeddingFunction, table_name: str = "chunks", reranker = RRFReranker()):
+    def __init__(self, db_path: Path, embedding_function: EmbeddingFunction, table_name: str = "chunks", reranker: Reranker = RRFReranker(return_score='all')):
         self.db_path = db_path
         self.table_name = table_name
         self.reranker = reranker
@@ -76,7 +76,7 @@ class LanceDBStore(IVectorStore):
                 self.table = await self.db.create_table(self.table_name, schema=schema )
                 logger.info(f"Created new table: {self.table_name}")
                 # Create indexes
-                await self._reindex()
+                await self.reindex()
             
             self._initialized = True
             logger.info("LanceDB initialized successfully")
@@ -98,7 +98,6 @@ class LanceDBStore(IVectorStore):
             
             if processed_chunks:
                 await self.table.add(processed_chunks)
-            
         except Exception as e:
             logger.error(f"Failed to store chunks in LanceDB: {e}")
             raise
@@ -139,7 +138,7 @@ class LanceDBStore(IVectorStore):
         try:
             query_builder = self.table.query()
 
-            query_builder = query_builder.nearest_to(query_embedding).column("embeddings") # .distance_range()
+            query_builder = query_builder.nearest_to(query_embedding).column("embeddings").distance_range(upper_bound=1000.0)
             query_builder = query_builder.nearest_to_text(query, columns = columns)
             
             # Apply filters based on parameters
@@ -171,25 +170,18 @@ class LanceDBStore(IVectorStore):
         try:
 
             in_list = ','.join([f"'{p}'" for p in source_paths])
-            delete_clause = f"id IN ({in_list})"
-            logger.warning(f"Deleting chunks with source paths: {source_paths} using clause: {delete_clause}")
+            delete_clause = f"source_path IN ({in_list})"
+            logger.info(f"Deleting chunks with source paths: {source_paths} using clause: {delete_clause}")
             result = await self.table.delete(delete_clause)
             
-            logger.warning(f"Deleted {len(source_paths)} chunks from LanceDB with {result}")
-            # await self.table.optimize(retrain=True)  # Commit the changes
-            # List all indices to check if FTS index exists
-            indices = await self.table.list_indices()
-            logger.warning([f"index {idx.name}," for idx in indices])
-
-            await self._reindex(replace=True)  # Recreate indexes after deletion
+            logger.info(f"Deleted {len(source_paths)} paths from LanceDB")
 
         except Exception as e:
             logger.error(f"Failed to delete chunks from LanceDB: {e}")
             raise
     
-    async def _reindex(
+    async def reindex(
         self,
-        replace: bool = True
     ) -> None:
         """
         Create database indexes
@@ -205,6 +197,7 @@ class LanceDBStore(IVectorStore):
             await store.create_fts_index()
             
         """
+        replace: bool = True
         wait_time=timedelta(seconds=5)
         for column in ["content", "title", "description"]: 
             try:
@@ -237,5 +230,21 @@ class LanceDBStore(IVectorStore):
             logger.error(f"Failed to create list index for tags: {e}")
             raise
         indices = await self.table.list_indices()
-        logger.warning([f"index {idx}," for idx in indices])
+        logger.info([f"index {idx}," for idx in indices])
     
+    async def sources(self) -> Dict[str, datetime]:
+        """Get last updates to source documents (by minimal modification time per source_path) using pyarrow Table.group_by and aggregate."""
+        if not self._initialized:
+            raise NotInitializedError("LanceDBStore is not initialized. Call await store.initialize() first.")
+        try:
+            # Fetch only the required columns as a pyarrow Table
+            arrow_table = await self.table.query().select(["source_path", "modified_at"]).to_arrow()
+            if arrow_table.num_rows == 0:
+                return {}
+            # Use pyarrow group_by and aggregate to get minimal modified_at per source_path
+            grouped = arrow_table.group_by(["source_path"]).aggregate([("modified_at", "min")])
+            # grouped is a pyarrow Table with columns: source_path, modified_at_min
+            return {grouped["source_path"][i].as_py() : grouped["modified_at_min"][i].as_py() for i in range(grouped.num_rows)}
+        except Exception as e:
+            logger.error(f"Failed to fetch source updates from LanceDB: {e}")
+            raise

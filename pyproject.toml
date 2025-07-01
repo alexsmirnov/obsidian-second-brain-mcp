@@ -9,12 +9,13 @@ authors = [
 requires-python = ">=3.12"
 dependencies = [
     "fastmcp>=2.8.1",
-    "lancedb>=0.4.0",
+    "lancedb>0.23.0",
     "markdown>=3.4.0",
     "rank_bm25",
     "python-dotenv>=1.0.0",
     "python-frontmatter>=1.1.0",
     "ollama>=0.5.1",
+    "voyageai>=0.3.2",
 ]
 [tool.uv]
 package = true
@@ -94,6 +95,8 @@ project_excludes = [
 import-error = true
 
 [tool.pytest.ini_options]
+log_cli = true
+log_cli_level = "INFO"
 testpaths = ["test"]
 pythonpath = ["src/mcps","test"]
 asyncio_mode = "auto"

@@ -7,8 +7,9 @@ from collections.abc import Generator
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum, auto
+from os import path
 from pathlib import Path
-from typing import Any, Annotated
+from typing import Any, Annotated, Dict, List
 
 from pydantic import Field, ConfigDict, BaseModel
 
@@ -55,14 +56,18 @@ class Chunk(BaseModel):
     modified_at: datetime
     position: int
     
+class SourceUpdates(BaseModel):
+    """Represents last  updates to a source document."""
+    source_path: str
+    modified_at: datetime
 
 @dataclass
 class SearchQuery:
     """Represents a search query."""
     text: str
-    filters: dict[str, Any] | None = None
-    top_k: int = 5
-    similarity_threshold: float = 0.7
+    tags : list[str]
+    scope: SearchScope = SearchScope.ALL
+    path: str | None = None 
 
 
 @dataclass
@@ -132,16 +137,26 @@ class IVectorStore(ABC):
         pass
 
     @abstractmethod
-    async def delete(self, chunk_ids: list[str]) -> None:
-        """Delete chunks by their IDs."""
+    async def delete(self, source_paths: list[str]) -> None:
+        """Delete chunks by their `source_path`s."""
+        pass
+    
+    @abstractmethod
+    async def reindex(self) -> None:
+        """Recreate indexes for the vector store.
+        due to LanceDB implementation, inexes have to be recreated after any data modification."""
         pass
 
+    @abstractmethod
+    async def sources(self) -> Dict[str,datetime]:
+        """Get last updates to source documents."""
+        pass
 
 class ISearchEngine(ABC):
     """Interface for search operations."""
 
     @abstractmethod
-    async def search(self, query: SearchQuery) -> list[SearchResult]:
+    async def search(self, query: SearchQuery) -> list[Chunk]:
         """Perform a search operation."""
         pass
 
@@ -150,7 +165,7 @@ class IResultFormatter(ABC):
     """Interface for formatting search results."""
 
     @abstractmethod
-    async def format(self, results: list[SearchResult], query: SearchQuery) -> str:
+    async def format(self, results: list[Chunk], query: SearchQuery) -> str:
         """Format search results for display."""
         pass
 
@@ -161,4 +176,48 @@ class IFileTraversal(ABC):
     @abstractmethod
     def find_files(self ) -> Generator[Path]:
         """Find files to process in vault."""
+        pass
+
+
+class IVault(ABC):
+    """Interface for managing vault operations.
+    supports operations to search information from , read whole file by name or partial path,
+    get directory content """
+
+    @abstractmethod
+    async def initialize(self) -> None:
+        """Initialize the vault manager."""
+        pass
+
+    @abstractmethod
+    async def update_index(self) -> None:
+        """Update the index of the vault.
+        The method gets the list of files in the vault and saved in the storage.
+        it deletes all chunks for source_paths that are not in the vault anymore or were modified,
+        and adds new chunks for files that were added or modified.
+        This should be called before any search operation, if there were more than 1 minute after the last search."""
+        pass
+
+    @abstractmethod
+    async def search(self, query: str) -> str:
+        """search files in vault by query. Return formatted string with results."""
+        pass
+
+    @abstractmethod
+    async def get_file(self, file_name: str) -> str:
+        """get file content by its name without extension or partial path.
+        If multiple files match, return the first one found."""
+        pass
+
+    @abstractmethod
+    async def list_files(self, directory: str) -> list[str] :
+        """List all files in a directory.
+        
+        Args:
+            directory (str): Directory path relative to vault root.
+        
+        Returns:
+            list[str]: List of file names without .md extension in the directory,
+            plus directory names ended with `/`.
+        """
         pass
