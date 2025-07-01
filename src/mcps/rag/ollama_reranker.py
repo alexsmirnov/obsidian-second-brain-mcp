@@ -3,7 +3,17 @@ import pyarrow as pa
 import ollama
 from typing import List, Optional, Union
 import numpy as np
-from sklearn.metrics.pairwise import cosine_similarity
+
+def cosine_similarity(a, b):
+    # Calculate dot product
+    dot_product = sum(x * y for x, y in zip(a, b))
+    # Calculate magnitudes
+    magnitude_a = sum(x ** 2 for x in a) ** 0.5
+    magnitude_b = sum(y ** 2 for y in b) ** 0.5
+    if magnitude_a == 0 or magnitude_b == 0:
+        return 0  # Avoid division by zero
+    return dot_product / (magnitude_a * magnitude_b)
+
 
 class OllamaReranker(Reranker):
     def __init__(
@@ -12,7 +22,7 @@ class OllamaReranker(Reranker):
         ollama_base_url: str = "http://localhost:11434",
         method: str = "llm_scoring",  # or "embedding_similarity"
         embedding_model: str = "mxbai-embed-large",
-        return_score: str = "relevance"
+        return_score: str = "_relevance_score"
     ):
         """
         Initialize Ollama-based reranker
@@ -52,14 +62,18 @@ class OllamaReranker(Reranker):
         for doc in documents:
             prompt = f"""
 Given the query and document below, rate how relevant the document is to answering the query.
-Provide a relevance score between 0.0 and 1.0, where 1.0 means highly relevant and 0.0 means not relevant.
-Only respond with the numerical score.
+Output a single word: 
+PERFECT if they are relevant
+GOOD if they are close but not exact, like both about programming but different languages or libraries
+SOME if they are relevant in broad sense, like both about programming but one about coding practices and another about algorithms
+BAD if there is only little similarity, like one about programming and another about job interviews
+NONE if document unrelevant to question, like one about astronomy and another about cooking recipes.
 
 Query: {query}
 
 Document: {doc}
 
-Relevance Score:"""
+Relevance:"""
             
             try:
                 response = self.client.generate(
@@ -73,12 +87,16 @@ Relevance Score:"""
                 )
                 
                 score_text = response.response.strip()
-                try:
-                    # Extract numerical score from response
-                    score = float(''.join(filter(lambda x: x.isdigit() or x == '.', score_text)))
-                    scores.append(min(max(score, 0.0), 1.0))  # Clamp between 0 and 1
-                except ValueError:
-                    scores.append(0.0)  # Default score if parsing fails
+                if  "perfect" in score_text.lower():
+                    scores.append(1.0)
+                elif  "good" in score_text.lower():
+                    scores.append(0.75)
+                elif  "some" in score_text.lower():
+                    scores.append(0.5)
+                elif  "bad" in score_text.lower():
+                    scores.append(0.25)
+                else:
+                    scores.append(0.0)  # Default score
             except Exception:
                 scores.append(0.0)
                 

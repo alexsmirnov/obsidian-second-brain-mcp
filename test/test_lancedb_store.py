@@ -315,7 +315,7 @@ def make_chunk(source_path, modified_at, idx=0):
 async def test_sources_empty(lancedb_store):
     await lancedb_store.initialize()
     updates = await lancedb_store.sources()
-    assert updates == []
+    assert updates == {}
 
 @pytest.mark.asyncio
 async def test_sources_unique_and_min_time(lancedb_store):
@@ -334,8 +334,7 @@ async def test_sources_unique_and_min_time(lancedb_store):
     await lancedb_store.reindex()
     updates = await lancedb_store.sources()
     # Should return one update per unique source_path, with minimal modified_at
-    update_dict = {u.source_path: u.modified_at for u in updates}
-    assert update_dict["/file1.md"] == base_time - timedelta(days=2)
-    assert update_dict["/file2.md"] == base_time - timedelta(days=3)
-    assert update_dict["/file3.md"] == base_time - timedelta(days=5)
-    assert len(update_dict) == 3
+    assert updates["/file1.md"] == base_time - timedelta(days=2)
+    assert updates["/file2.md"] == base_time - timedelta(days=3)
+    assert updates["/file3.md"] == base_time - timedelta(days=5)
+    assert len(updates) == 3

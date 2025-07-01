@@ -27,6 +27,13 @@ logger = logging.getLogger(__name__)
 load_dotenv(find_dotenv())
 load_dotenv(find_dotenv(usecwd=True))
 
+def _tc(query: str, expected_words: List[str], unwanted_words: List[str]) -> Dict[str, Any]:
+    
+    return {
+        "query": query,
+        "expected_words": expected_words,
+        "unwanted_words": unwanted_words
+    }
 
 class VaultEvaluationTest:
     """
@@ -57,36 +64,31 @@ class VaultEvaluationTest:
             List of test case dictionaries with query, expected_words, and unwanted_words
         """
         return [
-            {
-                "name": "Python AI Libraries Query",
-                "query": "Python artificial intelligence machine learning libraries",
-                "expected_words": ["python", "AI", "artificial intelligence", "machine learning", "library", "libraries", "scikit", "tensorflow", "pytorch"],
-                "unwanted_words": ["Java", "Salesforce", "camping", "3D printing", "quantum computing"]
-            },
-            {
-                "name": "Salesforce Work Query", 
-                "query": "Salesforce work project development",
-                "expected_words": ["Salesforce", "work", "project", "development", "CRM", "apex", "lightning", "workflow"],
-                "unwanted_words": ["personal", "hobby", "camping", "family", "vacation", "entertainment"]
-            },
-            {
-                "name": "Machine Learning Query",
-                "query": "machine learning deep learning neural networks LLM",
-                "expected_words": ["machine learning", "deep learning", "neural network", "LLM", "model", "training", "algorithm", "embedding"],
-                "unwanted_words": ["camping", "3D printing", "cooking", "travel", "music", "sports"]
-            },
-            {
-                "name": "JavaScript Frameworks Query",
-                "query": "JavaScript React Vue Angular frontend framework",
-                "expected_words": ["JavaScript", "React", "Vue", "Angular", "frontend", "framework", "component", "DOM"],
-                "unwanted_words": ["Python", "quantum", "biology", "chemistry", "physics", "geology"]
-            },
-            {
-                "name": "Project Management Query",
-                "query": "project management kanban agile scrum methodology",
-                "expected_words": ["project", "management", "kanban", "agile", "scrum", "methodology", "workflow", "planning"],
-                "unwanted_words": ["learning", "archive", "personal notes", "diary", "journal", "memories"]
-            }
+            _tc(
+                "Python artificial intelligence machine learning libraries",
+                ["python", "AI", "artificial intelligence", "machine learning", "library", "libraries", "scikit", "tensorflow", "pytorch"],
+                ["Java", "Salesforce", "camping", "3D printing", "quantum computing"]
+            ),
+            _tc(
+                "Salesforce work project development",
+                ["Salesforce", "work", "project", "development", "CRM", "apex", "lightning", "workflow"],
+                ["personal", "hobby", "camping", "family", "vacation", "entertainment"]
+            ),
+            _tc(
+                "machine learning deep learning neural networks LLM",
+                ["machine learning", "deep learning", "neural network", "LLM", "model", "training", "algorithm", "embedding"],
+                ["camping", "3D printing", "cooking", "travel", "music", "sports"]
+            ),
+            _tc(
+                "JavaScript React Vue Angular frontend framework",
+                ["JavaScript", "React", "Vue", "Angular", "frontend", "framework", "component", "DOM"],
+                ["Python", "quantum", "biology", "chemistry", "physics", "geology"]
+            ),
+            _tc(
+                "project management kanban agile scrum methodology",
+                ["project", "management", "kanban", "agile", "scrum", "methodology", "workflow", "planning"],
+                ["learning", "archive", "personal notes", "diary", "journal", "memories"]
+            )
         ]
     
     async def setup_vault(self) -> None:
@@ -197,12 +199,11 @@ class VaultEvaluationTest:
             Dictionary with test results and metrics
         """
         try:
-            logger.info(f"Running test case: {test_case['name']}")
             logger.info(f"Query: {test_case['query']}")
             
             # Perform search
             search_results = await self.vault.search(test_case['query'])
-            
+            logger.info(f"Search results: {search_results[:1000]}...")
             # Calculate metrics
             precision = self.calculate_precision(search_results, test_case['expected_words'])
             recall = self.calculate_recall(search_results, test_case['unwanted_words'])
@@ -217,7 +218,6 @@ class VaultEvaluationTest:
             logger.info(f"F-score: {f_score:.3f}")
             
             return {
-                'name': test_case['name'],
                 'query': test_case['query'],
                 'search_results': search_results,
                 'expected_words': test_case['expected_words'],
@@ -229,9 +229,8 @@ class VaultEvaluationTest:
             }
             
         except Exception as e:
-            logger.error(f"Test case '{test_case['name']}' failed: {e}")
+            logger.error(f"Test case '{test_case['query']}' failed: {e}")
             return {
-                'name': test_case['name'],
                 'query': test_case['query'],
                 'error': str(e),
                 'precision': 0.0,
@@ -290,14 +289,14 @@ class VaultEvaluationTest:
         logger.info(f"\nDetailed Results:")
         for result in results:
             status = "✓" if result['success'] else "✗"
-            logger.info(f"{status} {result['name']}: F-score = {result['f_score']:.3f}")
+            logger.info(f"{status} {result['query']}: F-score = {result['f_score']:.3f}")
             if not result['success']:
                 logger.info(f"  Error: {result.get('error', 'Unknown error')}")
         
         if failed_tests:
             logger.info(f"\nFailed Tests:")
             for result in failed_tests:
-                logger.info(f"- {result['name']}: {result.get('error', 'Unknown error')}")
+                logger.info(f"- {result['query']}: {result.get('error', 'Unknown error')}")
     
     async def cleanup(self) -> None:
         """Clean up vault resources."""
@@ -394,7 +393,7 @@ async def test_individual_test_cases(vault_evaluator):
     """
     for i, test_case in enumerate(vault_evaluator.test_cases):
         logger.info(f"\n{'='*60}")
-        logger.info(f"INDIVIDUAL TEST {i+1}: {test_case['name']}")
+        logger.info(f"INDIVIDUAL TEST {i+1}: {test_case['query']}")
         logger.info(f"{'='*60}")
         
         result = await vault_evaluator.run_single_test(test_case)
@@ -407,11 +406,11 @@ async def test_individual_test_cases(vault_evaluator):
         # Log individual test assessment
         if result['success']:
             if result['f_score'] >= 0.5:
-                logger.info(f"✓ PASS: {test_case['name']} (F-score: {result['f_score']:.3f})")
+                logger.info(f"✓ PASS: {test_case['query']} (F-score: {result['f_score']:.3f})")
             else:
-                logger.info(f"⚠ WEAK: {test_case['name']} (F-score: {result['f_score']:.3f})")
+                logger.info(f"⚠ WEAK: {test_case['query']} (F-score: {result['f_score']:.3f})")
         else:
-            logger.info(f"✗ FAIL: {test_case['name']} - {result.get('error', 'Unknown error')}")
+            logger.info(f"✗ FAIL: {test_case['query']} - {result.get('error', 'Unknown error')}")
 
 
 if __name__ == "__main__":

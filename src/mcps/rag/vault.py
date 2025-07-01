@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 import numpy as np
-from lancedb.embeddings import EmbeddingFunction
+from lancedb.embeddings import EmbeddingFunction, OllamaEmbeddings
 from lancedb.rerankers import RRFReranker
 
 from .database import LanceDBStore
@@ -74,7 +74,7 @@ class Vault(IVault):
         db_table_name: str = "documents",
         max_content_length: int = 2000,
         include_metadata: bool = True,
-        batch_size: int = 4,
+        batch_size: int = 8,
     ):
         """
         Initialize the Vault with the specified configuration.
@@ -120,7 +120,8 @@ class Vault(IVault):
             # Create LanceDB-compatible embedding function
             ollama_base_url = os.getenv("OLLAMA_API_BASE")
             if ollama_base_url:
-                self.embedding_function = get_registry().get("ollama").create(name="bge-m3", host=ollama_base_url)
+                self.embedding_function = get_registry().get("ollama").create(name="bge-m3:latest", host=ollama_base_url)
+                # self.embedding_function = get_registry().get("ollama").create(name="hf.co/nomic-ai/nomic-embed-text-v2-moe-GGUF:Q6_K", host=ollama_base_url)
             
             if os.environ.get("VOYAGE_API_KEY") :
                 from lancedb.rerankers import VoyageAIReranker

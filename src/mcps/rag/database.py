@@ -138,7 +138,7 @@ class LanceDBStore(IVectorStore):
         try:
             query_builder = self.table.query()
 
-            query_builder = query_builder.nearest_to(query_embedding).column("embeddings").distance_range(upper_bound=1000.0)
+            query_builder = query_builder.nearest_to(query_embedding).column("embeddings") # .distance_range(upper_bound=1000.0)
             query_builder = query_builder.nearest_to_text(query, columns = columns)
             
             # Apply filters based on parameters
