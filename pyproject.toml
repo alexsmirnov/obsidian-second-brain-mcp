@@ -97,7 +97,9 @@ import-error = true
 [tool.pytest.ini_options]
 log_cli = true
 log_cli_level = "INFO"
-testpaths = ["test"]
-pythonpath = ["src/mcps","test"]
+addopts = ["--import-mode=importlib"] 
+pythonpath = ["src"] # Add the src directory to Python's search path
+testpaths = ["test"]  # Specify the directory where your tests are located
+# pythonpath = ["src/mcps","test"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"

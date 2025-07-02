@@ -24,8 +24,8 @@ import numpy as np
 import pytest
 from dotenv import load_dotenv, find_dotenv
 
-from src.mcps.rag.database import LanceDBStore
-from src.mcps.rag.interfaces import Chunk, IVectorStore, SearchScope
+from mcps.rag.database import LanceDBStore
+from mcps.rag.interfaces import Chunk, IVectorStore, SearchScope
 from lancedb.embeddings import EmbeddingFunction, get_registry
 
 load_dotenv(find_dotenv())
