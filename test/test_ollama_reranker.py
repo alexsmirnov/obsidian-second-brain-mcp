@@ -45,9 +45,9 @@ class TestOllamaRerankerHybrid:
     @pytest.fixture
     def sample_vector_results(self):
         """Create sample vector search results"""
-        return pa.table({
+        return pa.Table.from_pydict({
             '_rowid': [1,2,3],
-            'text': ['Vector result 1', 'Vector result 2', 'Vector result 3'],
+            'content': ['Vector result 1', 'Vector result 2', 'Vector result 3'],
             'id': [1, 2, 3],
             '_distance': [0.1, 0.2, 0.3]
         })
@@ -55,9 +55,9 @@ class TestOllamaRerankerHybrid:
     @pytest.fixture
     def sample_fts_results(self):
         """Create sample FTS search results"""
-        return pa.table({
+        return pa.Table.from_pydict({
             '_rowid': [4, 5],
-            'text': ['FTS result 1', 'FTS result 2'],
+            'content': ['FTS result 1', 'FTS result 2'],
             'id': [4, 5],
             '_score': [0.9, 0.8]
         })
@@ -81,8 +81,8 @@ class TestOllamaRerankerHybrid:
     
     def test_rerank_hybrid_empty_results(self, reranker):
         """Test reranking with empty vector and FTS results"""
-        empty_vector = pa.table({'text': pa.array([], type=pa.string())})
-        empty_fts = pa.table({'text': pa.array([], type=pa.string())})
+        empty_vector = pa.table({'content': pa.array([], type=pa.string()),'_rowid': pa.array([], type=pa.int64())})
+        empty_fts = pa.table({'content': pa.array([], type=pa.string()),'_rowid': pa.array([], type=pa.int64())})
         
         result = reranker.rerank_hybrid("test query", empty_vector, empty_fts)
         
