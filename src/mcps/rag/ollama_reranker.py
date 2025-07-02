@@ -1,28 +1,18 @@
-from lancedb.rerankers import Reranker
-import pyarrow as pa
-import ollama
-from typing import List, Optional, Union
 import numpy as np
-
-def cosine_similarity(a, b):
-    # Calculate dot product
-    dot_product = sum(x * y for x, y in zip(a, b))
-    # Calculate magnitudes
-    magnitude_a = sum(x ** 2 for x in a) ** 0.5
-    magnitude_b = sum(y ** 2 for y in b) ** 0.5
-    if magnitude_a == 0 or magnitude_b == 0:
-        return 0  # Avoid division by zero
-    return dot_product / (magnitude_a * magnitude_b)
+import ollama
+import pyarrow as pa
+from lancedb.rerankers import Reranker
 
 
 class OllamaReranker(Reranker):
     def __init__(
         self,
-        model_name: str = "llama3.1",
+        model_name: str = "phi4-mini:latest",
         ollama_base_url: str = "http://localhost:11434",
-        method: str = "llm_scoring",  # or "embedding_similarity"
-        embedding_model: str = "mxbai-embed-large",
-        return_score: str = "_relevance_score"
+        embedding_model: str = "bge-m3:latest",
+        return_score: str = "relevance",
+        column: str = "content",
+        weight: float = 1.0
     ):
         """
         Initialize Ollama-based reranker
@@ -30,18 +20,20 @@ class OllamaReranker(Reranker):
         Args:
             model_name: Name of the Ollama model for LLM-based scoring
             ollama_base_url: Base URL for Ollama API
-            method: Reranking method ("llm_scoring" or "embedding_similarity")
             embedding_model: Embedding model name for similarity-based reranking
             return_score: Score return type ("relevance" or "all")
+            weight: Weight for combining scores (1.0 = equal, >1.0 = LLM favored,
+                <1.0 = embedding favored)
         """
         super().__init__(return_score)
         self.model_name = model_name
         self.ollama_base_url = ollama_base_url
-        self.method = method
         self.embedding_model = embedding_model
         self.client = ollama.Client(host=ollama_base_url)
+        self.weight = weight
+        self.column = column
         
-    def _get_ollama_embeddings(self, texts: List[str]) -> List[List[float]]:
+    def _get_ollama_embeddings(self, texts: list[str]) -> list[list[float]]:
         """Get embeddings from Ollama embedding model"""
         embeddings = []
         for text in texts:
@@ -52,22 +44,26 @@ class OllamaReranker(Reranker):
                 )
                 embeddings.append(response.embeddings[0])
             except Exception as e:
-                raise Exception(f"Failed to get embedding: {e}")
+                raise Exception(f"Failed to get embedding: {e}") from e
         return embeddings
     
-    def _score_with_llm(self, query: str, documents: List[str]) -> List[float]:
+    def _score_with_llm(self, query: str, documents: list[str]) -> list[float]:
         """Score documents using Ollama LLM"""
         scores = []
         
         for doc in documents:
             prompt = f"""
-Given the query and document below, rate how relevant the document is to answering the query.
-Output a single word: 
+Given the query and document below, rate how relevant the document is to answering
+the query. Output a single word:
 PERFECT if they are relevant
-GOOD if they are close but not exact, like both about programming but different languages or libraries
-SOME if they are relevant in broad sense, like both about programming but one about coding practices and another about algorithms
-BAD if there is only little similarity, like one about programming and another about job interviews
-NONE if document unrelevant to question, like one about astronomy and another about cooking recipes.
+GOOD if they are close but not exact, like both about programming but different
+    languages or libraries
+SOME if they are relevant in broad sense, like both about programming but one about
+    coding practices and another about algorithms
+BAD if there is only little similarity, like one about programming and another about
+    job interviews
+NONE if document unrelevant to question, like one about astronomy and another about
+    cooking recipes.
 
 Query: {query}
 
@@ -102,53 +98,79 @@ Relevance:"""
                 
         return scores
     
-    def _score_with_embeddings(self, query: str, documents: List[str]) -> List[float]:
+    def _score_with_embeddings(self, query: str, documents: list[str]) -> list[float]:
         """Score documents using embedding similarity"""
         # Get embeddings for query and documents
-        all_texts = [query] + documents
+        all_texts = [query, *documents]
         embeddings = self._get_ollama_embeddings(all_texts)
         
-        query_embedding = np.array(embeddings[0]).reshape(1, -1)
+        query_embedding = np.array(embeddings[0])
         doc_embeddings = np.array(embeddings[1:])
         
-        # Calculate cosine similarity
-        similarities = cosine_similarity(query_embedding, doc_embeddings)[0]
+        # Calculate cosine similarity using NumPy operations
+        # Normalize embeddings
+        query_norm = query_embedding / (np.linalg.norm(query_embedding) + 1e-10)
+        doc_norms = doc_embeddings / (
+            np.linalg.norm(doc_embeddings, axis=1, keepdims=True) + 1e-10
+        )
+        
+        # Calculate similarities
+        similarities = np.dot(doc_norms, query_norm)
         
         # Normalize to 0-1 range
         if len(similarities) > 1:
             min_sim, max_sim = similarities.min(), similarities.max()
             if max_sim > min_sim:
                 similarities = (similarities - min_sim) / (max_sim - min_sim)
+            else:
+                # All similarities are the same, set to 0.5
+                similarities = np.full_like(similarities, 0.5)
+        elif len(similarities) == 1:
+            # Single document, set to 1.0
+            similarities = np.array([1.0])
         
         return similarities.tolist()
     
     def _rerank_results(self, query: str, results: pa.Table) -> pa.Table:
         """Common reranking logic for all query types"""
-        df = results.to_pandas()
+        # Get the number of rows
+        num_rows = results.num_rows
         
-        if len(df) == 0:
-            return results
+        if num_rows == 0:
+            return results.append_column(
+                "_relevance_score", pa.array([], type=pa.float32())
+            )
             
-        # Extract text content (assuming 'text' column exists)
-        documents = df['text'].tolist()
+        # Extract text content using PyArrow (assuming 'text' column exists)
+        text_column = results[self.column]
+        documents = [str(text_column[i].as_py()) for i in range(num_rows)]
         
         # Get relevance scores
-        if self.method == "llm_scoring":
-            scores = self._score_with_llm(query, documents)
-        elif self.method == "embedding_similarity":
-            scores = self._score_with_embeddings(query, documents)
-        else:
-            raise ValueError(f"Unknown method: {self.method}")
+        llm_scores = np.array(self._score_with_llm(query, documents))
+        embedding_scores = np.array(self._score_with_embeddings(query, documents))
         
-        # Add relevance scores
-        df['_relevance_score'] = scores
+        # Normalize scores to ensure they're in 0-1 range
+        llm_scores = np.clip(llm_scores, 0, 1)
+        embedding_scores = np.clip(embedding_scores, 0, 1)
         
-        # Sort by relevance score (descending)
-        df = df.sort_values('_relevance_score', ascending=False)
+        # Combine scores using the weight parameter
+        # Weight = 1.0: Equal contribution
+        # Weight > 1.0: LLM scores have higher influence
+        # Weight < 1.0: Embedding scores have higher influence
+        llm_weight = self.weight / (1 + self.weight)
+        embedding_weight = 1 / (1 + self.weight)
         
-        return pa.Table.from_pandas(df)
+        combined_scores = llm_weight * llm_scores + embedding_weight * embedding_scores
+        
+        # Create a new column with the relevance scores
+        score_array = pa.array(combined_scores.tolist())
+        results = results.append_column('_relevance_score', score_array)
+        
+        return results
     
-    def rerank_hybrid(self, query: str, vector_results: pa.Table, fts_results: pa.Table) -> pa.Table:
+    def rerank_hybrid(
+        self, query: str, vector_results: pa.Table, fts_results: pa.Table
+    ) -> pa.Table:
         """Rerank hybrid search results"""
         # Merge vector and FTS results
         combined_results = self.merge_results(vector_results, fts_results)

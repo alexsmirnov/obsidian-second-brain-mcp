@@ -7,11 +7,9 @@ from collections.abc import Generator
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum, auto
-from os import path
 from pathlib import Path
-from typing import Any, Annotated, Dict, List
 
-from pydantic import Field, ConfigDict, BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class SearchScope(Enum):
@@ -65,9 +63,9 @@ class SourceUpdates(BaseModel):
 class SearchQuery:
     """Represents a search query."""
     text: str
-    tags : list[str]
+    tags: list[str]
     scope: SearchScope = SearchScope.ALL
-    path: str | None = None 
+    path: str | None = None
 
 
 @dataclass
@@ -78,7 +76,11 @@ class SearchResult:
 
 class NotInitializedError(RuntimeError):
     """Exception raised when an operation is attempted on an uninitialized object."""
-    def __init__(self, message="Service has not been initialized. Please call initialize() first."):
+
+    def __init__(
+        self,
+        message="Service has not been initialized. Please call initialize() first.",
+    ):
         self.message = message
         super().__init__(self.message)
 
@@ -96,7 +98,7 @@ class IChunker(ABC):
     """Interface for text chunking strategies."""
 
     @abstractmethod
-    def chunk(self, document: Document) -> Generator[Chunk, None, None]:
+    def chunk(self, document: Document) -> Generator[Chunk]:
         """Split a document into chunks."""
         pass
 
@@ -124,14 +126,24 @@ class IVectorStore(ABC):
         pass
 
     @abstractmethod
-    async def search(self, query: str, tags: list[str] = [], file_path: str | None = None, scope: SearchScope = SearchScope.ALL, limit: int = 5) -> list[Chunk]:
+    async def search(
+        self,
+        query: str,
+        tags: list[str] | None = None,
+        file_path: str | None = None,
+        scope: SearchScope = SearchScope.ALL,
+        limit: int = 5,
+    ) -> list[Chunk]:
         """Search for chunks that contain text from query.
 
         Args:
             query (str): The search query text.
-            tags (list[str], optional): List of tags to filter by (all must be present). Defaults to empty list.
-            file_path (str | None, optional): Substring of source_path to filter results. Defaults to None.
-            scope (SearchScope enum, optional): Where to search (CONTENT, TITLE, DESCRIPTION, or ALL). Defaults to ALL.
+            tags (list[str], optional): List of tags to filter by (all must be
+                present). Defaults to None.
+            file_path (str | None, optional): Substring of source_path to filter
+                results. Defaults to None.
+            scope (SearchScope enum, optional): Where to search (CONTENT, TITLE,
+                DESCRIPTION, or ALL). Defaults to ALL.
             limit (int, optional): Maximum number of results to return. Defaults to 5.
         """
         pass
@@ -144,11 +156,14 @@ class IVectorStore(ABC):
     @abstractmethod
     async def reindex(self) -> None:
         """Recreate indexes for the vector store.
-        due to LanceDB implementation, inexes have to be recreated after any data modification."""
+        
+        Due to LanceDB implementation, indexes have to be recreated after any
+        data modification.
+        """
         pass
 
     @abstractmethod
-    async def sources(self) -> Dict[str,datetime]:
+    async def sources(self) -> dict[str, datetime]:
         """Get last updates to source documents."""
         pass
 
@@ -174,15 +189,17 @@ class IFileTraversal(ABC):
     """Interface for file discovery and traversal."""
 
     @abstractmethod
-    def find_files(self ) -> Generator[Path]:
+    def find_files(self) -> Generator[Path]:
         """Find files to process in vault."""
         pass
 
 
 class IVault(ABC):
     """Interface for managing vault operations.
-    supports operations to search information from , read whole file by name or partial path,
-    get directory content """
+    
+    Supports operations to search information from vault, read whole file by name
+    or partial path, and get directory content.
+    """
 
     @abstractmethod
     async def initialize(self) -> None:
@@ -192,10 +209,13 @@ class IVault(ABC):
     @abstractmethod
     async def update_index(self) -> None:
         """Update the index of the vault.
+        
         The method gets the list of files in the vault and saved in the storage.
-        it deletes all chunks for source_paths that are not in the vault anymore or were modified,
-        and adds new chunks for files that were added or modified.
-        This should be called before any search operation, if there were more than 1 minute after the last search."""
+        It deletes all chunks for source_paths that are not in the vault anymore
+        or were modified, and adds new chunks for files that were added or modified.
+        This should be called before any search operation, if there were more than
+        1 minute after the last search.
+        """
         pass
 
     @abstractmethod
@@ -210,12 +230,12 @@ class IVault(ABC):
         pass
 
     @abstractmethod
-    async def list_files(self, directory: str) -> list[str] :
+    async def list_files(self, directory: str) -> list[str]:
         """List all files in a directory.
-        
+
         Args:
             directory (str): Directory path relative to vault root.
-        
+
         Returns:
             list[str]: List of file names without .md extension in the directory,
             plus directory names ended with `/`.
