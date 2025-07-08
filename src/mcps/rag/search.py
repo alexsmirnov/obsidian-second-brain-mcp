@@ -25,8 +25,10 @@ class SemanticSearchEngine(ISearchEngine):
     def __init__(
         self, 
         vector_store: IVectorStore,
+        limit: int = 25
     ):
         self.vector_store = vector_store
+        self.limit = limit
     
     async def search(self, query: SearchQuery) -> list[Chunk]:
         """Perform a semantic search operation."""
@@ -35,7 +37,7 @@ class SemanticSearchEngine(ISearchEngine):
             tags=query.tags,
             file_path=query.path,
             scope=query.scope,
-            limit=5
+            limit=self.limit
         )
     
 

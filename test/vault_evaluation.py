@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import List, Dict, Any
 import pytest
 
-from mcps.rag.vault import Vault
+from mcps.rag.vault import create_vault, Vault
 
 
 # Configure logging for detailed test output
@@ -159,13 +159,9 @@ class VaultEvaluationTest:
             logger.info(f"Setting up Vault with path: {self.vault_path}")
 
             # Initialize Vault with optimized settings for testing
-            self.vault = Vault(
+            self.vault = create_vault(
                 vault_path=self.vault_path,
-                chunk_size=800,  # Smaller chunks for better precision
-                chunk_overlap=100,
                 db_table_name="evaluation_test",
-                max_content_length=1500,
-                include_metadata=True,
             )
 
             # Initialize and update index

@@ -18,8 +18,10 @@ import numpy as np
 from lancedb.embeddings import EmbeddingFunction, OllamaEmbeddings
 from lancedb.rerankers import RRFReranker
 
+from mcps.rag.ollama_reranker import OllamaReranker
+
 from .database import LanceDBStore
-from .document_processing import FixedSizeChunker, MarkdownFileTraversal, MarkdownProcessor
+from .document_processing import FixedSizeChunker, MarkdownFileTraversal, MarkdownProcessor, SemanticChunker
 from .interfaces import (
     Chunk,
     Document,
@@ -41,16 +43,83 @@ from lancedb.embeddings import EmbeddingFunction, get_registry
 logger = logging.getLogger("mcps")
 
 
+def _create_embedding_function() -> EmbeddingFunction:
+    """Create and configure embedding function."""
+    ollama_base_url = os.getenv("OLLAMA_API_BASE")
+    voyage_api_key = os.getenv("VOYAGE_API_KEY")
+    if voyage_api_key:
+        return get_registry().get("voyageai").create(name='voyage-3-lite')
+    elif ollama_base_url:
+        return get_registry().get("ollama").create(name="bge-m3:latest", host=ollama_base_url)
+    else:
+        raise RuntimeError("No embedding service configured. Set OLLAMA_API_BASE or VOYAGE_API_KEY environment variable.")
+
+
+def _create_file_traversal(vault_path: Path, skip_patterns: Optional[list[str]] = None) -> IFileTraversal:
+    """Create and configure file traversal service."""
+    return MarkdownFileTraversal(base_path=vault_path)
+
+
+def _create_document_processor(vault_path: Path) -> IDocumentProcessor:
+    """Create and configure document processor service."""
+    return MarkdownProcessor(base_path=vault_path)
+
+
+def _create_chunker() -> IChunker:
+    """Create and configure text chunker service."""
+    # return FixedSizeChunker(chunk_size=chunk_size, overlap=chunk_overlap)
+    return SemanticChunker()
+
+
+def _create_reranker():
+    """Create and configure reranker."""
+    if os.environ.get("VOYAGE_API_KEY"):
+        from lancedb.rerankers import VoyageAIReranker
+        return VoyageAIReranker(model_name="rerank-2-lite", column="content", api_key=os.environ.get("VOYAGE_API_KEY"))
+    elif os.environ.get("OLLAMA_API_BASE"):
+        return OllamaReranker(
+            model_name="phi4-mini:latest",
+            ollama_base_url=os.environ.get("OLLAMA_API_BASE", "http://localhost:11434"),
+            embedding_model="bge-m3:latest",
+            return_score='relevance',
+            column='content',
+            weight=1.0
+        )
+    else:
+        from lancedb.rerankers import RRFReranker
+        return RRFReranker(return_score='all')
+
+
+def _create_vector_store(db_path: Path, table_name: str) -> IVectorStore:
+    """Create and configure vector store service."""
+    return LanceDBStore(
+        db_path=db_path,
+        embedding_function=_create_embedding_function(),
+        table_name=table_name,
+        reranker=_create_reranker()
+    )
+
+
+def _create_search_engine(vector_store: IVectorStore) -> ISearchEngine:
+    """Create and configure search engine service."""
+    return SemanticSearchEngine(vector_store=vector_store, limit=10)
+
+
+def _create_result_formatter(max_content_length: int = 4000, include_metadata: bool = True) -> IResultFormatter:
+    """Create and configure result formatter service."""
+    return MarkdownResultFormatter(max_content_length=max_content_length, include_metadata=include_metadata)
+
+
 class Vault(IVault):
     """
     Production-ready Vault implementation for managing RAG operations.
     
     This class provides a comprehensive implementation of the IVault interface,
-    managing document indexing, searching, and retrieval operations. It automatically
-    instantiates and manages all required services with sensible defaults.
+    managing document indexing, searching, and retrieval operations using
+    dependency injection for all services.
     
     Features:
-    - Automatic service instantiation with dependency injection
+    - Dependency injection for all services
     - Thread-safe operations with proper synchronization
     - Comprehensive error handling and logging
     - Resource management and cleanup
@@ -58,7 +127,7 @@ class Vault(IVault):
     - Support for various search scopes and filtering options
     
     Example:
-        vault = Vault(Path("/path/to/documents"))
+        vault = create_vault(Path("/path/to/documents"))
         await vault.initialize()
         await vault.update_index()
         results = await vault.search("machine learning")
@@ -67,27 +136,26 @@ class Vault(IVault):
     def __init__(
         self,
         vault_path: Path,
-        skip_patterns: Optional[list[str]] = None,
-        chunk_size: int = 1000,
-        chunk_overlap: int = 200,
-        embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2",
-        db_table_name: str = "documents",
-        max_content_length: int = 2000,
-        include_metadata: bool = True,
+        file_traversal: IFileTraversal,
+        document_processor: IDocumentProcessor,
+        chunker: IChunker,
+        vector_store: IVectorStore,
+        search_engine: ISearchEngine,
+        result_formatter: IResultFormatter,
         batch_size: int = 8,
     ):
         """
-        Initialize the Vault with the specified configuration.
+        Initialize the Vault with injected services.
         
         Args:
             vault_path: Path to the vault directory containing documents
-            skip_patterns: List of patterns to skip during file traversal
-            chunk_size: Size of text chunks for processing
-            chunk_overlap: Overlap between consecutive chunks
-            embedding_model: Name of the embedding model to use
-            db_table_name: Name of the database table for storing chunks
-            max_content_length: Maximum content length for result formatting
-            include_metadata: Whether to include metadata in formatted results
+            file_traversal: Service for traversing files
+            document_processor: Service for processing documents
+            chunker: Service for chunking text
+            vector_store: Service for storing and retrieving vectors
+            search_engine: Service for semantic search
+            result_formatter: Service for formatting search results
+            batch_size: Number of files to process in each batch
         """
         self.vault_path = Path(vault_path)
         self.db_path = self.vault_path / '.vault_db'
@@ -97,62 +165,15 @@ class Vault(IVault):
         self._update_interval = timedelta(minutes=1)
         self.batch_size = batch_size
         
-        try:
-            # Initialize services with dependency injection
-            logger.info(f"Initializing Vault for path: {vault_path}")
-            
-            # File traversal service
-            self.file_traversal: IFileTraversal = MarkdownFileTraversal(
-                base_path=self.vault_path,
-            )
-            
-            # Document processor
-            self.document_processor: IDocumentProcessor = MarkdownProcessor(
-                base_path=self.vault_path
-            )
-            
-            # Text chunker
-            self.chunker: IChunker = FixedSizeChunker(
-                chunk_size=chunk_size,
-                overlap=chunk_overlap
-            )
-            
-            # Create LanceDB-compatible embedding function
-            ollama_base_url = os.getenv("OLLAMA_API_BASE")
-            if ollama_base_url:
-                self.embedding_function = get_registry().get("ollama").create(name="bge-m3:latest", host=ollama_base_url)
-                # self.embedding_function = get_registry().get("ollama").create(name="hf.co/nomic-ai/nomic-embed-text-v2-moe-GGUF:Q6_K", host=ollama_base_url)
-            
-            if os.environ.get("VOYAGE_API_KEY") :
-                from lancedb.rerankers import VoyageAIReranker
-                reranker =  VoyageAIReranker(model_name="rerank-2-lite", column = "content", api_key=os.environ.get("VOYAGE_API_KEY"))
-            else:
-                from lancedb.rerankers import RRFReranker
-                reranker = RRFReranker(return_score='all')
-            # Vector store
-            self.vector_store: IVectorStore = LanceDBStore(
-                db_path=self.db_path,
-                embedding_function=self.embedding_function,
-                table_name=db_table_name,
-                reranker=reranker
-            )
-            
-            # Search engine
-            self.search_engine: ISearchEngine = SemanticSearchEngine(
-                vector_store=self.vector_store
-            )
-            
-            # Result formatter
-            self.result_formatter: IResultFormatter = MarkdownResultFormatter(
-                max_content_length=max_content_length,
-                include_metadata=include_metadata
-            )
-            
-            logger.info("Vault services initialized successfully")
-            
-        except Exception as e:
-            logger.error(f"Failed to initialize Vault services: {e}")
-            raise RuntimeError(f"Vault initialization failed: {e}") from e
+        # Inject services
+        self.file_traversal = file_traversal
+        self.document_processor = document_processor
+        self.chunker = chunker
+        self.vector_store = vector_store
+        self.search_engine = search_engine
+        self.result_formatter = result_formatter
+        
+        logger.info(f"Vault initialized with injected services for path: {vault_path}")
     
     async def initialize(self) -> None:
         """
@@ -480,3 +501,62 @@ class Vault(IVault):
                 logger.debug("Vault destructor called")
             except Exception:
                 pass  # Ignore errors in destructor
+
+
+def create_vault(
+    vault_path: Path,
+    db_table_name: str = "documents",
+) -> Vault:
+    """
+    Factory method to create a fully configured Vault instance.
+    
+    This is the main entry point for creating Vault instances with all
+    required services properly configured and injected.
+    
+    Args:
+        vault_path: Path to the vault directory containing documents
+        skip_patterns: List of patterns to skip during file traversal
+        chunk_size: Size of text chunks for processing
+        chunk_overlap: Overlap between consecutive chunks
+        embedding_model: Name of the embedding model to use
+        db_table_name: Name of the database table for storing chunks
+        max_content_length: Maximum content length for result formatting
+        include_metadata: Whether to include metadata in formatted results
+        batch_size: Number of files to process in each batch
+        
+    Returns:
+        Configured Vault instance ready for use
+        
+    Raises:
+        RuntimeError: If service creation fails
+    """
+    try:
+        logger.info(f"Creating Vault for path: {vault_path}")
+        
+        # Create all services using factory methods
+        file_traversal = _create_file_traversal(Path(vault_path) )
+        document_processor = _create_document_processor(Path(vault_path))
+        chunker = _create_chunker()
+        
+        db_path = Path(vault_path) / '.vault_db'
+        vector_store = _create_vector_store(db_path, db_table_name)
+        search_engine = _create_search_engine(vector_store)
+        result_formatter = _create_result_formatter()
+        
+        # Create and return Vault instance with injected services
+        vault = Vault(
+            vault_path=Path(vault_path),
+            file_traversal=file_traversal,
+            document_processor=document_processor,
+            chunker=chunker,
+            vector_store=vector_store,
+            search_engine=search_engine,
+            result_formatter=result_formatter,
+        )
+        
+        logger.info("Vault factory method completed successfully")
+        return vault
+        
+    except Exception as e:
+        logger.error(f"Failed to create Vault: {e}")
+        raise RuntimeError(f"Vault creation failed: {e}") from e
