@@ -9,12 +9,10 @@ import asyncio
 from importlib.metadata import files
 import logging
 import os
-import threading
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Optional
 
-import numpy as np
 from lancedb.embeddings import EmbeddingFunction, OllamaEmbeddings
 from lancedb.rerankers import RRFReranker
 
@@ -23,11 +21,8 @@ from mcps.rag.ollama_reranker import OllamaReranker
 from .database import LanceDBStore
 from .document_processing import FixedSizeChunker, MarkdownFileTraversal, MarkdownProcessor, SemanticChunker
 from .interfaces import (
-    Chunk,
-    Document,
     IChunker,
     IDocumentProcessor,
-    IEmbeddingService,
     IFileTraversal,
     IResultFormatter,
     ISearchEngine,
@@ -160,7 +155,7 @@ class Vault(IVault):
         self.vault_path = Path(vault_path)
         self.db_path = self.vault_path / '.vault_db'
         self._initialized = False
-        self._lock = threading.RLock()
+        self._lock = asyncio.Lock()
         self._last_update_check: Optional[datetime] = None
         self._update_interval = timedelta(minutes=1)
         self.batch_size = batch_size
@@ -234,7 +229,7 @@ class Vault(IVault):
         if not self._initialized:
             raise NotInitializedError("Vault must be initialized before updating index")
         
-        async with asyncio.Lock():
+        async with self._lock:
             try:
                 logger.info("Starting index update")
                 start_time = datetime.now()

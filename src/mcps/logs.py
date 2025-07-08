@@ -40,3 +40,5 @@ def setup_logging():
         level=logging.INFO,  # Capture all log levels
         force=True  # Override any existing logging configuration
     )
+    # Reduce noise
+    logging.getLogger("httpx").setLevel(logging.WARNING)

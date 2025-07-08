@@ -24,6 +24,7 @@ from mcps.rag.vault import create_vault, Vault
 # Configure logging for detailed test output
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+logging.getLogger("httpx").setLevel(logging.WARNING)
 load_dotenv(find_dotenv())
 load_dotenv(find_dotenv(usecwd=True))
 
