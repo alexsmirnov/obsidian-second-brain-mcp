@@ -14,6 +14,24 @@
       },
       "disabled": true,
       "alwaysAllow": []
+    },
+    "serena": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--directory",
+        "/Users/alsmirnov/work/serena",
+        "serena-mcp-server",
+        "--project",
+        "/Users/alsmirnov/work/mcp-server-continue",
+        "--context",
+        "ide-assistant"
+      ],
+      "alwaysAllow": [
+        "check_onboarding_performed",
+        "find_symbol"
+      ],
+      "disabled": false
     }
   }
 }
