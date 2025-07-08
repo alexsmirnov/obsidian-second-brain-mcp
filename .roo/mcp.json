@@ -12,8 +12,10 @@
         "ROOT": "/Users/alsmirnov/work/mcp-server-continue",
         "VAULT": "/Users/alsmirnov/Obsidian_Vault"
       },
-      "disabled": true,
-      "alwaysAllow": []
+      "disabled": false,
+      "alwaysAllow": [
+        "obsidian_search"
+      ]
     },
     "serena": {
       "command": "uv",

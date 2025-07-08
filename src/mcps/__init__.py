@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import logging.handlers
 import os
@@ -26,4 +27,4 @@ def main() -> None:
     # Current package name
     logger.info(f"Current package name: {__package__}")
 
-    server.start()
+    asyncio.run(server.start())
