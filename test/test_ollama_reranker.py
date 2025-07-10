@@ -144,7 +144,7 @@ class TestOllamaRerankerEvaluation:
             ollama_base_url=ollama_base_url,
             embedding_model="bge-m3:latest",
             return_score="relevance",
-            weight=1.0,
+            weight=0.5,
         )
 
     @pytest.fixture

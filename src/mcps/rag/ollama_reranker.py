@@ -1,8 +1,13 @@
+import itertools
+import logging
+from typing import Sequence
 import numpy as np
 import ollama
 import pyarrow as pa
 from lancedb.rerankers import Reranker
 
+
+logger = logging.getLogger("mcps.rag")
 
 class OllamaReranker(Reranker):
     def __init__(
@@ -32,14 +37,12 @@ class OllamaReranker(Reranker):
         self.client = ollama.Client(host=ollama_base_url)
         self.weight = weight
         self.column = column
+
+    def _embed(self, texts: list[str]) -> Sequence[Sequence[float]]:
+        return self.client.embed(model=self.embedding_model, input=texts).embeddings
         
     def _get_ollama_embeddings(self, texts: list[str]) -> list[list[float]]:
-        """Generate embeddings for *all* ``texts`` with a single Ollama call.
-
-        The upstream Ollama python client supports batching by simply passing a
-        list of strings to the ``input`` parameter.  This implementation takes
-        advantage of that capability, dramatically reducing network overhead
-        compared to the previous one-request-per-text approach.
+        """Generate embeddings for ``texts`` 
 
         Args:
             texts: Sequence of input strings.
@@ -48,46 +51,20 @@ class OllamaReranker(Reranker):
             A list where each element is the embedding (``list[float]``) for the
             corresponding input text.
         """
-        # Request all embeddings in **one** API call.
+        # Request  embeddings in **batch** API calls. 
+        # Ollama issue that embed accuracy degrade for batches >= 16
+        batch_size = 8
         try:
-            resp = self.client.embed(model=self.embedding_model, input=texts)
+            embed_batches = [ self._embed(texts[i:i+batch_size]) for i in range(0, len(texts), batch_size)]
+
         except Exception as exc:
             raise RuntimeError(f"Failed to fetch embeddings from Ollama: {exc}") from exc
 
-        # The response can be either a plain dict or a typed object exposing the
-        # same fields as attributes.  Prefer the modern "embeddings" field.  If
-        # only a single embedding was requested the field may be "embedding".
-        if isinstance(resp, dict):
-            vectors = resp.get("embeddings") or resp.get("embedding")
-        else:
-            vectors = getattr(resp, "embeddings", None) or getattr(resp, "embedding", None)
-
-        if vectors is None:
-            raise ValueError("Ollama embed response did not contain 'embeddings'")
-
-        # Normalize the shape: single-text requests may return a single vector
-        # instead of a list of vectors.
-        if vectors and isinstance(vectors[0], (float, int)):
-            vectors = [vectors]
-
-        # Convert to NumPy arrays for consistency and validation.
-        embeddings_np = [np.asarray(vec, dtype=np.float32) for vec in vectors]
-
-        if not embeddings_np:
-            raise ValueError("Received empty embeddings from Ollama")
-
-        expected_dim = embeddings_np[0].shape[0]
-        cleaned: list[np.ndarray] = []
-        for vec in embeddings_np:
-            # Ensure dimensionality is correct; pad/replace invalid vectors.
-            if vec.size != expected_dim:
-                vec = np.zeros(expected_dim, dtype=np.float32)
-            if not np.isfinite(vec).all() or np.linalg.norm(vec) == 0:
-                vec = np.zeros(expected_dim, dtype=np.float32)
-            cleaned.append(vec)
+        # combine batches
+        vectors = itertools.chain.from_iterable(embed_batches)
 
         # Return Python lists for Arrow/JSON compatibility.
-        return [v.tolist() for v in cleaned]
+        return [list(v) for v in vectors]
     
     def _score_with_llm(self, query: str, documents: list[str]) -> list[float]:
         """Score documents using Ollama LLM"""
@@ -147,21 +124,21 @@ Relevance:"""
         embeddings = self._get_ollama_embeddings(all_texts)
         
         # Ensure deterministic dtypes and shapes
-        query_embedding = np.asarray(embeddings[0], dtype=np.float32)
-        doc_embeddings = np.asarray(embeddings[1:], dtype=np.float32)
+        query_embedding = np.asarray(embeddings[0], dtype=np.float64)
+        doc_embeddings = np.asarray(embeddings[1:], dtype=np.float64)
 
         if query_embedding.ndim != 1 or doc_embeddings.ndim != 2:
             raise ValueError("Embedding vectors have inconsistent dimensions; expected 1-D query and 2-D documents.")
-        
+        # np.seterr(all='raise')
         # Calculate cosine similarity using NumPy operations
         # Normalize embeddings
         query_norm = query_embedding / (np.linalg.norm(query_embedding) + 1e-10)
-        doc_norms = doc_embeddings / (
-            np.linalg.norm(doc_embeddings, axis=1, keepdims=True) + 1e-10
-        )
-        
-        # Calculate similarities
+        doc_norms = doc_embeddings  / (
+             np.linalg.norm(doc_embeddings, axis=1, keepdims=True) + 1e-10
+         )
+        # Calculate similarities. Causes warnings on Apple M4
         similarities = np.dot(doc_norms, query_norm)
+        logger.info(f"Max Similarities: {similarities.max()}")
         
         # Normalize to 0-1 range
         if len(similarities) > 1:
@@ -169,8 +146,8 @@ Relevance:"""
             if max_sim > min_sim:
                 similarities = (similarities - min_sim) / (max_sim - min_sim)
             else:
-                # All similarities are the same, set to 0.5
-                similarities = np.full_like(similarities, 0.5)
+                # All similarities are the same, set to 1.0
+                similarities = np.full_like(similarities, 1.0)
         elif len(similarities) == 1:
             # Single document, set to 1.0
             similarities = np.array([1.0])
