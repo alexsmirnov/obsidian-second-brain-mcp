@@ -1,3 +1,5 @@
+[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/alexsmirnov-mcp-server-continue-badge.png)](https://mseep.ai/app/alexsmirnov-mcp-server-continue)
+
 
 # Model Context Protocol ( MCP ) Python server to use with continue.dev
 MCP server that exposes a customizable prompt templates, resources, and tools
