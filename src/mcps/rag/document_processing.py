@@ -61,7 +61,7 @@ def create_chunk(document: Document, content: str, position: int) -> Chunk:
         position=position
     )
 
-logger = logging.getLogger("mcps")
+logger = logging.getLogger("mcps.documents")
         
 default_skip_patterns = [
             r'^\..*',
@@ -270,7 +270,7 @@ class SemanticChunker(IChunker):
                 
                 i += 1
 
-        logger.debug(f"Created {chunk_count} semantic chunks from document {document.id}")
+        logger.info(f"Created {chunk_count} semantic chunks from document {document.source_path}")
 
     def _split_by_headers(self, content: str) -> list[str]:
         """Split content by markdown headers."""

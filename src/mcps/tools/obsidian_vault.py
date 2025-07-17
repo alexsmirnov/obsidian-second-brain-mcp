@@ -6,7 +6,7 @@ from fastmcp import FastMCP
 from pydantic import Field
 
 from mcps.config import ServerConfig
-from mcps.rag.vault import Vault, create_vault
+from mcps.rag.vault import create_vault
 from mcps.common import Tools
 import asyncio
 
@@ -29,7 +29,7 @@ class ObsidianTools(Tools):
         """
         self.mcp = mcp
         self.config = config
-        self.vault = create_vault(config.vault_dir)
+        self.vault = create_vault(config.vault_dir) # type: ignore
         logger.info(f"ObsidianTools initialized for vault: {config.vault_dir}")
     
     def register(self) -> None:
@@ -165,7 +165,7 @@ class ObsidianTools(Tools):
             logger.info(f"Renaming/moving Obsidian note from {old_path} to {new_path}")
             
             # Resolve full paths
-            vault_path = Path(self.config.vault_dir)
+            vault_path = Path(self.config.vault_dir) # type: ignore
             old_full_path = vault_path / old_path
             new_full_path = vault_path / new_path
             
@@ -251,7 +251,7 @@ class ObsidianTools(Tools):
                 re.IGNORECASE
             )
             
-            vault_path = Path(self.config.vault_dir)
+            vault_path = Path(self.config.vault_dir) # type: ignore
             updated_files = 0
             
             # Search through all markdown files in the vault

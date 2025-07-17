@@ -11,9 +11,11 @@ wheels/
 .venv
 # test data
 test_content
+.aider*
 .roo*
 .mcp.json
 .claude
 .serena
 .ruff*
 .vault*
+.vscode

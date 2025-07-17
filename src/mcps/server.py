@@ -15,7 +15,7 @@ import mcps.resources.url_resource as url_resource
 from mcps.common import Tools
 import mcps.tools.internet_search as internet_search
 import mcps.tools.obsidian_vault as obsidian_vault
-import mcps.tools.perplexity_search as perplexity_search
+import mcps.tools.deep_research as deep_research
 import mcps.tools.rag_search as rag_search
 from mcps.config import ServerConfig, create_config  # Import from config module
 

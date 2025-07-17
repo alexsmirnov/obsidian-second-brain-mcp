@@ -20,7 +20,7 @@ import pyarrow as pa
 
 from .interfaces import Chunk, IVectorStore, NotInitializedError, SearchScope, SourceUpdates
 
-logger = logging.getLogger("mcps")
+logger = logging.getLogger("mcps.database")
 
 
 class LanceDBStore(IVectorStore):
@@ -89,24 +89,25 @@ class LanceDBStore(IVectorStore):
         """Store chunks with their embeddings."""
         if not self._initialized:
             raise NotInitializedError("LanceDBStore is not initialized. Call await store.initialize() first.")
-        
+        logger.info(f"Storing {len(chunks)} chunks in LanceDB")
         if not chunks:
             return
+        
         try:
             # Process chunks and generate embeddings if needed
-            processed_chunks = [ self._dump_with_embeddings(chunk) for chunk in chunks if isinstance(chunk, Chunk) ]
-            
+            # embeddings = self.embedding_function.compute_source_embeddings( [ c.content for c in chunks ] )
+            processed_chunks = [ self._dump_with_embeddings(c, self.embedding_function.compute_source_embeddings(c.content)[0]) for c in chunks ]
             if processed_chunks:
                 await self.table.add(processed_chunks)
+                logger.info(f"Added {len(processed_chunks)} chunks to LanceDB")
         except Exception as e:
             logger.error(f"Failed to store chunks in LanceDB: {e}")
             raise
     
-    def _dump_with_embeddings(self, chunk: Chunk) -> dict[str, Any]:
-        """Helper to dump chunk with embeddings."""
+    def _dump_with_embeddings(self, chunk: Chunk, embeddings ) -> dict[str, Any]:
+        """Helper to dump chunk with embeddings as dict"""
         chunk_dict = chunk.model_dump()
-        if "embeddings" not in chunk_dict:
-            chunk_dict['embeddings'] = self.embedding_function.compute_query_embeddings(chunk.content)[0]
+        chunk_dict['embeddings'] = embeddings
         return chunk_dict
 
     async def search(self, query: str, tags: list[str] = [], file_path: str | None = None, scope: SearchScope = SearchScope.ALL, limit: int = 5) -> list[Chunk]:
@@ -161,8 +162,8 @@ class LanceDBStore(IVectorStore):
         
     
     async def delete(self, source_paths: list[str]) -> None:
-        """Delete chunks by their IDs.
-        WARNING: delete operaton in lancedb may corrupt indexes, so it will be followed by reindexing.
+        """Delete chunks by their paths.
+        WARNING: delete operaton in lancedb may corrupt indexes, so it should be followed by reindexing.
         """
         if not self._initialized:
             raise NotInitializedError("LanceDBStore is not initialized. Call await store.initialize() first.")
@@ -171,8 +172,8 @@ class LanceDBStore(IVectorStore):
 
             in_list = ','.join([f"'{p}'" for p in source_paths])
             delete_clause = f"source_path IN ({in_list})"
-            logger.info(f"Deleting chunks with source paths: {source_paths} using clause: {delete_clause}")
-            result = await self.table.delete(delete_clause)
+            logger.debug(f"Deleting chunks with source paths: {source_paths} using clause: {delete_clause}")
+            await self.table.delete(delete_clause)
             
             logger.info(f"Deleted {len(source_paths)} paths from LanceDB")
 

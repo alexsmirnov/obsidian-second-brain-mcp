@@ -8,6 +8,7 @@ managing all aspects of document indexing, searching, and retrieval in a RAG sys
 import asyncio
 from importlib.metadata import files
 import logging
+from math import log
 import os
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -35,7 +36,7 @@ from .interfaces import (
 from .search import MarkdownResultFormatter, SemanticSearchEngine
 from lancedb.embeddings import EmbeddingFunction, get_registry
 
-logger = logging.getLogger("mcps")
+logger = logging.getLogger("mcps.vault")
 
 
 def _create_embedding_function() -> EmbeddingFunction:
@@ -184,7 +185,7 @@ class Vault(IVault):
             RuntimeError: If initialization fails
             FileNotFoundError: If vault path doesn't exist
         """
-        async with asyncio.Lock():
+        async with self._lock:
             if self._initialized:
                 logger.debug("Vault already initialized")
                 return
@@ -207,7 +208,7 @@ class Vault(IVault):
                 logger.info("Testing embedding service")
                 
                 self._initialized = True
-                logger.info("Vault initialization completed successfully")
+                logger.info(f"Vault {self.vault_path} initialization completed successfully")
                 
             except Exception as e:
                 logger.error(f"Vault initialization failed: {e}")
@@ -280,14 +281,14 @@ class Vault(IVault):
                 
                 self._last_update_check = datetime.now()
                 duration = (self._last_update_check - start_time).total_seconds()
-                logger.info(f"Index update completed in {duration:.2f} seconds")
+                logger.info(f"Index update completed in {duration:.2f} seconds, processed {file_count} files")
                 
             except Exception as e:
                 logger.error(f"Index update failed: {e}")
                 raise RuntimeError(f"Failed to update index: {e}") from e
 
     async def _batch_process_files(self, files_to_add: list[Path]) -> None:
-            # Process files in batches
+            logger.info(f"Add {len(files_to_add)} files in batch")
             add_results = await asyncio.gather(
                 *[self._process_file(path) for path in files_to_add],
                 return_exceptions=True
@@ -315,13 +316,11 @@ class Vault(IVault):
             raise NotInitializedError("Vault must be initialized before searching")
         
         try:
-            # Check if index needs updating
+            logger.info(f"Searching for: {query}")
             if (self._last_update_check is None or 
                 datetime.now() - self._last_update_check > self._update_interval):
                 logger.info("Index update needed before search")
                 await self.update_index()
-            
-            logger.info(f"Searching for: {query}")
             
             chunks = await self.vector_store.search(
                 query=query,
@@ -331,7 +330,6 @@ class Vault(IVault):
                 limit=5
             )
             
-            # Create search query object for formatter
             search_query = SearchQuery(
                 text=query,
                 tags=[],
@@ -372,23 +370,20 @@ class Vault(IVault):
         try:
             logger.debug(f"Looking for file: {file_name}")
             
-            # Search for matching files
-            matching_files = []
-            for file_path in self.file_traversal.find_files():
-                # Check if file name matches (with or without extension)
-                file_stem = file_path.stem.lower()
-                file_name_lower = file_name.lower()
-                relative_path = file_path.relative_to(self.vault_path).as_posix()
-                
-                if (file_stem == file_name_lower or 
-                    file_name_lower in relative_path.lower()):
-                    matching_files.append(file_path)
-            
-            if not matching_files:
+            file_name_lower = file_name.lower()
+            target_file = next(
+                (
+                    file_path
+                    for file_path in self.file_traversal.find_files()
+                    if (
+                        file_path.stem.lower() == file_name_lower
+                        or file_name_lower in file_path.relative_to(self.vault_path).as_posix().lower()
+                    )
+                ),
+                None
+            )
+            if target_file is None:
                 raise FileNotFoundError(f"No file found matching: {file_name}")
-            
-            # Return content of first match
-            target_file = matching_files[0]
             logger.info(f"Found file: {target_file.relative_to(self.vault_path)}")
             
             try:
@@ -442,25 +437,19 @@ class Vault(IVault):
                 logger.warning(f"Path is not a directory: {target_dir}")
                 return []
             
-            files = []
-            
             try:
-                for item in target_dir.iterdir():
-                    if item.is_file() and item.suffix.lower() == '.md':
-                        # Add file name without extension
-                        files.append(item.stem)
-                    elif item.is_dir() and not item.name.startswith('.'):
-                        # Add directory name with trailing slash
-                        files.append(f"{item.name}/")
+                files = [
+                    item.stem if item.is_file() else f"{item.name}/"
+                    for item in target_dir.iterdir()
+                    if ( item.is_file() and item.suffix.lower() == '.md'  or item.is_dir() ) and not item.name.startswith('.')
+                ]
+                files.sort()
+                logger.debug(f"Found {len(files)} items in {directory}")
+                return files
             except PermissionError as e:
                 logger.warning(f"Permission denied accessing directory {target_dir}: {e}")
                 return []
             
-            # Sort files for consistent output
-            files.sort()
-            
-            logger.debug(f"Found {len(files)} items in {directory}")
-            return files
             
         except Exception as e:
             logger.error(f"Failed to list files in directory {directory}: {e}")

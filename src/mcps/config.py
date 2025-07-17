@@ -16,7 +16,9 @@ class ServerConfig:
     openai_api_key: str = ""
     anthropic_api_key: str = ""
     perplexity_api_key: str = ""
-    vault_dir: Path = field(default_factory=lambda: Path(os.getenv("VAULT", "")))
+    voyage_api_key: str = ""
+    ollama_api_base: str = ""
+    vault_dir: Path | None = None
 
 def create_config(
     prompts_dir: Path = Path("./prompts"),
@@ -51,5 +53,7 @@ def create_config(
         openai_api_key=os.getenv("OPENAI_API_KEY", ""),
         anthropic_api_key=os.getenv("ANTHROPIC_API_KEY", ""),
         perplexity_api_key=os.getenv("PERPLEXITY_API_KEY", ""),
-        vault_dir=Path(os.getenv("VAULT", "")),
+        voyage_api_key=os.getenv("VOYAGE_API_KEY", ""),
+        ollama_api_base=os.getenv("OLLAMA_API_BASE", ""),
+        vault_dir=Path(os.getenv("VAULT","")) if os.getenv("VAULT") else None,
     )
