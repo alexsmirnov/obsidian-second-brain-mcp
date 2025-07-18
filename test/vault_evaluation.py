@@ -12,8 +12,6 @@ about AI/ML, programming, projects, and personal knowledge management.
 import asyncio
 from dotenv import load_dotenv, find_dotenv
 import logging
-import tempfile
-from datetime import datetime
 from pathlib import Path
 from typing import List, Dict, Any
 import pytest
@@ -63,91 +61,54 @@ class VaultEvaluationTest:
 
     def _create_test_cases(self) -> List[Dict[str, Any]]:
         """
-        Create the 5 test cases based on available content.
-
+        Read test cases from a colon-separated CSV file.
+        
+        The CSV file should have 3 columns:
+        - Query: The search query
+        - Expected: Comma-separated list of expected words
+        - Unwanted: Comma-separated list of unwanted words
+        
         Returns:
             List of test case dictionaries with query, expected_words, and unwanted_words
         """
-        return [
-            _tc(
-                "Python artificial intelligence machine learning libraries",
-                [
-                    "python",
-                    "AI",
-                    "artificial intelligence",
-                    "machine learning",
-                    "library",
-                    "libraries",
-                    "scikit",
-                    "tensorflow",
-                    "pytorch",
-                ],
-                ["Java", "Salesforce", "camping", "3D printing", "quantum computing"],
-            ),
-            _tc(
-                "Salesforce work project development",
-                [
-                    "Salesforce",
-                    "work",
-                    "project",
-                    "development",
-                    "CRM",
-                    "apex",
-                    "lightning",
-                    "workflow",
-                ],
-                ["personal", "hobby", "camping", "family", "vacation", "entertainment"],
-            ),
-            _tc(
-                "machine learning deep learning neural networks LLM",
-                [
-                    "machine learning",
-                    "deep learning",
-                    "neural network",
-                    "LLM",
-                    "model",
-                    "training",
-                    "algorithm",
-                    "embedding",
-                ],
-                ["camping", "3D printing", "cooking", "travel", "music", "sports"],
-            ),
-            _tc(
-                "JavaScript React Vue Angular frontend framework",
-                [
-                    "JavaScript",
-                    "React",
-                    "Vue",
-                    "Angular",
-                    "frontend",
-                    "framework",
-                    "component",
-                    "DOM",
-                ],
-                ["Python", "quantum", "biology", "chemistry", "physics", "geology"],
-            ),
-            _tc(
-                "project management kanban agile scrum methodology",
-                [
-                    "project",
-                    "management",
-                    "kanban",
-                    "agile",
-                    "scrum",
-                    "methodology",
-                    "workflow",
-                    "planning",
-                ],
-                [
-                    "learning",
-                    "archive",
-                    "personal notes",
-                    "diary",
-                    "journal",
-                    "memories",
-                ],
-            ),
-        ]
+        test_cases_file = self.vault_path / "evaluation_tests.csv"
+        
+        if not test_cases_file.exists():
+            raise FileNotFoundError(f"Test cases file not found at {test_cases_file}")
+            
+        test_cases = []
+        try:
+            with open(test_cases_file, 'r', encoding='utf-8') as f:
+                # Skip header line
+                next(f)
+                
+                for line in f:
+                    # Split by colon and strip whitespace
+                    parts = [part.strip() for part in line.split(':')]
+                    
+                    if len(parts) != 3:
+                        logger.warning(f"Skipping invalid line: {line}")
+                        continue
+                        
+                    query, expected, unwanted = parts
+                    
+                    # Split expected and unwanted words by comma and strip whitespace
+                    expected_words = [word.strip() for word in expected.split(',') if word.strip()]
+                    unwanted_words = [word.strip() for word in unwanted.split(',') if word.strip()]
+                    
+                    test_cases.append({
+                        "query": query,
+                        "expected_words": expected_words,
+                        "unwanted_words": unwanted_words,
+                    })
+                    
+        except Exception as e:
+            raise RuntimeError(f"Failed to read test cases: {e}")
+            
+        if not test_cases:
+            raise ValueError("No valid test cases found in file")
+            
+        return test_cases
 
     async def setup_vault(self) -> None:
         """
