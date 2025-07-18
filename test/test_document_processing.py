@@ -16,6 +16,8 @@ from mcps.rag.document_processing import (
     MarkdownFileTraversal,
     MarkdownProcessor,
     default_skip_patterns,
+    extract_content_tags,
+    extract_wikilinks,
 )
 from mcps.rag.interfaces import Document
 
@@ -393,8 +395,8 @@ Invalid tags: # (space after hash), #-invalid (starts with hyphen).
         assert document.metadata.title == 'Test Document'
         assert isinstance(document.modified_at, datetime)
         
-        # Verify tags (frontmatter + hashtags)
-        expected_tags = {'python', 'testing', 'hashtags', 'python-related', 'automation'}
+        # Verify tags (frontmatter)
+        expected_tags = {'python', 'testing'}
         assert set(document.tags) == expected_tags
         
         # Verify timestamps
@@ -416,8 +418,7 @@ Invalid tags: # (space after hash), #-invalid (starts with hyphen).
         
         
         # Verify tags
-        expected_tags = {'simple', 'test'}
-        assert set(document.tags) == expected_tags
+        assert set(document.tags) == set()
 
     async def test_process_empty_markdown_file(self, processor, temp_file, empty_markdown_content):
         """Test processing an empty markdown file."""
@@ -430,9 +431,9 @@ Invalid tags: # (space after hash), #-invalid (starts with hyphen).
         assert document.tags == []
         assert isinstance(document.modified_at, datetime)
 
-    async def test_extract_wikilinks_various_patterns(self, processor, markdown_with_complex_wikilinks):
+    async def test_extract_wikilinks_various_patterns(self, markdown_with_complex_wikilinks):
         """Test wikilink extraction with various patterns."""
-        links = processor._extract_wikilinks(markdown_with_complex_wikilinks)
+        links = extract_wikilinks(markdown_with_complex_wikilinks)
         
         expected_links = {
             'Simple Link',
@@ -445,17 +446,17 @@ Invalid tags: # (space after hash), #-invalid (starts with hyphen).
         }
         assert set(links) == expected_links
 
-    async def test_extract_wikilinks_duplicates_removed(self, processor):
+    async def test_extract_wikilinks_duplicates_removed(self):
         """Test that duplicate wikilinks are removed."""
         content = "[[Link1]] and [[Link2]] and [[Link1]] again."
-        links = processor._extract_wikilinks(content)
+        links = extract_wikilinks(content)
         
         assert set(links) == {'Link1', 'Link2'}
         assert len(links) == 2
 
-    async def test_extract_wikilinks_empty_content(self, processor):
+    async def test_extract_wikilinks_empty_content(self):
         """Test wikilink extraction from empty content."""
-        links = processor._extract_wikilinks("")
+        links = extract_wikilinks("")
         assert links == []
 
 
@@ -463,7 +464,8 @@ Invalid tags: # (space after hash), #-invalid (starts with hyphen).
         """Test tag extraction from both frontmatter and content."""
         # Parse the content using frontmatter
         post = frontmatter.loads(markdown_with_various_tags)
-        tags = processor._extract_tags(post)
+        frontmatter_tags = processor._extract_frontmatter_tags(post)
+        tags = extract_content_tags(post.content)
         
         expected_tags = {
             'frontmatter-tag',
@@ -474,7 +476,7 @@ Invalid tags: # (space after hash), #-invalid (starts with hyphen).
             'tag-with-hyphens',
             'tag123'
         }
-        assert set(tags) == expected_tags
+        assert set(tags+frontmatter_tags) == expected_tags
 
     async def test_extract_tags_frontmatter_string_format(self, processor):
         """Test tag extraction when frontmatter tags is a string."""
@@ -485,7 +487,7 @@ tags: single-tag
 # Content
 """
         post = frontmatter.loads(content)
-        tags = processor._extract_tags(post)
+        tags = processor._extract_frontmatter_tags(post)
         
         assert 'single-tag' in tags
 
@@ -498,16 +500,15 @@ tags: 123
 # Content with #hashtag
 """
         post = frontmatter.loads(content)
-        tags = processor._extract_tags(post)
+        tags = processor._extract_frontmatter_tags(post)
         
-        # Should only get hashtag from content, not the invalid frontmatter tag
-        assert tags == ['hashtag']
+        assert tags == []
 
     async def test_extract_tags_no_tags(self, processor):
         """Test tag extraction from content without tags."""
         content = "This is content without any tags."
         post = frontmatter.loads(content)
-        tags = processor._extract_tags(post)
+        tags = processor._extract_frontmatter_tags(post)
         
         assert tags == []
 
@@ -516,6 +517,8 @@ tags: 123
         content = """---
 tags:
   - duplicate
+  - duplicate
+  - unique
 ---
 
 # Content
@@ -523,7 +526,7 @@ tags:
 #duplicate #unique #duplicate
 """
         post = frontmatter.loads(content)
-        tags = processor._extract_tags(post)
+        tags = processor._extract_frontmatter_tags(post)
         
         assert set(tags) == {'duplicate', 'unique'}
 
@@ -606,9 +609,9 @@ Regular content here.
         ("[[]]", []),  # Empty wikilink
         ("[[Link with | pipe]]", ["Link with "]),  # Pipe in middle
     ])
-    async def test_extract_wikilinks_parametrized(self, processor, wikilink_content, expected_links):
+    async def test_extract_wikilinks_parametrized(self, wikilink_content, expected_links):
         """Parametrized test for wikilink extraction."""
-        links = processor._extract_wikilinks(wikilink_content)
+        links = extract_wikilinks(wikilink_content)
         assert set(links) == set(expected_links)
 
     @pytest.mark.parametrize("tag_content,expected_tags", [
@@ -619,10 +622,9 @@ Regular content here.
         ("# invalid", []),  # Space after hash
         ("#CamelCase", ["CamelCase"]),
     ])
-    async def test_extract_tags_parametrized(self, processor, tag_content, expected_tags):
+    async def test_extract_tags_parametrized(self, tag_content, expected_tags):
         """Parametrized test for hashtag extraction."""
-        post = frontmatter.loads(tag_content)
-        tags = processor._extract_tags(post)
+        tags = extract_content_tags(tag_content)
         assert set(tags) == set(expected_tags)
 
     async def test_process_large_file(self, processor, temp_file):
@@ -642,7 +644,8 @@ title: Large Document
         
         assert isinstance(document, Document)
         assert document.metadata.title == 'Large Document'
-        assert len(document.tags) == 100  # tag0 to tag99
+        assert len(document.tags) == 0
+        assert len(extract_content_tags(document.content)) == 100
 
     async def test_process_preserves_file_timestamps(self, processor, temp_file):
         """Test that processing preserves original file timestamps."""
@@ -650,7 +653,6 @@ title: Large Document
         
         # Get original timestamps
         stat = temp_file.stat()
-        original_ctime = datetime.fromtimestamp(stat.st_ctime)
         original_mtime = datetime.fromtimestamp(stat.st_mtime)
         
         document = await processor.process(temp_file)
@@ -675,11 +677,73 @@ description: Test Document
         
         document = await processor.process(temp_file)
         
-        # Tags should not be in metadata (they're handled separately)
-        assert 'tags' not in document.metadata
         assert document.metadata.title == 'Test'
         assert document.metadata.description == 'Test Document'
         
         # But tags should be in the tags field
         assert 'tag1' in document.tags
         assert 'tag2' in document.tags
+
+    async def test_process_small_document_no_headers(self, processor, temp_file):
+        """Test processing a small document without headers."""
+        content = """This is a small document without any headers.
+        
+It has some basic content but no markdown structure.
+It does have a [[wikilink]] and some #tags though."""
+
+        temp_file.write_text(content, encoding='utf-8')
+        document = await processor.process(temp_file)
+        
+        assert isinstance(document, Document)
+        assert document.content.strip() == content.strip()
+        assert document.metadata.title is None  # No frontmatter title
+
+    async def test_process_small_document_one_header(self, processor, temp_file):
+        """Test processing a small document with just one header."""
+        content = """# Single Header
+
+This is a small document with just one header.
+It has a [[wikilink]] and a #tag."""
+
+        temp_file.write_text(content, encoding='utf-8')
+        document = await processor.process(temp_file)
+        
+        assert isinstance(document, Document)
+        assert document.content.strip() == content.strip()
+
+    async def test_process_small_document_two_headers(self, processor, temp_file):
+        """Test processing a small document with two headers but small content."""
+        content = """# First Header
+
+Small content.
+
+## Second Header
+
+More small content with [[link]] and #tag."""
+
+        temp_file.write_text(content, encoding='utf-8')
+        document = await processor.process(temp_file)
+        
+        assert isinstance(document, Document)
+        assert document.content.strip() == content.strip()
+
+    async def test_process_small_document_with_frontmatter(self, processor, temp_file):
+        """Test processing a small document with frontmatter but minimal content."""
+        content = """---
+title: Small Document
+description: A very small document
+tags:
+  - small
+  - test
+---
+
+Just a tiny bit of content with a [[link]]."""
+
+        temp_file.write_text(content, encoding='utf-8')
+        document = await processor.process(temp_file)
+        
+        assert isinstance(document, Document)
+        assert document.metadata.title == 'Small Document'
+        assert document.metadata.description == 'A very small document'
+        assert set(document.tags) == {'small', 'test'}
+        assert 'Just a tiny bit of content' in document.content

@@ -18,11 +18,20 @@ from .interfaces import Chunk, Document, IChunker, IDocumentProcessor, IFileTrav
 
 
 def extract_wikilinks(content: str) -> list[str]:
-    """Extract wikilinks from markdown content."""
-    # Pattern for wikilinks: !?[[note name#heading|display text]]
-    # Captures only the note name portion (before # or |)
-    # Allows brackets inside link names but stops at # or |
-    wikilink_pattern = r'!?\[\[([^#|]*?)(?:[#|][^\]]*)?"]\]'
+    """Extract wikilinks from markdown content.
+    
+    Handles the following wikilink formats:
+    - Basic wikilinks: [[Note Name]]
+    - Wikilinks with display text: [[Note Name|Display Text]]
+    - Wikilinks with headers: [[Note Name#Header]]
+    - Wikilinks with both: [[Note Name#Header|Display Text]]
+    - Image wikilinks: ![[Note Name]]
+    - Wikilinks with spaces and special characters
+    - Wikilinks with nested brackets: [[Note [with] brackets]]
+    
+    Returns only the note name portion, without the header or display text.
+    """
+    wikilink_pattern = r'!?\[\[((?:[^\[\]]|\[[^\[\]]*\])*?)(?:[#|][^\]]*?)?\]\]'
     matches = re.findall(wikilink_pattern, content)
     # Filter out empty matches but preserve trailing spaces for compatibility
     filtered_matches = [match for match in matches if match.strip()]
@@ -211,32 +220,53 @@ class SemanticChunker(IChunker):
     def chunk(self, document: Document) -> Generator[Chunk, None, None]:
         """Split document into semantic chunks based on markdown structure."""
         content = document.content
-
-        # Split by headers (# ## ### etc.)
-        sections = self._split_by_headers(content)
-
-        position = 0
         chunk_count = 0
-        i = 0
-        
-        while i < len(sections):
-            current_section = sections[i]
+        if not content.strip():
+            yield from ()
+        else:
+            # Split by headers (# ## ### etc.)
+            sections = self._split_by_headers(content)
+
+            position = 0
+            i = 0
             
-            # If section is too small, merge with next sections until min_chunk_size is reached
-            if len(current_section.strip()) < self.min_chunk_size:
-                merged_content = current_section
-                j = i + 1
+            while i < len(sections):
+                current_section = sections[i]
                 
-                # Keep merging sections until we reach min_chunk_size or run out of sections
-                while j < len(sections) and len(merged_content.strip()) < self.min_chunk_size:
-                    merged_content += "\n\n" + sections[j]
-                    j += 1
-                
-                # Only create chunk if we have content and it meets min size after merging
-                if len(merged_content.strip()) >= self.min_chunk_size:
-                    # If merged content is too large, split it further
-                    if len(merged_content) > self.max_chunk_size:
-                        sub_chunks = self._split_large_section(merged_content)
+                # If section is too small, merge with next sections until min_chunk_size is reached
+                if len(current_section.strip()) < self.min_chunk_size:
+                    merged_content = current_section
+                    j = i + 1
+                    
+                    # Keep merging sections until we reach min_chunk_size or run out of sections
+                    while j < len(sections) and len(merged_content.strip()) < self.min_chunk_size:
+                        merged_content += "\n\n" + sections[j]
+                        j += 1
+                    
+                    # Only create chunk if we have content and it meets min size after merging
+                    if len(merged_content.strip()) >= self.min_chunk_size or (i == 0 and j == len(sections)):
+                        # If merged content is too large, split it further
+                        if len(merged_content) > self.max_chunk_size:
+                            sub_chunks = self._split_large_section(merged_content)
+                            for sub_chunk in sub_chunks:
+                                if len(sub_chunk.strip()) >= self.min_chunk_size:
+                                    chunk = create_chunk(document, sub_chunk, position)
+                                    yield chunk
+                                    position += 1
+                                    chunk_count += 1
+                        else:
+                            chunk = create_chunk(document, merged_content, position)
+                            yield chunk
+                            position += 1
+                            chunk_count += 1
+                    
+                    # Move to the next unprocessed section
+                    i = j
+                else:
+                    # Section is large enough on its own
+                    # If section is too large, split it further
+                    if len(current_section) > self.max_chunk_size:
+                        sub_chunks = self._split_large_section(current_section)
                         for sub_chunk in sub_chunks:
                             if len(sub_chunk.strip()) >= self.min_chunk_size:
                                 chunk = create_chunk(document, sub_chunk, position)
@@ -244,31 +274,12 @@ class SemanticChunker(IChunker):
                                 position += 1
                                 chunk_count += 1
                     else:
-                        chunk = create_chunk(document, merged_content, position)
+                        chunk = create_chunk(document, current_section, position)
                         yield chunk
                         position += 1
                         chunk_count += 1
-                
-                # Move to the next unprocessed section
-                i = j
-            else:
-                # Section is large enough on its own
-                # If section is too large, split it further
-                if len(current_section) > self.max_chunk_size:
-                    sub_chunks = self._split_large_section(current_section)
-                    for sub_chunk in sub_chunks:
-                        if len(sub_chunk.strip()) >= self.min_chunk_size:
-                            chunk = create_chunk(document, sub_chunk, position)
-                            yield chunk
-                            position += 1
-                            chunk_count += 1
-                else:
-                    chunk = create_chunk(document, current_section, position)
-                    yield chunk
-                    position += 1
-                    chunk_count += 1
-                
-                i += 1
+                    
+                    i += 1
 
         logger.info(f"Created {chunk_count} semantic chunks from document {document.source_path}")
 

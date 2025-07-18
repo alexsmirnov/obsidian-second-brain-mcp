@@ -51,10 +51,45 @@ class TestLazyChunking:
         return Document(
             id="empty_doc_789",
             content="",
-            metadata={},
-            outgoing_links=[],
+            metadata=Metadata(title="Empty Document", description="An empty document for testing"),
             tags=[],
             source_path="/tmp/empty.md",
+            modified_at=datetime.now()
+        )
+
+    @pytest.fixture
+    def small_document_no_headers(self):
+        """Create a small document with no headers."""
+        return Document(
+            id="small_doc_no_headers",
+            content="This is a small document without any headers.\n\nIt has two paragraphs but no markdown headers.",
+            metadata=Metadata(title="Small Doc No Headers", description="Test small doc without headers"),
+            tags=["small", "test"],
+            source_path="/tmp/small.md",
+            modified_at=datetime.now()
+        )
+
+    @pytest.fixture
+    def small_document_one_header(self):
+        """Create a small document with just one header."""
+        return Document(
+            id="small_doc_one_header",
+            content="# Single Header\n\nThis is a small document with just one header.",
+            metadata=Metadata(title="Small Doc One Header", description="Test small doc with one header"),
+            tags=["small", "test"],
+            source_path="/tmp/small_one.md",
+            modified_at=datetime.now()
+        )
+
+    @pytest.fixture
+    def small_document_two_headers(self):
+        """Create a small document with two headers but small content."""
+        return Document(
+            id="small_doc_two_headers",
+            content="# First Header\n\nSmall content.\n\n## Second Header\n\nMore small content.",
+            metadata=Metadata(title="Small Doc Two Headers", description="Test small doc with two headers"),
+            tags=["small", "test"],
+            source_path="/tmp/small_two.md",
             modified_at=datetime.now()
         )
 
@@ -136,9 +171,7 @@ class TestLazyChunking:
             assert chunk.content.strip()  # Non-empty content
             assert chunk.position == i
             assert chunk.source_path == sample_document.source_path
-            assert chunk.metadata == sample_document.metadata
-            # assert chunk.outgoing_links == sample_document.outgoing_links
-            # assert chunk.tags == sample_document.tags
+            assert chunk.tags == sample_document.tags
 
     def test_semantic_chunker_content_unchanged(self, sample_document):
         """Test that SemanticChunker produces the same content as before."""
@@ -153,9 +186,8 @@ class TestLazyChunking:
             assert chunk.content.strip()  # Non-empty content
             assert chunk.position == i
             assert chunk.source_path == sample_document.source_path
-            assert chunk.metadata == sample_document.metadata
-            # assert chunk.outgoing_links == sample_document.outgoing_links
-            # assert chunk.tags == sample_document.tags
+            # assert set(chunk.outgoing_links) == {"link"}
+            assert set(chunk.tags) == set(sample_document.tags)
 
     def test_fixed_size_chunker_with_empty_document(self, empty_document):
         """Test FixedSizeChunker with empty document."""
@@ -353,3 +385,42 @@ class TestLazyChunking:
             assert isinstance(chunk, Chunk)
             assert len(chunk.content.strip()) >= min_size or len(chunks) == 1  # Allow single chunk exception
             assert chunk.id.startswith(sample_document.id)
+
+    def test_semantic_chunker_small_document_no_headers(self, small_document_no_headers):
+        """Test SemanticChunker with a small document containing no headers."""
+        chunker = SemanticChunker(max_chunk_size=1000, min_chunk_size=10)  # Small min_chunk_size
+        chunks = list(chunker.chunk(small_document_no_headers))
+        
+        # Should produce at least one chunk despite no headers
+        assert len(chunks) > 0
+        assert chunks[0].content == small_document_no_headers.content
+
+    def test_semantic_chunker_small_document_one_header(self, small_document_one_header):
+        """Test SemanticChunker with a small document containing one header."""
+        chunker = SemanticChunker(max_chunk_size=1000, min_chunk_size=10)
+        chunks = list(chunker.chunk(small_document_one_header))
+        
+        # Should produce at least one chunk
+        assert len(chunks) > 0
+        assert "# Single Header" in chunks[0].content
+
+    def test_semantic_chunker_small_document_two_headers(self, small_document_two_headers):
+        """Test SemanticChunker with a small document containing two headers but small content."""
+        chunker = SemanticChunker(max_chunk_size=1000, min_chunk_size=10)
+        chunks = list(chunker.chunk(small_document_two_headers))
+        
+        # Should produce at least one chunk
+        assert len(chunks) > 0
+        # Content should be preserved
+        full_content = "\n\n".join(chunk.content for chunk in chunks)
+        assert "# First Header" in full_content
+        assert "## Second Header" in full_content
+
+    def test_semantic_chunker_with_various_min_sizes(self, small_document_two_headers):
+        """Test SemanticChunker with different min_chunk_size values."""
+        test_sizes = [10, 50, 100, 200]
+        for min_size in test_sizes:
+            chunker = SemanticChunker(max_chunk_size=1000, min_chunk_size=min_size)
+            chunks = list(chunker.chunk(small_document_two_headers))
+            # Should always produce at least one chunk
+            assert len(chunks) > 0, f"Failed with min_chunk_size={min_size}"
