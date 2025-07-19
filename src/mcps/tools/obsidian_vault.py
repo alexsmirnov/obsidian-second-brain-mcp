@@ -29,7 +29,7 @@ class ObsidianTools(Tools):
         """
         self.mcp = mcp
         self.config = config
-        self.vault = create_vault(config.vault_dir) # type: ignore
+        self.vault = create_vault(config)
         logger.info(f"ObsidianTools initialized for vault: {config.vault_dir}")
     
     def register(self) -> None:

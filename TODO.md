@@ -1,11 +1,11 @@
 # Project tasks
 - [DONE] add more test queries and result checks to vault_evaluation
 - [DONE] improve obsidian search result formatting: make it compact, use only names for links as in [[wikilinks]]
-- [ ] refine obsidian tools and parameters descriptions. Do some evaluations with real models
-- [ ] vault factory methods to get options from Config instead of parameters or environment
+- [DONE] vault factory methods to get options from Config instead of parameters or environment
 - [FIXED] BUG: response size ignored in Vault
 - [ ] convert OllamaReranker to OpenAIReranker to use any openai compatible endpoints. Optionally, add support to voyageai rerank.
-- [ ] add agentic Vault#deep_research  agentic search: incoming request router to estimate file and tag search options based on query, summarize result and enrich content from linked notes 
+- [ ] add agentic ISearch implementation: incoming request router to estimate file and tag search options based on query, summarize result and enrich content from linked notes 
+- [ ] refine obsidian tools and parameters descriptions. Do some evaluations with real models
 - [ ] add create_note, delete_note, edit_note obsidian tools 
 - [ ] add READ_ONLY config option. Disable valult manipulation tools if it is true
 - [ ] implement web search and summarize tools

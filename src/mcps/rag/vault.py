@@ -6,6 +6,7 @@ managing all aspects of document indexing, searching, and retrieval in a RAG sys
 """
 
 import asyncio
+from calendar import c
 from importlib.metadata import files
 import logging
 from math import log
@@ -15,8 +16,9 @@ from pathlib import Path
 from typing import Any, Optional
 
 from lancedb.embeddings import EmbeddingFunction, OllamaEmbeddings
-from lancedb.rerankers import RRFReranker
+from lancedb.rerankers import RRFReranker, Reranker, VoyageAIReranker
 
+from mcps.config import ServerConfig
 from mcps.rag.ollama_reranker import OllamaReranker
 
 from .database import LanceDBStore
@@ -39,19 +41,19 @@ from lancedb.embeddings import EmbeddingFunction, get_registry
 logger = logging.getLogger("mcps.vault")
 
 
-def _create_embedding_function() -> EmbeddingFunction:
+def _create_embedding_function(config: ServerConfig) -> EmbeddingFunction:
     """Create and configure embedding function."""
-    ollama_base_url = os.getenv("OLLAMA_API_BASE")
-    voyage_api_key = os.getenv("VOYAGE_API_KEY")
+    ollama_base_url = config.ollama_api_base
+    voyage_api_key = config.voyage_api_key
     if voyage_api_key:
-        return get_registry().get("voyageai").create(name='voyage-3-lite')
+        return get_registry().get("voyageai").create(name=config.voyage_embedding_model)
     elif ollama_base_url:
-        return get_registry().get("ollama").create(name="bge-m3:latest", host=ollama_base_url)
+        return get_registry().get("ollama").create(name=config.ollama_embedding_model, host=ollama_base_url)
     else:
         raise RuntimeError("No embedding service configured. Set OLLAMA_API_BASE or VOYAGE_API_KEY environment variable.")
 
 
-def _create_file_traversal(vault_path: Path, skip_patterns: Optional[list[str]] = None) -> IFileTraversal:
+def _create_file_traversal(vault_path: Path) -> IFileTraversal:
     """Create and configure file traversal service."""
     return MarkdownFileTraversal(base_path=vault_path)
 
@@ -67,44 +69,42 @@ def _create_chunker() -> IChunker:
     return SemanticChunker()
 
 
-def _create_reranker():
+def _create_reranker(config: ServerConfig) -> Reranker:
     """Create and configure reranker."""
-    if os.environ.get("VOYAGE_API_KEY"):
-        from lancedb.rerankers import VoyageAIReranker
-        return VoyageAIReranker(model_name="rerank-2-lite", column="content", api_key=os.environ.get("VOYAGE_API_KEY"))
-    elif os.environ.get("OLLAMA_API_BASE"):
+    if config.voyage_api_key:
+        return VoyageAIReranker(model_name=config.voyage_reranker_model, column="content", api_key=config.voyage_api_key)
+    elif config.ollama_api_base:
         return OllamaReranker(
-            model_name="phi4-mini:latest",
-            ollama_base_url=os.environ.get("OLLAMA_API_BASE", "http://localhost:11434"),
-            embedding_model="bge-m3:latest",
+            model_name=config.ollama_reranker_model,
+            ollama_base_url=config.ollama_api_base,
+            embedding_model=config.ollama_embedding_model,
             return_score='relevance',
             column='content',
             weight=1.0
         )
     else:
-        from lancedb.rerankers import RRFReranker
         return RRFReranker(return_score='all')
 
 
-def _create_vector_store(db_path: Path, table_name: str) -> IVectorStore:
+def _create_vector_store(config: ServerConfig) -> IVectorStore:
     """Create and configure vector store service."""
     return LanceDBStore(
-        db_path=db_path,
-        embedding_function=_create_embedding_function(),
-        table_name=table_name,
-        reranker=_create_reranker()
+        db_path=config.vault_dir / '.vault_db', # type: ignore
+        embedding_function=_create_embedding_function(config),
+        table_name=config.table_name,
+        reranker=_create_reranker(config)
     )
 
 
-def _create_search_engine(vector_store: IVectorStore) -> ISearchEngine:
+def _create_search_engine(vector_store: IVectorStore, config: ServerConfig) -> ISearchEngine:
     """Create and configure search engine service."""
-    result_formatter = _create_result_formatter()
-    return SemanticSearchEngine(vector_store,result_formatter, limit=20)
+    result_formatter = _create_result_formatter(config)
+    return SemanticSearchEngine(vector_store,result_formatter, limit=config.search_limit)
 
 
-def _create_result_formatter(max_content_length: int = 4000) -> IResultFormatter:
+def _create_result_formatter(config: ServerConfig) -> IResultFormatter:
     """Create and configure result formatter service."""
-    return MarkdownResultFormatter(max_content_length=max_content_length)
+    return MarkdownResultFormatter(max_content_length=config.max_chunk_size)
 
 
 class Vault(IVault):
@@ -481,8 +481,7 @@ class Vault(IVault):
 
 
 def create_vault(
-    vault_path: Path,
-    db_table_name: str = "documents",
+    config: ServerConfig,
 ) -> Vault:
     """
     Factory method to create a fully configured Vault instance.
@@ -508,6 +507,7 @@ def create_vault(
         RuntimeError: If service creation fails
     """
     try:
+        vault_path : Path = config.vault_dir # type: ignore checked in server.py
         logger.info(f"Creating Vault for path: {vault_path}")
         
         # Create all services using factory methods
@@ -515,9 +515,8 @@ def create_vault(
         document_processor = _create_document_processor(Path(vault_path))
         chunker = _create_chunker()
         
-        db_path = Path(vault_path) / '.vault_db'
-        vector_store = _create_vector_store(db_path, db_table_name)
-        search_engine = _create_search_engine(vector_store)
+        vector_store = _create_vector_store(config)
+        search_engine = _create_search_engine(vector_store, config)
         
         # Create and return Vault instance with injected services
         vault = Vault(

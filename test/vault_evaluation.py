@@ -10,12 +10,14 @@ about AI/ML, programming, projects, and personal knowledge management.
 """
 
 import asyncio
+import os
 from dotenv import load_dotenv, find_dotenv
 import logging
 from pathlib import Path
 from typing import List, Dict, Any
 import pytest
 
+from mcps.config import ServerConfig
 from mcps.rag.vault import create_vault, Vault
 
 
@@ -118,14 +120,20 @@ class VaultEvaluationTest:
             RuntimeError: If vault setup fails
         """
         try:
+            config = ServerConfig(
+                vault_dir=self.vault_path,
+                table_name="evaluation_test",
+                voyage_api_key=os.getenv("VOYAGE_API_KEY", ""),
+            ) if os.getenv("VOYAGE_API_KEY") else ServerConfig(
+
+                vault_dir=self.vault_path,
+                table_name="evaluation_test",
+                ollama_api_base=os.getenv("OLLAMA_API_BASE", ""),
+            )
             logger.info(f"Setting up Vault with path: {self.vault_path}")
 
             # Initialize Vault with optimized settings for testing
-            self.vault = create_vault(
-                vault_path=self.vault_path,
-                db_table_name="evaluation_test",
-            )
-
+            self.vault = create_vault( config )
             # Initialize and update index
             await self.vault.initialize()
             logger.info("Vault initialized successfully")
