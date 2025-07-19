@@ -1,5 +1,5 @@
 # Project tasks
-- [ ] add more test queries and result checks to vault_evaluation
+- [DONE] add more test queries and result checks to vault_evaluation
 - [ ] improve obsidian search result formatting: make it compact, use only names for links as in [[wikilinks]]
 - [ ] refine obsidian tools and parameters descriptions. Do some evaluations with real models
 - [ ] vault factory methods to get options from Config instead of parameters or environment

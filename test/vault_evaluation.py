@@ -220,7 +220,7 @@ class VaultEvaluationTest:
 
             # Perform search
             search_results = await self.vault.search(test_case["query"])
-            logger.info(f"Search results: {search_results[:1000]}...")
+            logger.info(f"Search results: {search_results[:50]}...")
             # Calculate metrics
             precision = self.calculate_precision(
                 search_results, test_case["expected_words"]
