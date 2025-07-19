@@ -171,7 +171,7 @@ class ISearchEngine(ABC):
     """Interface for search operations."""
 
     @abstractmethod
-    async def search(self, query: SearchQuery) -> list[Chunk]:
+    async def search(self, query: SearchQuery) -> str:
         """Perform a search operation."""
         pass
 

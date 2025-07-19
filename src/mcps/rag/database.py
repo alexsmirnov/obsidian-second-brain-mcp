@@ -154,6 +154,7 @@ class LanceDBStore(IVectorStore):
             query_builder = query_builder.rerank(self.reranker)
             # Go!
             results = await query_builder.limit(limit).to_list()
+            logger.info(f"Found {len(results)} results for query '{query}' with tags {tags} and file path '{file_path}' and limit {limit}")
             return [Chunk.model_validate(result) for result in results]
         
         except Exception as e:

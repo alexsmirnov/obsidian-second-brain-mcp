@@ -16,7 +16,7 @@ from .interfaces import (
     SearchResult,
 )
 
-logger = logging.getLogger("mcps")
+logger = logging.getLogger("mcps.search")
 
 
 class SemanticSearchEngine(ISearchEngine):
@@ -25,28 +25,34 @@ class SemanticSearchEngine(ISearchEngine):
     def __init__(
         self, 
         vector_store: IVectorStore,
-        limit: int = 25
+        formatter: IResultFormatter,
+        limit: int = 25,
+        min_score = 0.5
     ):
         self.vector_store = vector_store
+        self.formatter = formatter
         self.limit = limit
+        self.min_score = min_score
     
-    async def search(self, query: SearchQuery) -> list[Chunk]:
+    async def search(self, query: SearchQuery) -> str:
         """Perform a semantic search operation."""
-        return await self.vector_store.search(
+        chunks = await self.vector_store.search(
             query=query.text,
             tags=query.tags,
             file_path=query.path,
             scope=query.scope,
             limit=self.limit
         )
+        relevant_chunks = [chunk for chunk in chunks if getattr(chunk, '_relevance_score', 1.0) >= self.min_score]
+        logger.info(f"Search completed: found {len(relevant_chunks)} relevant results out of {len(chunks)} total")
+        return await self.formatter.format(relevant_chunks, query)
     
 
 class MarkdownResultFormatter(IResultFormatter):
     """Markdown result formatter for search results."""
     
-    def __init__(self, max_content_length: int = 500, include_metadata: bool = True):
+    def __init__(self, max_content_length: int = 1000):
         self.max_content_length = max_content_length
-        self.include_metadata = include_metadata
     
     async def format(self, results: list[Chunk], query: SearchQuery) -> str:
         """Format search results as markdown."""
@@ -55,21 +61,13 @@ class MarkdownResultFormatter(IResultFormatter):
         
         formatted_parts = []
         
-        # Header
-        formatted_parts.append(f"# Search Results for: {query.text}")
-        formatted_parts.append(f"Found {len(results)} relevant results\n")
-        
         # Results
         for i, chunk in enumerate(results, 1):
             
             # Result header
-            score_text = f" (Score: {getattr(chunk, 'score', 0.0):.3f})" if hasattr(chunk, 'score') else ""
-            formatted_parts.append(f"## Result {i}{score_text}")
-            
-            # Source information
+            score_text = f" (Score: {getattr(chunk, '_relevance_score', 0.0):.3f})" if hasattr(chunk, '_relevance_score') else ""
+            formatted_parts.append(f"# Result {i}{score_text} ")
             formatted_parts.append(f"**Source:** `{chunk.source_path}`")
-            if chunk.position > 0:
-                formatted_parts.append(f"**Section:** {chunk.position}")
             
             # Content preview
             content = chunk.content.strip()
@@ -86,24 +84,10 @@ class MarkdownResultFormatter(IResultFormatter):
             if chunk.outgoing_links:
                 formatted_parts.append(f"**Links:** {', '.join(f'[[{link}]]' for link in chunk.outgoing_links)}")
             
-            # Metadata
-            if self.include_metadata :
-                metadata_items = []
-                
-                if metadata_items:
-                    formatted_parts.append(f"**Metadata:** {', '.join(metadata_items)}")
-            
-            # Modified date
             formatted_parts.append(f"**Modified:** {chunk.modified_at.strftime('%Y-%m-%d %H:%M')}")
             
             formatted_parts.append("")  # Empty line between results
         
-        # Citations
-        formatted_parts.append("---")
-        formatted_parts.append("## Sources")
-        unique_sources = list(set(chunk.source_path for chunk in results))
-        for source in unique_sources:
-            formatted_parts.append(f"- `{source}`")
         
         return "\n".join(formatted_parts)
 
@@ -125,7 +109,7 @@ class CompactResultFormatter(IResultFormatter):
         # Limit results for compact display
         display_results = results[:self.max_results]
         
-        formatted_parts.append(f"**Found {len(results)} results for:** {query.text}\n")
+        # formatted_parts.append(f"**Found {len(results)} results for:** {query.text}\n")
         
         for i, result in enumerate(display_results, 1):
             chunk = result.chunk
@@ -136,13 +120,15 @@ class CompactResultFormatter(IResultFormatter):
                 content = content[:self.snippet_length] + "..."
             
             # Format result
-            source_name = chunk.source_path.name
-            formatted_parts.append(f"**{i}.** {source_name} (Score: {result.score:.2f})")
+            source_name = chunk.source_path
+            score_text = f" (Score: {getattr(chunk, '_relevance_score', 0.0):.3f})" if hasattr(chunk, '_relevance_score') else ""
+            formatted_parts.append(f"**{i}.** Source: {source_name}{score_text})")
             formatted_parts.append(f"   {content}")
             
             if chunk.tags:
-                formatted_parts.append(f"   Tags: {', '.join(f'#{tag}' for tag in chunk.tags[:3])}")
-            
+                formatted_parts.append(f"Tags: {', '.join(f'#{tag}' for tag in chunk.tags[:10])}")
+            if chunk.outgoing_links:
+                formatted_parts.append(f"Links: {', '.join(f'[[{link}]]' for link in chunk.outgoing_links[:10])}")
             formatted_parts.append("")
         
         if len(results) > self.max_results:

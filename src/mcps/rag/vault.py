@@ -98,12 +98,13 @@ def _create_vector_store(db_path: Path, table_name: str) -> IVectorStore:
 
 def _create_search_engine(vector_store: IVectorStore) -> ISearchEngine:
     """Create and configure search engine service."""
-    return SemanticSearchEngine(vector_store=vector_store, limit=10)
+    result_formatter = _create_result_formatter()
+    return SemanticSearchEngine(vector_store,result_formatter, limit=20)
 
 
-def _create_result_formatter(max_content_length: int = 4000, include_metadata: bool = True) -> IResultFormatter:
+def _create_result_formatter(max_content_length: int = 4000) -> IResultFormatter:
     """Create and configure result formatter service."""
-    return MarkdownResultFormatter(max_content_length=max_content_length, include_metadata=include_metadata)
+    return MarkdownResultFormatter(max_content_length=max_content_length)
 
 
 class Vault(IVault):
@@ -137,7 +138,6 @@ class Vault(IVault):
         chunker: IChunker,
         vector_store: IVectorStore,
         search_engine: ISearchEngine,
-        result_formatter: IResultFormatter,
         batch_size: int = 8,
     ):
         """
@@ -167,7 +167,6 @@ class Vault(IVault):
         self.chunker = chunker
         self.vector_store = vector_store
         self.search_engine = search_engine
-        self.result_formatter = result_formatter
         
         logger.info(f"Vault initialized with injected services for path: {vault_path}")
     
@@ -322,14 +321,6 @@ class Vault(IVault):
                 logger.info("Index update needed before search")
                 await self.update_index()
             
-            chunks = await self.vector_store.search(
-                query=query,
-                tags=[],
-                file_path=None,
-                scope=SearchScope.ALL,
-                limit=5
-            )
-            
             search_query = SearchQuery(
                 text=query,
                 tags=[],
@@ -337,9 +328,11 @@ class Vault(IVault):
                 path=None
             )
             
-            formatted_results = await self.result_formatter.format(chunks, search_query)
+            formatted_results = await self.search_engine.search(
+                query=search_query,
+            )
             
-            logger.info(f"Search completed: found {len(chunks)} results")
+            
             return formatted_results
             
         except Exception as e:
@@ -525,7 +518,6 @@ def create_vault(
         db_path = Path(vault_path) / '.vault_db'
         vector_store = _create_vector_store(db_path, db_table_name)
         search_engine = _create_search_engine(vector_store)
-        result_formatter = _create_result_formatter()
         
         # Create and return Vault instance with injected services
         vault = Vault(
@@ -535,7 +527,6 @@ def create_vault(
             chunker=chunker,
             vector_store=vector_store,
             search_engine=search_engine,
-            result_formatter=result_formatter,
         )
         
         logger.info("Vault factory method completed successfully")
