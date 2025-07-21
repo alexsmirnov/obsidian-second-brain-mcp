@@ -3,8 +3,14 @@
 - [DONE] improve obsidian search result formatting: make it compact, use only names for links as in [[wikilinks]]
 - [DONE] vault factory methods to get options from Config instead of parameters or environment
 - [FIXED] BUG: response size ignored in Vault
-- [ ] convert OllamaReranker to OpenAIReranker to use any openai compatible endpoints. Optionally, add support to voyageai rerank.
-- [ ] add agentic ISearch implementation: incoming request router to estimate file and tag search options based on query, summarize result and enrich content from linked notes 
+- [ ] convert OllamaReranker to OpenAIReranker to use any openai compatible endpoints. Make it as chain of wrappers ( embeddings, llm, basic )
+- [ ] add agentic ISearch implementation: incoming request router to estimate file and tag search options based on query, summarize result and enrich content from linked notes
+    - update search evaluation script and tests to more adequate estimations. Add LLM as a judge ?
+    - router model at front, to estimate search restrictions by tags and files. Evaluation to tune prompts
+    - rewrite query to match possible content from question. 
+    - after a first search, follow links and incoming links to refine results - graph RAG
+    - reqrite answer to keep relevant information only. Keep links to documents where it came from
+    - follow web references
 - [ ] refine obsidian tools and parameters descriptions. Do some evaluations with real models
 - [ ] add create_note, delete_note, edit_note obsidian tools 
 - [ ] add READ_ONLY config option. Disable valult manipulation tools if it is true
