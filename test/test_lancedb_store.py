@@ -25,8 +25,8 @@ import pytest
 from dotenv import load_dotenv, find_dotenv
 
 from mcps.rag.database import LanceDBStore
-from mcps.rag.interfaces import Chunk, IVectorStore, SearchScope
-from lancedb.embeddings import EmbeddingFunction, get_registry
+from mcps.rag.embeddings import OpenAIEmbedding
+from mcps.rag.interfaces import Chunk, IVectorStore, SearchScope, IEmbeddingService
 
 load_dotenv(find_dotenv())
 load_dotenv(find_dotenv(usecwd=True))
@@ -100,33 +100,34 @@ def sample_chunks():
 
 
 @pytest.fixture
-def dummy_embedding_function() -> EmbeddingFunction:
+async def dummy_embedding_function() -> IEmbeddingService:
     """Create a dummy embedding function for testing.
         The only assumption that embeddings for the same text will always be the same.
     """
     ollama_base_url = os.getenv("OLLAMA_API_BASE")
     if ollama_base_url:
-        return get_registry().get("ollama").create(name="bge-m3", host=ollama_base_url)
+        async with OpenAIEmbedding(
+            model_name="bge-m3",
+            dimensions=1024,
+            api_base=ollama_base_url + "/v1",
+            api_key="dummy",
+        ) as svc:
+            yield svc
+    else:
+        class DummyEmbeddingFunction(IEmbeddingService):
+            def _generate_embedding(self, text: str) -> np.ndarray:
+                hash_digest = hashlib.sha256(text.encode('utf-8')).digest()
+                embedding_int = np.frombuffer(hash_digest, dtype=np.uint16, count=16)
+                embedding_fp16 = (embedding_int / 65535.0).astype(np.float16)
 
-    class DummyEmbeddingFunction(EmbeddingFunction):
-        def _generate_embedding(self, text: str) -> np.ndarray:
-            hash_digest = hashlib.sha256(text.encode('utf-8')).digest()
-            embedding_int = np.frombuffer(hash_digest, dtype=np.uint16, count=16)
-            embedding_fp16 = (embedding_int / 65535.0).astype(np.float16)
+                return embedding_fp16
 
-            return embedding_fp16
+            async def generate_embeddings(self, texts: list[str], query: bool = False) -> list[list[float]]:
+                return
+            def ndims(self):
+                return 16
 
-        def compute_query_embeddings(self, *args, **kwargs):
-            # Return a fixed embedding for testing
-            return [self._generate_embedding(arg) for arg in args]
-        def ndims(self):
-            return 16
-
-        def compute_source_embeddings(self, *args, **kwargs) -> list[Any | None]:
-            return [self._generate_embedding(arg) for arg in args]
-
-    
-    return DummyEmbeddingFunction()
+        yield DummyEmbeddingFunction()
 
 @pytest.fixture
 def lancedb_store(temp_db_path,dummy_embedding_function) -> IVectorStore:

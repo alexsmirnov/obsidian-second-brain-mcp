@@ -3,8 +3,8 @@
 - [DONE] improve obsidian search result formatting: make it compact, use only names for links as in [[wikilinks]]
 - [DONE] vault factory methods to get options from Config instead of parameters or environment
 - [FIXED] BUG: response size ignored in Vault
-- [ ] 
-- [ ] convert OllamaReranker to OpenAIReranker to use any openai compatible endpoints. Make it as chain of wrappers ( embeddings, llm, basic )
+- [DONE] implement batch embeddings service
+- [ ] convert OllamaReranker to OpenAIReranker to use any openai compatible endpoints. Make it as chain of wrappers ( embeddings, llm, basic ). Do rerank in Search instead of lancedb
 - [ ] add agentic ISearch implementation: incoming request router to estimate file and tag search options based on query, summarize result and enrich content from linked notes
     - update search evaluation script and tests to more adequate estimations. Add LLM as a judge ?
     - router model at front, to estimate search restrictions by tags and files. Evaluation to tune prompts

@@ -116,6 +116,10 @@ class IEmbeddingService(ABC):
             list[list[float]]: List of embeddings arrays for the texts."""
         pass
 
+    @abstractmethod
+    def ndims() -> int:
+        """Return the number of dimensions of the embeddings."""
+        pass
 
 class IVectorStore(ABC):
     """Interface for vector storage operations."""

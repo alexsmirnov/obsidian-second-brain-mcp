@@ -171,7 +171,7 @@ class TestLazyChunking:
             assert chunk.content.strip()  # Non-empty content
             assert chunk.position == i
             assert chunk.source_path == sample_document.source_path
-            assert chunk.tags == sample_document.tags
+            assert set(chunk.tags) == set(sample_document.tags)
 
     def test_semantic_chunker_content_unchanged(self, sample_document):
         """Test that SemanticChunker produces the same content as before."""

@@ -6,6 +6,7 @@ import logging
 from operator import le
 
 import openai
+from lancedb.embeddings import EmbeddingFunction
 from .interfaces import IEmbeddingService
 
 logger = logging.getLogger("mcps")
@@ -55,6 +56,10 @@ class OpenAIEmbedding(IEmbeddingService):
             logger.error(f"Failed to generate OpenAI embedding: {e}")
             # Return zero vector as fallback
             return [[0.0] * self.dimensions] * len(texts)
+
+    def ndims(self) -> int:
+        """Return the number of dimensions of the embeddings."""
+        return self.dimensions
 
     async def __aenter__(self):
         return self

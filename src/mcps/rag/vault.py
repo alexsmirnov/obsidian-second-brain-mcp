@@ -13,12 +13,14 @@ from math import log
 import os
 from datetime import datetime, timedelta
 from pathlib import Path
+from re import I
 from typing import Any, Optional
 
 from lancedb.embeddings import EmbeddingFunction, OllamaEmbeddings
 from lancedb.rerankers import RRFReranker, Reranker, VoyageAIReranker
 
 from mcps.config import ServerConfig
+from mcps.rag.embeddings import OpenAIEmbedding
 from mcps.rag.ollama_reranker import OllamaReranker
 
 from .database import LanceDBStore
@@ -26,6 +28,7 @@ from .document_processing import FixedSizeChunker, MarkdownFileTraversal, Markdo
 from .interfaces import (
     IChunker,
     IDocumentProcessor,
+    IEmbeddingService,
     IFileTraversal,
     IResultFormatter,
     ISearchEngine,
@@ -41,14 +44,30 @@ from lancedb.embeddings import EmbeddingFunction, get_registry
 logger = logging.getLogger("mcps.vault")
 
 
-def _create_embedding_function(config: ServerConfig) -> EmbeddingFunction:
+def _create_embedding_function(config: ServerConfig) -> IEmbeddingService:
     """Create and configure embedding function."""
     ollama_base_url = config.ollama_api_base
     voyage_api_key = config.voyage_api_key
+    openai_api_key = config.openai_api_key
     if voyage_api_key:
-        return get_registry().get("voyageai").create(name=config.voyage_embedding_model)
+        return OpenAIEmbedding(
+            model_name="voyage-3.5-lite",
+            dimensions=1024,
+            api_key=voyage_api_key,
+            api_base="https://api.voyageai.com/v1",
+            provider="voyage")
+    elif openai_api_key:
+        return OpenAIEmbedding(
+            model_name="text-embedding-3-small",
+            dimensions=1536,
+            api_key=openai_api_key,
+            provider="openai")
     elif ollama_base_url:
-        return get_registry().get("ollama").create(name=config.ollama_embedding_model, host=ollama_base_url)
+        return OpenAIEmbedding(
+            model_name="bge-m3",
+            dimensions=1024,
+            api_base=ollama_base_url + "/v1",
+            api_key="dummy")
     else:
         raise RuntimeError("No embedding service configured. Set OLLAMA_API_BASE or VOYAGE_API_KEY environment variable.")
 
@@ -90,7 +109,7 @@ def _create_vector_store(config: ServerConfig) -> IVectorStore:
     """Create and configure vector store service."""
     return LanceDBStore(
         db_path=config.vault_dir / '.vault_db', # type: ignore
-        embedding_function=_create_embedding_function(config),
+        embedding_service=_create_embedding_function(config),
         table_name=config.table_name,
         reranker=_create_reranker(config)
     )
