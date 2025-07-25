@@ -107,8 +107,13 @@ class IEmbeddingService(ABC):
     """Interface for embedding generation."""
 
     @abstractmethod
-    async def generate_embedding(self, text: str) -> list[float]:
-        """Generate embedding for a single text."""
+    async def generate_embeddings(self, texts: list[str], query: bool = False) -> list[list[float]]:
+        """Generate embedding for a list of texts
+        Args:
+            texts (list[str]): List of texts to generate embeddings for.
+            query (bool): Whether the texts are queries or documents.
+        Returns:
+            list[list[float]]: List of embeddings arrays for the texts."""
         pass
 
 
