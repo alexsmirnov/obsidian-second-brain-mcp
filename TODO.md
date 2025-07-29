@@ -4,7 +4,6 @@
 - [DONE] vault factory methods to get options from Config instead of parameters or environment
 - [FIXED] BUG: response size ignored in Vault
 - [DONE] implement batch embeddings service
-- [ ] convert OllamaReranker to OpenAIReranker to use any openai compatible endpoints. Make it as chain of wrappers ( embeddings, llm, basic ). Do rerank in Search instead of lancedb
 - [ ] add agentic ISearch implementation: incoming request router to estimate file and tag search options based on query, summarize result and enrich content from linked notes
     - update search evaluation script and tests to more adequate estimations. Add LLM as a judge ?
     - router model at front, to estimate search restrictions by tags and files. Evaluation to tune prompts
@@ -17,4 +16,5 @@
 - [ ] add READ_ONLY config option. Disable valult manipulation tools if it is true
 - [ ] implement web search and summarize tools
 - [ ] read vault description notes for agentic research, to aware about file structure and tags
+- [ ] convert OllamaReranker to OpenAIReranker to use any openai compatible endpoints. Make it as chain of wrappers ( embeddings, llm, basic ). Do rerank in Search instead of lancedb
 - [ ] 

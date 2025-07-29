@@ -53,6 +53,14 @@ class Chunk(BaseModel):
     source_path: str  # file path relative to vault root
     modified_at: datetime
     position: int
+
+    def __hash__(self) -> int:                      # hash/id only, it's primary key
+        return hash(self.id)
+
+    def __eq__(self, other: object) -> bool:        # equality/id only
+        if isinstance(other, Chunk):
+            return self.id == other.id
+        return NotImplemented
     
 class SourceUpdates(BaseModel):
     """Represents last  updates to a source document."""
@@ -121,6 +129,14 @@ class IEmbeddingService(ABC):
         """Return the number of dimensions of the embeddings."""
         pass
 
+class ILLM(ABC):
+    """Interface for LLM operations."""
+
+    @abstractmethod
+    async def generate(self, prompt: str) -> str:
+        """Generate text from a prompt."""
+        pass
+
 class IVectorStore(ABC):
     """Interface for vector storage operations."""
 
@@ -146,7 +162,7 @@ class IVectorStore(ABC):
         """Search for chunks that contain text from query.
 
         Args:
-            query (str): The search query text.
+            query (str): The search query text. If empty, return chunks by tag and file_path.
             tags (list[str], optional): List of tags to filter by (all must be
                 present). Defaults to None.
             file_path (str | None, optional): Substring of source_path to filter
