@@ -19,3 +19,7 @@ test_content
 .ruff*
 .vault*
 .vscode
+/rules/
+/tasks/
+/.claude-data/
+.roo
