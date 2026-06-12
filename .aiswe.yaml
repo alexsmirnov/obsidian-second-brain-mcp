@@ -1,5 +1,5 @@
 language: python
 technology:
 - fastmcp
-- smolagents
+- langgraph
 - ai

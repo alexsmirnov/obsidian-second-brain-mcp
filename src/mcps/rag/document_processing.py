@@ -12,7 +12,7 @@ from typing import Dict
 from yaml.parser import ParserError
 
 import frontmatter
-from overrides import override, overrides
+from typing import override
 
 from .interfaces import Chunk, Document, IChunker, IDocumentProcessor, IFileTraversal, Metadata
 
@@ -110,7 +110,7 @@ class MarkdownProcessor(IDocumentProcessor):
     def __init__(self, base_path: Path):
         self.base_path = base_path
 
-    @overrides
+    @override
     async def process(self, file_path: Path) -> Document:
         """Process a single markdown document file."""
         try:
