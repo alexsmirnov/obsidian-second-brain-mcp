@@ -21,7 +21,7 @@ from lancedb.rerankers import RRFReranker, Reranker, VoyageAIReranker
 
 from mcps.config import ServerConfig
 from mcps.rag.embeddings import OpenAIEmbedding
-from mcps.rag.ollama_reranker import OllamaReranker
+from mcps.rag.openai_reranker import OpenAiReranker
 
 from .database import LanceDBStore
 from .document_processing import FixedSizeChunker, MarkdownFileTraversal, MarkdownProcessor, SemanticChunker
@@ -93,9 +93,10 @@ def _create_reranker(config: ServerConfig) -> Reranker:
     if config.voyage_api_key:
         return VoyageAIReranker(model_name=config.voyage_reranker_model, column="content", api_key=config.voyage_api_key)
     elif config.ollama_api_base:
-        return OllamaReranker(
+        return OpenAiReranker(
             model_name=config.ollama_reranker_model,
-            ollama_base_url=config.ollama_api_base,
+            api_base=f"{config.ollama_api_base}/v1",
+            api_key="dummy",
             embedding_model=config.ollama_embedding_model,
             return_score='relevance',
             column='content',

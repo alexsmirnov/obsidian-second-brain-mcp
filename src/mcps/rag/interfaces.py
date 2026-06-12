@@ -41,7 +41,7 @@ class Document(BaseModel):
 
 class Chunk(BaseModel):
     """Represents a chunk of text with metadata from document."""
-    model_config = ConfigDict(extra='allow') 
+    model_config = ConfigDict(populate_by_name=True) 
     
     id: str
     content: str
@@ -53,6 +53,7 @@ class Chunk(BaseModel):
     source_path: str  # file path relative to vault root
     modified_at: datetime
     position: int
+    embeddings: list[float] | None = None
 
     def __hash__(self) -> int:                      # hash/id only, it's primary key
         return hash(self.id)
@@ -125,7 +126,7 @@ class IEmbeddingService(ABC):
         pass
 
     @abstractmethod
-    def ndims() -> int:
+    def ndims(self) -> int:
         """Return the number of dimensions of the embeddings."""
         pass
 

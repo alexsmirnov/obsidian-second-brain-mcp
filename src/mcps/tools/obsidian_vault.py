@@ -1,16 +1,87 @@
+import asyncio
 import logging
 import re
 from pathlib import Path
+from typing import Annotated
 
 from fastmcp import FastMCP
 from pydantic import Field
 
+from mcps.common import Tools
 from mcps.config import ServerConfig
 from mcps.rag.vault import create_vault
-from mcps.common import Tools
-import asyncio
 
 logger = logging.getLogger("mcps")
+
+FolderPath = Annotated[
+    str,
+    Field(
+        description=(
+            "Path to the folder within the Obsidian Vault to list contents from. "
+            "Use forward slashes for path separation. Examples: '/', 'Projects/', "
+            "'Daily Notes/2024/', 'Resources/Documentation/'. Use '/' for vault "
+            "root directory"
+        ),
+        min_length=1,
+        max_length=500,
+    ),
+]
+
+FilePath = Annotated[
+    str,
+    Field(
+        description=(
+            "Path to the file within the Obsidian Vault to retrieve content from. "
+            "Include the file extension (.md for markdown files). Examples: "
+            "'Meeting Notes.md', 'Projects/Web App/README.md', "
+            "'Daily Notes/2024-01-15.md'. Use forward slashes for path separation"
+        ),
+        min_length=1,
+        max_length=500,
+    ),
+]
+
+CurrentNotePath = Annotated[
+    str,
+    Field(
+        description=(
+            "Current path of the note within the Obsidian Vault, including file "
+            "extension. Examples: 'Old Note.md', 'Archive/Project Notes.md', "
+            "'Daily/2024-01-15.md'. Use forward slashes for path separation"
+        ),
+        min_length=1,
+        max_length=500,
+    ),
+]
+
+NewNotePath = Annotated[
+    str,
+    Field(
+        description=(
+            "New path for the note within the Obsidian Vault, including file "
+            "extension. Can be used to rename (same folder) or move (different "
+            "folder). Examples: 'New Note.md', 'Projects/Renamed Note.md', "
+            "'Archive/2024/Old Project.md'. Use forward slashes for path "
+            "separation"
+        ),
+        min_length=1,
+        max_length=500,
+    ),
+]
+
+SearchQuery = Annotated[
+    str,
+    Field(
+        description=(
+            "Search query to find relevant content within the Obsidian Vault. Use "
+            "natural language or specific terms to search for notes, concepts, "
+            "or information. Examples: 'machine learning algorithms', 'project "
+            "meeting notes', 'python debugging tips'"
+        ),
+        min_length=1,
+        max_length=500,
+    ),
+]
 
 
 class ObsidianTools(Tools):
@@ -83,11 +154,7 @@ class ObsidianTools(Tools):
     
     async def list_files(
         self,
-        folder_path: str = Field(
-            description="Path to the folder within the Obsidian Vault to list contents from. Use forward slashes for path separation. Examples: '/', 'Projects/', 'Daily Notes/2024/', 'Resources/Documentation/'. Use '/' for vault root directory",
-            min_length=1,
-            max_length=500
-        )
+        folder_path: FolderPath,
     ) -> str:
         """
         Gets a list of files and subfolders in the specified folder within the Obsidian Vault.
@@ -114,11 +181,7 @@ class ObsidianTools(Tools):
     
     async def get_file_content(
         self,
-        file_path: str = Field(
-            description="Path to the file within the Obsidian Vault to retrieve content from. Include the file extension (.md for markdown files). Examples: 'Meeting Notes.md', 'Projects/Web App/README.md', 'Daily Notes/2024-01-15.md'. Use forward slashes for path separation",
-            min_length=1,
-            max_length=500
-        )
+        file_path: FilePath,
     ) -> str:
         """
         Gets the content of a file within the Obsidian Vault.
@@ -147,27 +210,34 @@ class ObsidianTools(Tools):
     
     async def rename_move_note(
         self,
-        old_path: str = Field(
-            description="Current path of the note within the Obsidian Vault, including file extension. Examples: 'Old Note.md', 'Archive/Project Notes.md', 'Daily/2024-01-15.md'. Use forward slashes for path separation",
-            min_length=1,
-            max_length=500
-        ),
-        new_path: str = Field(
-            description="New path for the note within the Obsidian Vault, including file extension. Can be used to rename (same folder) or move (different folder). Examples: 'New Note.md', 'Projects/Renamed Note.md', 'Archive/2024/Old Project.md'. Use forward slashes for path separation",
-            min_length=1,
-            max_length=500
-        )
+        old_path: CurrentNotePath,
+        new_path: NewNotePath,
     ) -> str:
         """
         Renames or moves an Obsidian note and updates [[Wikilinks]] references if needed.
         """
         try:
             logger.info(f"Renaming/moving Obsidian note from {old_path} to {new_path}")
-            
-            # Resolve full paths
-            vault_path = Path(self.config.vault_dir) # type: ignore
-            old_full_path = vault_path / old_path
-            new_full_path = vault_path / new_path
+
+            if self.config.vault_dir is None:
+                error_msg = "Vault directory is not configured"
+                logger.error(error_msg)
+                return error_msg
+
+            # Resolve full paths and enforce vault containment
+            vault_path = Path(self.config.vault_dir).resolve()
+            old_full_path = (vault_path / old_path).resolve()
+            new_full_path = (vault_path / new_path).resolve()
+
+            if not old_full_path.is_relative_to(vault_path):
+                error_msg = f"Source path escapes vault: {old_path}"
+                logger.error(error_msg)
+                return error_msg
+
+            if not new_full_path.is_relative_to(vault_path):
+                error_msg = f"Destination path escapes vault: {new_path}"
+                logger.error(error_msg)
+                return error_msg
             
             # Validate source file exists
             if not old_full_path.exists():
@@ -205,11 +275,7 @@ class ObsidianTools(Tools):
     
     async def search(
         self,
-        query: str = Field(
-            description="Search query to find relevant content within the Obsidian Vault. Use natural language or specific terms to search for notes, concepts, or information. Examples: 'machine learning algorithms', 'project meeting notes', 'python debugging tips'",
-            min_length=1,
-            max_length=500
-        )
+        query: SearchQuery,
     ) -> str:
         """
         Search for content within the Obsidian Vault using semantic search.
@@ -251,12 +317,25 @@ class ObsidianTools(Tools):
                 re.IGNORECASE
             )
             
-            vault_path = Path(self.config.vault_dir) # type: ignore
+            if self.config.vault_dir is None:
+                logger.error("Vault directory is not configured")
+                return
+
+            vault_path = Path(self.config.vault_dir).resolve()
             updated_files = 0
             
             # Search through all markdown files in the vault
             for md_file in vault_path.rglob('*.md'):
                 try:
+                    if md_file.is_symlink():
+                        logger.debug(f"Skipping symlinked file: {md_file}")
+                        continue
+
+                    resolved_md_file = md_file.resolve()
+                    if not resolved_md_file.is_relative_to(vault_path):
+                        logger.warning(f"Skipping file outside vault: {md_file}")
+                        continue
+
                     content = md_file.read_text(encoding='utf-8')
                     
                     # Check if file contains the old wikilink

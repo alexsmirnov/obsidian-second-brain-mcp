@@ -49,6 +49,7 @@ class VaultEvaluationTest:
     - Recall: percentage of unwanted words NOT found in search results
     - F-score: harmonic mean of precision and recall
     """
+    vault: Vault
 
     def __init__(self, vault_path: Path):
         """
@@ -58,7 +59,6 @@ class VaultEvaluationTest:
             vault_path: Path to the test content vault directory
         """
         self.vault_path = vault_path
-        self.vault = None
         self.test_cases = self._create_test_cases()
 
     def _create_test_cases(self) -> List[Dict[str, Any]]:

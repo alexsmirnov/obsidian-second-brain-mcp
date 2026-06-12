@@ -47,6 +47,8 @@ class LanceDBStore(IVectorStore):
         # Hybrid search
         results = await store.search("deep learning")
     """
+    db: AsyncConnection
+    table: AsyncTable
 
     def __init__(
         self,
@@ -58,8 +60,6 @@ class LanceDBStore(IVectorStore):
         self.db_path = db_path
         self.table_name = table_name
         self.reranker = reranker
-        self.db: None | AsyncConnection = None
-        self.table: AsyncTable | None = None
         self.embedding_service: IEmbeddingService = embedding_service
         self._initialized = False
 
@@ -84,13 +84,19 @@ class LanceDBStore(IVectorStore):
                 logger.info(f"Opened existing table: {self.table_name}")
             except Exception:
                 # Table doesn't exist, create it using Pydantic schema
+                # Append or replace embeddings field with correct dimension
                 schema: pa.Schema = pydantic_to_schema(Chunk)
-                schema = schema.append(
-                    pa.field(
+                emb_field = pa.field(
                         "embeddings",
                         pa.list_(pa.float16(), self.embedding_service.ndims()),
                     )
-                )
+                embeddings_idx = schema.get_field_index("embeddings")
+                if embeddings_idx < 0:
+                    schema = schema.append(
+                        emb_field
+                    )
+                else:
+                    schema = schema.set(embeddings_idx, emb_field)
                 self.table = await self.db.create_table(self.table_name, schema=schema)
                 logger.info(f"Created new table: {self.table_name}")
                 # Create indexes
@@ -120,20 +126,18 @@ class LanceDBStore(IVectorStore):
                 texts, query=False
             )
             processed_chunks = [
-                self._dump_with_embeddings(c, e) for e, c in zip(embeddings, chunks)
+                c.model_copy(update={'embeddings': e}).model_dump() for e, c in zip(embeddings, chunks)
             ]
-            if processed_chunks:
-                await self.table.add(processed_chunks)
-                logger.info(f"Added {len(processed_chunks)} chunks to LanceDB")
+            await self.table.add(processed_chunks)
+            logger.info(f"Added {len(processed_chunks)} chunks to LanceDB")
         except Exception as e:
             logger.error(f"Failed to store chunks in LanceDB: {e}")
             raise
 
-    def _dump_with_embeddings(self, chunk: Chunk, embeddings) -> dict[str, Any]:
-        """Helper to dump chunk with embeddings as dict"""
-        chunk_dict = chunk.model_dump()
-        chunk_dict["embeddings"] = embeddings
-        return chunk_dict
+    @staticmethod
+    def _escape_sql_string(val: str) -> str:
+    # Double up every single quote to treat it strictly as data text
+        return val.replace("'", "''")
 
     async def search(
         self,
@@ -184,13 +188,14 @@ class LanceDBStore(IVectorStore):
             # Apply filters based on parameters
             # Filter by tags if provided
             if tags:
+                tags_array = ",".join([f"'{self._escape_sql_string(t)}'" for t in tags])
                 query_builder = query_builder.where(
-                    f"array_has_all(tags, {json.dumps(tags)})"
+                    f"array_has_all(tags, [{tags_array}])"
                 )
 
             # Filter by file path if provided
             if file_path:
-                query_builder = query_builder.where(f"source_path LIKE '%{file_path}%'")
+                query_builder = query_builder.where(f"source_path LIKE '{self._escape_sql_string(file_path)}%'")
 
             query_builder = query_builder.rerank(self.reranker)
             # Go!
@@ -214,8 +219,7 @@ class LanceDBStore(IVectorStore):
             )
 
         try:
-
-            in_list = ",".join([f"'{p}'" for p in source_paths])
+            in_list = ",".join([f"'{self._escape_sql_string(p)}'" for p in source_paths])
             delete_clause = f"source_path IN ({in_list})"
             logger.debug(
                 f"Deleting chunks with source paths: {source_paths} using clause: {delete_clause}"

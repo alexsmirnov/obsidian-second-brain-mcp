@@ -8,7 +8,7 @@ import pyarrow.compute as pc
 import pytest
 
 from mcps import main
-from mcps.rag.ollama_reranker import OllamaReranker
+from mcps.rag.openai_reranker import OpenAiReranker
 
 # Configure logging for detailed test output
 logging.basicConfig(level=logging.INFO)
@@ -23,8 +23,8 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-class TestOllamaRerankerHybrid:
-    """Test class for OllamaReranker.rerank_hybrid method"""
+class TestOpenAiRerankerHybrid:
+    """Test class for OpenAiReranker.rerank_hybrid method"""
 
     @pytest.fixture
     def ollama_base_url(self):
@@ -33,10 +33,11 @@ class TestOllamaRerankerHybrid:
 
     @pytest.fixture
     def reranker(self, ollama_base_url):
-        """Create OllamaReranker instance with mocked client"""
-        return OllamaReranker(
+        """Create OpenAiReranker instance with Ollama OpenAI API."""
+        return OpenAiReranker(
             model_name="phi4-mini:latest",
-            ollama_base_url=ollama_base_url,
+            api_base=f"{ollama_base_url}/v1",
+            api_key="dummy",
             embedding_model="bge-m3:latest",
             return_score="relevance",
             weight=1.0,
@@ -128,8 +129,8 @@ class TestOllamaRerankerHybrid:
         assert result.num_rows == 0
 
 
-class TestOllamaRerankerEvaluation:
-    """Evaluation test class for OllamaReranker with real content fixtures"""
+class TestOpenAiRerankerEvaluation:
+    """Evaluation test class for OpenAiReranker with real content fixtures."""
 
     @pytest.fixture
     def ollama_base_url(self):
@@ -138,10 +139,11 @@ class TestOllamaRerankerEvaluation:
 
     @pytest.fixture
     def reranker(self, ollama_base_url):
-        """Create OllamaReranker instance"""
-        return OllamaReranker(
+        """Create OpenAiReranker instance with Ollama OpenAI API."""
+        return OpenAiReranker(
             model_name="phi4-mini:latest",
-            ollama_base_url=ollama_base_url,
+            api_base=f"{ollama_base_url}/v1",
+            api_key="dummy",
             embedding_model="bge-m3:latest",
             return_score="relevance",
             weight=0.5,
