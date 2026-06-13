@@ -9,7 +9,7 @@ authors = [
 requires-python = ">=3.13"
 dependencies = [
     "fastmcp==3.4.2",
-    "lancedb==0.33.0",
+    "lancedb==0.25.3",
     "markdown>=3.10.0",
     "rank_bm25",
     "python-dotenv>=1.2.2",
