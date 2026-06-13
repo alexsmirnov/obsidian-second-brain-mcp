@@ -10,23 +10,27 @@ Tests cover:
 - Error handling and edge cases
 """
 
+import hashlib
+import logging
 import os
 import tempfile
-import asyncio
-import logging
+from collections.abc import AsyncGenerator, Generator
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Generator
-from unittest.mock import patch
 
-import hashlib
 import numpy as np
 import pytest
-from dotenv import load_dotenv, find_dotenv
+from dotenv import find_dotenv, load_dotenv
 
 from mcps.rag.database import LanceDBStore
 from mcps.rag.embeddings import OpenAIEmbedding
-from mcps.rag.interfaces import Chunk, IVectorStore, SearchScope, IEmbeddingService
+from mcps.rag.interfaces import (
+    Chunk,
+    IEmbeddingService,
+    IVectorStore,
+    NotInitializedError,
+    SearchScope,
+)
 
 load_dotenv(find_dotenv())
 load_dotenv(find_dotenv(usecwd=True))
@@ -34,7 +38,7 @@ load_dotenv(find_dotenv(usecwd=True))
 
 # Test fixtures
 @pytest.fixture
-def temp_db_path() -> Generator[Path,None,None]:
+def temp_db_path() -> Generator[Path]:
     """Create a temporary directory for test database."""
     with tempfile.TemporaryDirectory() as temp_dir:
         yield Path(temp_dir) / "test_db"
@@ -100,7 +104,7 @@ def sample_chunks():
 
 
 @pytest.fixture
-async def dummy_embedding_function() -> IEmbeddingService:
+async def dummy_embedding_function() -> AsyncGenerator[IEmbeddingService]:
     """Create a dummy embedding function for testing.
         The only assumption that embeddings for the same text will always be the same.
     """
@@ -123,7 +127,7 @@ async def dummy_embedding_function() -> IEmbeddingService:
                 return embedding_fp16
 
             async def generate_embeddings(self, texts: list[str], query: bool = False) -> list[list[float]]:
-                return
+                return [self._generate_embedding(text).tolist() for text in texts]
             def ndims(self):
                 return 16
 
@@ -172,6 +176,19 @@ async def test_initialization(lancedb_store):
     assert lancedb_store.db is not None
     assert lancedb_store.table is not None
     assert lancedb_store.db_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_lancedb_store_lifespan_initializes_and_deinitializes_store(
+    lancedb_store,
+):
+    async with lancedb_store.lifespan() as store:
+        assert store is lancedb_store
+        assert store._initialized
+
+    assert not lancedb_store._initialized
+    with pytest.raises(NotInitializedError):
+        await lancedb_store.store([])
 
 
 
@@ -296,8 +313,8 @@ async def test_search_with_filters(lancedb_store_with_data):
 
 
 def make_chunk(source_path, modified_at, idx=0):
-    import random, string
-    from src.mcps.rag.interfaces import Chunk
+    import random
+    import string
     content = ''.join(random.choices(string.ascii_letters + string.digits, k=20))
     return Chunk(
         id=f"chunk_{source_path}_{idx}",

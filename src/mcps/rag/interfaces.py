@@ -4,10 +4,12 @@ Abstract interfaces for the RAG search system components.
 
 from abc import ABC, abstractmethod
 from collections.abc import Generator
+from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum, auto
 from pathlib import Path
+from typing import Self
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -116,7 +118,9 @@ class IEmbeddingService(ABC):
     """Interface for embedding generation."""
 
     @abstractmethod
-    async def generate_embeddings(self, texts: list[str], query: bool = False) -> list[list[float]]:
+    async def generate_embeddings(
+        self, texts: list[str], query: bool = False
+    ) -> list[list[float]]:
         """Generate embedding for a list of texts
         Args:
             texts (list[str]): List of texts to generate embeddings for.
@@ -142,6 +146,11 @@ class IVectorStore(ABC):
     """Interface for vector storage operations."""
 
     @abstractmethod
+    def lifespan(self) -> AbstractAsyncContextManager[Self]:
+        """Manage vector store resources for a bounded async lifetime."""
+        pass
+
+    @abstractmethod
     async def initialize(self) -> None:
         """Initialize the vector store."""
         pass
@@ -163,7 +172,8 @@ class IVectorStore(ABC):
         """Search for chunks that contain text from query.
 
         Args:
-            query (str): The search query text. If empty, return chunks by tag and file_path.
+            query (str): The search query text. If empty, return chunks by tag
+                and file_path.
             tags (list[str], optional): List of tags to filter by (all must be
                 present). Defaults to None.
             file_path (str | None, optional): Substring of source_path to filter
@@ -226,6 +236,11 @@ class IVault(ABC):
     Supports operations to search information from vault, read whole file by name
     or partial path, and get directory content.
     """
+
+    @abstractmethod
+    def lifespan(self) -> AbstractAsyncContextManager[Self]:
+        """Manage vault resources for a bounded async lifetime."""
+        pass
 
     @abstractmethod
     async def initialize(self) -> None:

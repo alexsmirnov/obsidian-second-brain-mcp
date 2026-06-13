@@ -5,16 +5,17 @@ All tests mock LLM and HTTP calls — no real network access.
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock
+from typing import Any, cast
 
+import httpx
 import pytest
+
 from mcps.config import ServerConfig, create_config
+from mcps.tools.research.agent import create_researcher
 from mcps.tools.research.config import (
     ResearchConfig,
     build_research_config,
 )
-from mcps.tools.research.agent import ResearchResponse, create_researcher
-
 
 # ---------------------------------------------------------------------------
 # Config contract tests
@@ -54,6 +55,7 @@ class TestResearchConfigContract:
         config = build_research_config(
             router_url="http://localhost:4000",
             router_key="sk-test",
+            http_client=httpx.AsyncClient(),
         )
         assert isinstance(config, ResearchConfig)
         assert config.smart is not None
@@ -67,6 +69,7 @@ class TestResearchConfigContract:
         config = build_research_config(
             router_url="http://localhost:4000",
             router_key="sk-test",
+            http_client=httpx.AsyncClient(),
         )
         import asyncio
 
@@ -82,11 +85,11 @@ class TestResearchConfigContract:
 class TestAgentContract:
     @pytest.fixture
     def mock_config(self):
-        config = build_research_config(
+        return build_research_config(
             router_url="http://localhost:4000",
             router_key="sk-test",
+            http_client=httpx.AsyncClient(),
         )
-        return config
 
     def test_create_researcher_returns_callable(self, mock_config):
         researcher = create_researcher(mock_config, implementation="deep_research")
@@ -94,7 +97,7 @@ class TestAgentContract:
 
     def test_create_researcher_rejects_unknown_implementation(self, mock_config):
         with pytest.raises(ValueError, match="Unknown implementation"):
-            create_researcher(mock_config, implementation="bogus")
+            create_researcher(mock_config, implementation=cast(Any, "bogus"))
 
     @pytest.mark.asyncio
     async def test_agent_returns_research_response_shape(
@@ -173,4 +176,4 @@ class TestToolContract:
 
         tools = await server.mcp.list_tools()
         tool_names = [t.name for t in tools]
-        assert "aiswe_research" in tool_names
+        assert "web_research" in tool_names

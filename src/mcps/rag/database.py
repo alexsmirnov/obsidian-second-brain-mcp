@@ -2,20 +2,20 @@
 Vector database implementations for the RAG search system.
 """
 
-from datetime import datetime, timedelta
-import json
+import inspect
 import logging
-from math import log
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from datetime import datetime, timedelta
 from pathlib import Path
-import time
-from typing import Any, Dict
+from typing import Self
 
 import lancedb
-from lancedb import AsyncConnection, AsyncTable
-from lancedb.pydantic import pydantic_to_schema
-from lancedb.index import FTS, IvfPq, LabelList
-from lancedb.rerankers import RRFReranker, VoyageAIReranker, Reranker
 import pyarrow as pa
+from lancedb import AsyncConnection, AsyncTable
+from lancedb.index import FTS, LabelList
+from lancedb.pydantic import pydantic_to_schema
+from lancedb.rerankers import Reranker, RRFReranker
 
 from .interfaces import (
     Chunk,
@@ -23,7 +23,6 @@ from .interfaces import (
     IVectorStore,
     NotInitializedError,
     SearchScope,
-    SourceUpdates,
 )
 
 logger = logging.getLogger("mcps.database")
@@ -55,13 +54,21 @@ class LanceDBStore(IVectorStore):
         db_path: Path,
         embedding_service: IEmbeddingService,
         table_name: str = "chunks",
-        reranker: Reranker = RRFReranker(return_score="all"),
+        reranker: Reranker | None = None,
     ):
         self.db_path = db_path
         self.table_name = table_name
-        self.reranker = reranker
+        self.reranker = reranker or RRFReranker(return_score="all")
         self.embedding_service: IEmbeddingService = embedding_service
         self._initialized = False
+
+    @asynccontextmanager
+    async def lifespan(self) -> AsyncIterator[Self]:
+        await self.initialize()
+        try:
+            yield self
+        finally:
+            await self.cleanup()
 
     async def initialize(self) -> None:
         """
@@ -87,14 +94,12 @@ class LanceDBStore(IVectorStore):
                 # Append or replace embeddings field with correct dimension
                 schema: pa.Schema = pydantic_to_schema(Chunk)
                 emb_field = pa.field(
-                        "embeddings",
-                        pa.list_(pa.float16(), self.embedding_service.ndims()),
-                    )
+                    "embeddings",
+                    pa.list_(pa.float16(), self.embedding_service.ndims()),
+                )
                 embeddings_idx = schema.get_field_index("embeddings")
                 if embeddings_idx < 0:
-                    schema = schema.append(
-                        emb_field
-                    )
+                    schema = schema.append(emb_field)
                 else:
                     schema = schema.set(embeddings_idx, emb_field)
                 self.table = await self.db.create_table(self.table_name, schema=schema)
@@ -108,6 +113,14 @@ class LanceDBStore(IVectorStore):
         except Exception as e:
             logger.error(f"Failed to initialize LanceDB: {e}")
             raise
+
+    async def cleanup(self) -> None:
+        if self._initialized:
+            self.table.close()
+            self.db.close()
+            del self.table
+            del self.db
+        self._initialized = False
 
     async def store(self, chunks: list[Chunk]) -> None:
         """Store chunks with their embeddings."""
@@ -126,7 +139,8 @@ class LanceDBStore(IVectorStore):
                 texts, query=False
             )
             processed_chunks = [
-                c.model_copy(update={'embeddings': e}).model_dump() for e, c in zip(embeddings, chunks)
+                chunk.model_copy(update={"embeddings": embedding}).model_dump()
+                for embedding, chunk in zip(embeddings, chunks, strict=True)
             ]
             await self.table.add(processed_chunks)
             logger.info(f"Added {len(processed_chunks)} chunks to LanceDB")
@@ -136,13 +150,12 @@ class LanceDBStore(IVectorStore):
 
     @staticmethod
     def _escape_sql_string(val: str) -> str:
-    # Double up every single quote to treat it strictly as data text
         return val.replace("'", "''")
 
     async def search(
         self,
         query: str,
-        tags: list[str] = [],
+        tags: list[str] | None = None,
         file_path: str | None = None,
         scope: SearchScope = SearchScope.ALL,
         limit: int = 5,
@@ -151,9 +164,9 @@ class LanceDBStore(IVectorStore):
 
         Args:
             query (str): The search query text.
-            tags (list[str], optional): List of tags to filter by (all must be present). Defaults to None.
-            file_path (str | None, optional): Substring of source_path to filter results. Defaults to None.
-            scope (ScopeEnum, optional): Where to search (CONTENT, TITLE, DESCRIPTION, or ALL). Defaults to ScopeEnum.ALL.
+            tags: List of tags to filter by. All must be present.
+            file_path: Substring of source_path to filter results.
+            scope: Where to search: content, title, description, or all.
             limit (int, optional): Maximum number of results to return. Defaults to 5.
         """
         if not self._initialized:
@@ -188,20 +201,26 @@ class LanceDBStore(IVectorStore):
             # Apply filters based on parameters
             # Filter by tags if provided
             if tags:
-                tags_array = ",".join([f"'{self._escape_sql_string(t)}'" for t in tags])
+                tags_array = ",".join(
+                    [f"'{self._escape_sql_string(t)}'" for t in tags]
+                )
                 query_builder = query_builder.where(
                     f"array_has_all(tags, [{tags_array}])"
                 )
 
             # Filter by file path if provided
             if file_path:
-                query_builder = query_builder.where(f"source_path LIKE '{self._escape_sql_string(file_path)}%'")
+                escaped_file_path = self._escape_sql_string(file_path)
+                query_builder = query_builder.where(
+                    f"source_path LIKE '{escaped_file_path}%'"
+                )
 
             query_builder = query_builder.rerank(self.reranker)
             # Go!
             results = await query_builder.limit(limit).to_list()
             logger.info(
-                f"Found {len(results)} results for query '{query}' with tags {tags} and file path '{file_path}' and limit {limit}"
+                f"Found {len(results)} results for query '{query}' with tags "
+                f"{tags} and file path '{file_path}' and limit {limit}"
             )
             return [Chunk.model_validate(result) for result in results]
 
@@ -211,7 +230,8 @@ class LanceDBStore(IVectorStore):
 
     async def delete(self, source_paths: list[str]) -> None:
         """Delete chunks by their paths.
-        WARNING: delete operaton in lancedb may corrupt indexes, so it should be followed by reindexing.
+        WARNING: delete operaton in lancedb may corrupt indexes, so it should
+        be followed by reindexing.
         """
         if not self._initialized:
             raise NotInitializedError(
@@ -219,10 +239,13 @@ class LanceDBStore(IVectorStore):
             )
 
         try:
-            in_list = ",".join([f"'{self._escape_sql_string(p)}'" for p in source_paths])
+            in_list = ",".join(
+                [f"'{self._escape_sql_string(p)}'" for p in source_paths]
+            )
             delete_clause = f"source_path IN ({in_list})"
             logger.debug(
-                f"Deleting chunks with source paths: {source_paths} using clause: {delete_clause}"
+                f"Deleting chunks with source paths: {source_paths} using "
+                f"clause: {delete_clause}"
             )
             await self.table.delete(delete_clause)
 
@@ -282,8 +305,8 @@ class LanceDBStore(IVectorStore):
         indices = await self.table.list_indices()
         logger.info([f"index {idx}," for idx in indices])
 
-    async def sources(self) -> Dict[str, datetime]:
-        """Get last updates to source documents (by minimal modification time per source_path) using pyarrow Table.group_by and aggregate."""
+    async def sources(self) -> dict[str, datetime]:
+        """Get last updates to source documents."""
         if not self._initialized:
             raise NotInitializedError(
                 "LanceDBStore is not initialized. Call await store.initialize() first."
@@ -297,7 +320,6 @@ class LanceDBStore(IVectorStore):
             )
             if arrow_table.num_rows == 0:
                 return {}
-            # Use pyarrow group_by and aggregate to get minimal modified_at per source_path
             grouped = arrow_table.group_by(["source_path"]).aggregate(
                 [("modified_at", "min")]
             )

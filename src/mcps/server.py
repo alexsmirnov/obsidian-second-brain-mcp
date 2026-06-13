@@ -1,12 +1,8 @@
 import asyncio
 import logging
-from collections.abc import AsyncIterator
 from dataclasses import dataclass
-from typing import Any
 
-import httpx
 from fastmcp import Context, FastMCP
-from fastmcp.server.lifespan import Lifespan, lifespan
 from mcp import ClientCapabilities, RootsCapability
 from mcp.server.session import ServerSession
 
@@ -15,10 +11,8 @@ import mcps.resources.doc_resource as doc_resource
 import mcps.resources.project_resource as project_resource
 import mcps.resources.url_resource as url_resource
 import mcps.tools.obsidian_vault as obsidian_vault
-from mcps.common import Tools
 from mcps.config import ServerConfig, create_config
-from mcps.tools.research.agent import create_researcher
-from mcps.tools.research.config import build_research_config
+from mcps.tools.research.lifespan import build_research_lifespan
 
 logger = logging.getLogger("mcps")
 
@@ -26,29 +20,6 @@ logger = logging.getLogger("mcps")
 @dataclass
 class AppContext:
     config: ServerConfig
-
-
-def _build_research_lifespan(
-    config: ServerConfig,
-) -> Lifespan:
-    """Factory returning a lifespan function that uses the provided config."""
-
-    @lifespan
-    async def research_lifespan(server: FastMCP) -> AsyncIterator[dict[str, Any]]:
-        async with httpx.AsyncClient(
-            timeout=30.0, follow_redirects=True
-        ) as http_client:
-            research_config = build_research_config(
-                router_url=config.litellm_router,
-                router_key=config.litellm_router_key,
-                http_client=http_client,
-            )
-            researcher = create_researcher(
-                research_config, implementation="deep_research"
-            )
-            yield {"researcher": researcher, "http_client": http_client}
-
-    return research_lifespan
 
 
 _WEB_RESEARCH_DESCRIPTION = (
@@ -88,14 +59,14 @@ _WEB_RESEARCH_DESCRIPTION = (
 class DevAutomationServer:
     def __init__(self, config: ServerConfig):
         self.config = config
+        server_lifespan = build_research_lifespan(self.config)
+        if config.vault_dir:
+            server_lifespan = server_lifespan | obsidian_vault.build_obsidian_lifespan(
+                self.config
+            )
         self.mcp = FastMCP(
             "Development Automation Server",
-            lifespan=_build_research_lifespan(self.config),
-        )
-        self.obsidian: Tools = (
-            obsidian_vault.ObsidianTools(self.mcp, self.config)
-            if config.vault_dir
-            else Tools()
+            lifespan=server_lifespan,
         )
 
     def register(self):
@@ -152,13 +123,13 @@ class DevAutomationServer:
                 )
             return text
 
-        self.obsidian.register()
+        if self.config.vault_dir:
+            obsidian_vault.register_tools(self.mcp)
 
         prompts_module.setup_prompts(self.mcp, self.config)
 
     async def start(self):
-        async with self.obsidian:
-            await self.mcp.run_async()
+        await self.mcp.run_async()
 
 
 def create_server(config: ServerConfig) -> DevAutomationServer:

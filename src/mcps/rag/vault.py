@@ -6,25 +6,25 @@ managing all aspects of document indexing, searching, and retrieval in a RAG sys
 """
 
 import asyncio
-from calendar import c
-from importlib.metadata import files
 import logging
-from math import log
-import os
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
-from re import I
-from typing import Any, Optional
+from typing import Self
 
-from lancedb.embeddings import EmbeddingFunction, OllamaEmbeddings
-from lancedb.rerankers import RRFReranker, Reranker, VoyageAIReranker
+from lancedb.rerankers import Reranker, RRFReranker, VoyageAIReranker
 
 from mcps.config import ServerConfig
 from mcps.rag.embeddings import OpenAIEmbedding
 from mcps.rag.openai_reranker import OpenAiReranker
 
 from .database import LanceDBStore
-from .document_processing import FixedSizeChunker, MarkdownFileTraversal, MarkdownProcessor, SemanticChunker
+from .document_processing import (
+    MarkdownFileTraversal,
+    MarkdownProcessor,
+    SemanticChunker,
+)
 from .interfaces import (
     IChunker,
     IDocumentProcessor,
@@ -39,7 +39,6 @@ from .interfaces import (
     SearchScope,
 )
 from .search import MarkdownResultFormatter, SemanticSearchEngine
-from lancedb.embeddings import EmbeddingFunction, get_registry
 
 logger = logging.getLogger("mcps.vault")
 
@@ -55,21 +54,27 @@ def _create_embedding_function(config: ServerConfig) -> IEmbeddingService:
             dimensions=1024,
             api_key=voyage_api_key,
             api_base="https://api.voyageai.com/v1",
-            provider="voyage")
+            provider="voyage",
+        )
     elif openai_api_key:
         return OpenAIEmbedding(
             model_name="text-embedding-3-small",
             dimensions=1536,
             api_key=openai_api_key,
-            provider="openai")
+            provider="openai",
+        )
     elif ollama_base_url:
         return OpenAIEmbedding(
             model_name="bge-m3",
             dimensions=1024,
             api_base=ollama_base_url + "/v1",
-            api_key="dummy")
+            api_key="dummy",
+        )
     else:
-        raise RuntimeError("No embedding service configured. Set OLLAMA_API_BASE or VOYAGE_API_KEY environment variable.")
+        raise RuntimeError(
+            "No embedding service configured. Set OLLAMA_API_BASE or "
+            "VOYAGE_API_KEY environment variable."
+        )
 
 
 def _create_file_traversal(vault_path: Path) -> IFileTraversal:
@@ -91,35 +96,43 @@ def _create_chunker() -> IChunker:
 def _create_reranker(config: ServerConfig) -> Reranker:
     """Create and configure reranker."""
     if config.voyage_api_key:
-        return VoyageAIReranker(model_name=config.voyage_reranker_model, column="content", api_key=config.voyage_api_key)
+        return VoyageAIReranker(
+            model_name=config.voyage_reranker_model,
+            column="content",
+            api_key=config.voyage_api_key,
+        )
     elif config.ollama_api_base:
         return OpenAiReranker(
             model_name=config.ollama_reranker_model,
             api_base=f"{config.ollama_api_base}/v1",
             api_key="dummy",
             embedding_model=config.ollama_embedding_model,
-            return_score='relevance',
-            column='content',
-            weight=1.0
+            return_score="relevance",
+            column="content",
+            weight=1.0,
         )
     else:
-        return RRFReranker(return_score='all')
+        return RRFReranker(return_score="all")
 
 
 def _create_vector_store(config: ServerConfig) -> IVectorStore:
     """Create and configure vector store service."""
     return LanceDBStore(
-        db_path=config.vault_dir / '.vault_db', # type: ignore
+        db_path=config.vault_dir / ".vault_db",  # type: ignore
         embedding_service=_create_embedding_function(config),
         table_name=config.table_name,
-        reranker=_create_reranker(config)
+        reranker=_create_reranker(config),
     )
 
 
-def _create_search_engine(vector_store: IVectorStore, config: ServerConfig) -> ISearchEngine:
+def _create_search_engine(
+    vector_store: IVectorStore, config: ServerConfig
+) -> ISearchEngine:
     """Create and configure search engine service."""
     result_formatter = _create_result_formatter(config)
-    return SemanticSearchEngine(vector_store,result_formatter, limit=config.search_limit)
+    return SemanticSearchEngine(
+        vector_store, result_formatter, limit=config.search_limit
+    )
 
 
 def _create_result_formatter(config: ServerConfig) -> IResultFormatter:
@@ -177,7 +190,7 @@ class Vault(IVault):
         self.db_path = self.vault_path / '.vault_db'
         self._initialized = False
         self._lock = asyncio.Lock()
-        self._last_update_check: Optional[datetime] = None
+        self._last_update_check: datetime | None = None
         self._update_interval = timedelta(minutes=1)
         self.batch_size = batch_size
         
@@ -189,6 +202,15 @@ class Vault(IVault):
         self.search_engine = search_engine
         
         logger.info(f"Vault initialized with injected services for path: {vault_path}")
+
+    @asynccontextmanager
+    async def lifespan(self) -> AsyncIterator[Self]:
+        async with self.vector_store.lifespan():
+            await self._initialize_without_vector_store()
+            try:
+                yield self
+            finally:
+                await self.cleanup()
     
     async def initialize(self) -> None:
         """
@@ -204,31 +226,33 @@ class Vault(IVault):
             RuntimeError: If initialization fails
             FileNotFoundError: If vault path doesn't exist
         """
+        await self.vector_store.initialize()
+        await self._initialize_without_vector_store()
+
+    async def _initialize_without_vector_store(self) -> None:
         async with self._lock:
             if self._initialized:
                 logger.debug("Vault already initialized")
                 return
-            
+
             try:
                 logger.info("Starting Vault initialization")
-                
-                # Validate vault path
+
                 if not self.vault_path.exists():
-                    raise FileNotFoundError(f"Vault path does not exist: {self.vault_path}")
-                
+                    raise FileNotFoundError(
+                        f"Vault path does not exist: {self.vault_path}"
+                    )
+
                 if not self.vault_path.is_dir():
-                    raise ValueError(f"Vault path is not a directory: {self.vault_path}")
-                
-                # Initialize vector store (this will create the database and indexes)
-                logger.info("Initializing vector store")
-                await self.vector_store.initialize()
-                
-                # Test embedding service by generating a test embedding
-                logger.info("Testing embedding service")
-                
+                    raise ValueError(
+                        f"Vault path is not a directory: {self.vault_path}"
+                    )
+
                 self._initialized = True
-                logger.info(f"Vault {self.vault_path} initialization completed successfully")
-                
+                logger.info(
+                    f"Vault {self.vault_path} initialization completed successfully"
+                )
+
             except Exception as e:
                 logger.error(f"Vault initialization failed: {e}")
                 self._initialized = False
@@ -265,10 +289,14 @@ class Vault(IVault):
                         file_count += 1
                         stat = file_path.stat()
                         modified_at = datetime.fromtimestamp(stat.st_mtime)
-                        relative_path = file_path.relative_to(self.vault_path).as_posix()
+                        relative_path = file_path.relative_to(
+                            self.vault_path
+                        ).as_posix()
                         if relative_path not in stored_files:
                             files_to_add.append(file_path)
-                        elif modified_at > stored_files.get(relative_path, datetime.min):
+                        elif modified_at > stored_files.get(
+                            relative_path, datetime.min
+                        ):
                             files_to_add.append(file_path)
                             files_to_delete.append(relative_path)
                             del stored_files[relative_path]
@@ -281,7 +309,9 @@ class Vault(IVault):
                                 files_to_delete.clear()
                             await self._batch_process_files(files_to_add)
                     except (OSError, ValueError) as e:
-                        logger.warning(f"Failed to get stats for file {file_path}: {e}")
+                        logger.warning(
+                            f"Failed to get stats for file {file_path}: {e}"
+                        )
                         continue
                 logger.info(f"Found {file_count} files in vault")
                 
@@ -300,23 +330,26 @@ class Vault(IVault):
                 
                 self._last_update_check = datetime.now()
                 duration = (self._last_update_check - start_time).total_seconds()
-                logger.info(f"Index update completed in {duration:.2f} seconds, processed {file_count} files")
+                logger.info(
+                    f"Index update completed in {duration:.2f} seconds, "
+                    f"processed {file_count} files"
+                )
                 
             except Exception as e:
                 logger.error(f"Index update failed: {e}")
                 raise RuntimeError(f"Failed to update index: {e}") from e
 
     async def _batch_process_files(self, files_to_add: list[Path]) -> None:
-            logger.info(f"Add {len(files_to_add)} files in batch")
-            add_results = await asyncio.gather(
-                *[self._process_file(path) for path in files_to_add],
-                return_exceptions=True
-            )
-            files_to_add.clear()
+        logger.info(f"Add {len(files_to_add)} files in batch")
+        await asyncio.gather(
+            *[self._process_file(path) for path in files_to_add],
+            return_exceptions=True,
+        )
+        files_to_add.clear()
 
     async def _process_file(self, file_path: Path) -> None:
-            document = await self.document_processor.process(file_path)
-            await self.vector_store.store([ chunk for chunk in self.chunker.chunk(document)])
+        document = await self.document_processor.process(file_path)
+        await self.vector_store.store(list(self.chunker.chunk(document)))
     
     async def search(self, query: str) -> str:
         """
@@ -390,7 +423,8 @@ class Vault(IVault):
                     for file_path in self.file_traversal.find_files()
                     if (
                         file_path.stem.lower() == file_name_lower
-                        or file_name_lower in file_path.relative_to(self.vault_path).as_posix().lower()
+                        or file_name_lower
+                        in file_path.relative_to(self.vault_path).as_posix().lower()
                     )
                 ),
                 None
@@ -400,12 +434,15 @@ class Vault(IVault):
             logger.info(f"Found file: {target_file.relative_to(self.vault_path)}")
             
             try:
-                content = target_file.read_text(encoding='utf-8')
+                content = target_file.read_text(encoding="utf-8")
                 return content
             except UnicodeDecodeError:
                 # Try with error handling for problematic files
-                content = target_file.read_text(encoding='utf-8', errors='replace')
-                logger.warning(f"File {target_file} had encoding issues, some characters may be corrupted")
+                content = target_file.read_text(encoding="utf-8", errors="replace")
+                logger.warning(
+                    f"File {target_file} had encoding issues, "
+                    "some characters may be corrupted"
+                )
                 return content
             
         except FileNotFoundError:
@@ -422,7 +459,8 @@ class Vault(IVault):
             directory: Directory path relative to vault root
             
         Returns:
-            List of file names without .md extension, plus directory names ended with '/'
+            List of file names without .md extension, plus directory names ended
+            with '/'
             
         Raises:
             NotInitializedError: If vault is not initialized
@@ -439,7 +477,7 @@ class Vault(IVault):
                 target_dir = self.vault_path
             else:
                 # Remove leading/trailing slashes and resolve path
-                clean_dir = directory.strip('/')
+                clean_dir = directory.strip("/")
                 target_dir = self.vault_path / clean_dir
             
             if not target_dir.exists():
@@ -454,13 +492,19 @@ class Vault(IVault):
                 files = [
                     item.stem if item.is_file() else f"{item.name}/"
                     for item in target_dir.iterdir()
-                    if ( item.is_file() and item.suffix.lower() == '.md'  or item.is_dir() ) and not item.name.startswith('.')
+                    if (
+                        (item.is_file() and item.suffix.lower() == ".md")
+                        or item.is_dir()
+                    )
+                    and not item.name.startswith(".")
                 ]
                 files.sort()
                 logger.debug(f"Found {len(files)} items in {directory}")
                 return files
             except PermissionError as e:
-                logger.warning(f"Permission denied accessing directory {target_dir}: {e}")
+                logger.warning(
+                    f"Permission denied accessing directory {target_dir}: {e}"
+                )
                 return []
             
             
@@ -477,12 +521,6 @@ class Vault(IVault):
         """
         try:
             logger.info("Cleaning up Vault resources")
-            
-            # Close database connections if needed
-            if hasattr(self.vector_store, 'db') and self.vector_store.db:
-                # LanceDB connections are automatically managed
-                pass
-            
             self._initialized = False
             logger.info("Vault cleanup completed")
             
