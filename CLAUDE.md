@@ -8,13 +8,6 @@ FastMCP-based Model Context Protocol server with RAG capabilities for Obsidian v
 
 ## Essential Commands
 
-```bash
-# Run tests
-uv run pytest test/test_file.py -v
-
-# Type checking and linting
-uvx pyright src/mcps/file.py
-uvx ruff check src/mcps/file.py
 
 # Run server
 uv run mcps

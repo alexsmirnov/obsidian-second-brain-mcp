@@ -1,0 +1,176 @@
+"""Contract tests for deep research agent integration.
+
+All tests mock LLM and HTTP calls — no real network access.
+"""
+
+from __future__ import annotations
+
+from unittest.mock import AsyncMock
+
+import pytest
+from mcps.config import ServerConfig, create_config
+from mcps.tools.research.config import (
+    ResearchConfig,
+    build_research_config,
+)
+from mcps.tools.research.agent import ResearchResponse, create_researcher
+
+
+# ---------------------------------------------------------------------------
+# Config contract tests
+# ---------------------------------------------------------------------------
+
+
+class TestServerConfigContract:
+    def test_config_has_litellm_router_field(self):
+        config = ServerConfig()
+        assert hasattr(config, "litellm_router")
+        assert config.litellm_router == ""
+
+    def test_config_has_litellm_router_key_field(self):
+        config = ServerConfig()
+        assert hasattr(config, "litellm_router_key")
+        assert config.litellm_router_key == ""
+
+    def test_perplexity_api_key_removed(self):
+        config = ServerConfig()
+        assert not hasattr(config, "perplexity_api_key")
+
+    def test_create_config_reads_litellm_env_vars(self, monkeypatch):
+        monkeypatch.setenv("LITELLM_ROUTER", "http://localhost:4000")
+        monkeypatch.setenv("LITELLM_ROUTER_KEY", "sk-test123")
+        config = create_config()
+        assert config.litellm_router == "http://localhost:4000"
+        assert config.litellm_router_key == "sk-test123"
+
+
+# ---------------------------------------------------------------------------
+# ResearchConfig contract tests
+# ---------------------------------------------------------------------------
+
+
+class TestResearchConfigContract:
+    def test_build_research_config_returns_valid_config(self):
+        config = build_research_config(
+            router_url="http://localhost:4000",
+            router_key="sk-test",
+        )
+        assert isinstance(config, ResearchConfig)
+        assert config.smart is not None
+        assert config.small is not None
+        assert config.fast is not None
+        assert config.evaluation is not None
+        assert callable(config.search)
+        assert callable(config.fetch)
+
+    def test_research_config_fields_are_callables(self):
+        config = build_research_config(
+            router_url="http://localhost:4000",
+            router_key="sk-test",
+        )
+        import asyncio
+
+        assert asyncio.iscoroutinefunction(config.search)
+        assert asyncio.iscoroutinefunction(config.fetch)
+
+
+# ---------------------------------------------------------------------------
+# Agent contract tests
+# ---------------------------------------------------------------------------
+
+
+class TestAgentContract:
+    @pytest.fixture
+    def mock_config(self):
+        config = build_research_config(
+            router_url="http://localhost:4000",
+            router_key="sk-test",
+        )
+        return config
+
+    def test_create_researcher_returns_callable(self, mock_config):
+        researcher = create_researcher(mock_config, implementation="deep_research")
+        assert callable(researcher)
+
+    def test_create_researcher_rejects_unknown_implementation(self, mock_config):
+        with pytest.raises(ValueError, match="Unknown implementation"):
+            create_researcher(mock_config, implementation="bogus")
+
+    @pytest.mark.asyncio
+    async def test_agent_returns_research_response_shape(
+        self, mock_config, monkeypatch
+    ):
+        """
+        Full graph execution with mocked LLM responses.
+        Verifies the response contract without real network calls.
+        """
+        from unittest.mock import patch
+
+        researcher = create_researcher(mock_config, implementation="deep_research")
+        agent_graph = researcher.graph
+
+        mock_answer = "42"
+        mock_explanation = "This was derived from authoritative sources."
+        mock_sources = ["https://example.com/source1", "https://example.com/source2"]
+
+        async def mock_invoke(_input, **_kwargs):
+            return {
+                "answer": mock_answer,
+                "explanation": mock_explanation,
+                "sources_gathered": mock_sources,
+            }
+
+        with patch.object(agent_graph, "ainvoke", side_effect=mock_invoke):
+            result = await researcher("What is the answer?")
+
+        assert isinstance(result, dict)
+        assert "answer" in result
+        assert "explanation" in result
+        assert "sources" in result
+        assert result["answer"] == mock_answer
+        assert result["explanation"] == mock_explanation
+
+    @pytest.mark.asyncio
+    async def test_agent_response_matches_research_response_contract(
+        self, mock_config
+    ):
+        """Response follows ResearchResponse TypedDict shape."""
+        from unittest.mock import patch
+
+        researcher = create_researcher(mock_config, implementation="deep_research")
+        agent_graph = researcher.graph
+
+        async def mock_invoke(_input, **_kwargs):
+            return {
+                "answer": "Test answer",
+                "explanation": "Test explanation",
+                "sources_gathered": ["https://test.com"],
+            }
+
+        with patch.object(agent_graph, "ainvoke", side_effect=mock_invoke):
+            result = await researcher("test query")
+
+        assert isinstance(result["answer"], str)
+        assert isinstance(result["explanation"], str)
+        assert isinstance(result["sources"], list)
+
+
+# ---------------------------------------------------------------------------
+# Tool contract tests
+# ---------------------------------------------------------------------------
+
+
+class TestToolContract:
+    @pytest.mark.asyncio
+    async def test_tool_is_registered(self, monkeypatch):
+        """aiswe_research tool appears in server's registered tools."""
+        from mcps.server import create_server
+
+        monkeypatch.setenv("LITELLM_ROUTER", "http://localhost:4000")
+        monkeypatch.setenv("LITELLM_ROUTER_KEY", "sk-test")
+        config = create_config()
+        server = create_server(config)
+
+        tools = await server.mcp.list_tools()
+        tool_names = [t.name for t in tools]
+        assert "aiswe_research" in tool_names

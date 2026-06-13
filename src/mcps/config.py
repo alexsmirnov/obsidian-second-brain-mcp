@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from dotenv import load_dotenv
+
 from mcps.rag.document_processing import default_skip_patterns
 
 
@@ -16,7 +17,8 @@ class ServerConfig:
     project_paths: dict[str, str] = field(default_factory=dict)
     openai_api_key: str = ""
     anthropic_api_key: str = ""
-    perplexity_api_key: str = ""
+    litellm_router: str = ""
+    litellm_router_key: str = ""
     # Obsidian Vault configuration
     voyage_api_key: str = ""
     ollama_api_base: str = ""
@@ -67,7 +69,8 @@ def create_config(
         project_paths=project_paths,
         openai_api_key=os.getenv("OPENAI_API_KEY", ""),
         anthropic_api_key=os.getenv("ANTHROPIC_API_KEY", ""),
-        perplexity_api_key=os.getenv("PERPLEXITY_API_KEY", ""),
+        litellm_router=os.getenv("LITELLM_ROUTER", ""),
+        litellm_router_key=os.getenv("LITELLM_ROUTER_KEY", ""),
         voyage_api_key=os.getenv("VOYAGE_API_KEY", ""),
         ollama_api_base=os.getenv("OLLAMA_API_BASE", ""),
         vault_dir=Path(os.getenv("VAULT","")) if os.getenv("VAULT") else None,
