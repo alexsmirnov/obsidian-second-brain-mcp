@@ -1,68 +1,33 @@
-"""
-Embedding service implementations for the RAG search system.
-"""
+"""Embedding service implementations for the RAG search system."""
 
-import logging
-from operator import le
+from langchain_core.embeddings import Embeddings
 
-import openai
-from lancedb.embeddings import EmbeddingFunction
 from .interfaces import IEmbeddingService
 
-logger = logging.getLogger("mcps")
 
-
-class OpenAIEmbedding(IEmbeddingService):
-    """OpenAI api compatible embedding service."""
+class LangChainEmbeddingService(IEmbeddingService):
+    """Embedding service backed by a LangChain Embeddings implementation."""
 
     def __init__(
         self,
-        model_name: str,
+        embeddings: Embeddings,
         dimensions: int,
-        api_key: str | None = None,
-        api_base: str | None = None,
-        provider: str = "openai",
-    ):
-        self.model_name = model_name
+    ) -> None:
+        self.embeddings = embeddings
         self.dimensions = dimensions
-        self.client = openai.AsyncOpenAI(api_key=api_key, base_url=api_base)
-        self.provider = provider
 
     async def generate_embeddings(
         self, texts: list[str], query: bool = False
     ) -> list[list[float]]:
-        """Generate embedding for a texts using OpenAI API."""
-        if len(texts) == 0:
+        """Generate embeddings for texts using the injected LangChain adapter."""
+        if not texts:
             return []
-        try:
-            extra_body = (
-                {
-                    "output_dimension": self.dimensions,
-                    "input_type": "query" if query else "document",
-                }
-                if self.provider == "voyage"
-                else None
-            )
-            response = await self.client.embeddings.create(
-                model=self.model_name,
-                dimensions=(
-                    self.dimensions if self.provider == "openai" else openai.NotGiven()
-                ),
-                extra_body=extra_body,
-                input=texts,
-            )
-            return [d.embedding for d in response.data]
-        except Exception as e:
-            logger.error(f"Failed to generate OpenAI embedding: {e}")
-            # Return zero vector as fallback
-            return [[0.0] * self.dimensions] * len(texts)
+
+        if query:
+            return [await self.embeddings.aembed_query(text) for text in texts]
+
+        return await self.embeddings.aembed_documents(texts)
 
     def ndims(self) -> int:
         """Return the number of dimensions of the embeddings."""
         return self.dimensions
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, exc_type, exc, tb):
-        await self.client.close()

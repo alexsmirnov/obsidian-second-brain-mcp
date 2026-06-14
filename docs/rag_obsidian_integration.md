@@ -1,6 +1,6 @@
 # RAG System Design and Obsidian Integration
 
-FastMCP-based RAG pipeline for semantic search over Obsidian vaults. Uses interface-based dependency injection with hybrid search (vector + full-text) via LanceDB, supporting multiple embedding providers and reranking strategies. #rag #obsidian #search #architecture
+FastMCP-based RAG pipeline for semantic search over Obsidian vaults. Uses interface-based dependency injection with hybrid search (vector + full-text) via LanceDB and LiteLLM Router-backed LangChain model adapters. #rag #obsidian #search #architecture
 
 ## Overview
 
@@ -8,7 +8,7 @@ The RAG system provides semantic search capabilities optimized for Obsidian vaul
 
 - **Hybrid search** combining vector similarity and full-text search
 - **Obsidian-native** wikilink extraction, hashtag parsing, YAML frontmatter
-- **Flexible providers** for embeddings (VoyageAI, OpenAI, Ollama) and reranking
+- **Provider-neutral model access** through LangChain interfaces and LiteLLM Router
 - **Incremental indexing** with file change detection
 
 ## System Architecture #architecture
@@ -183,54 +183,43 @@ Definition: [interfaces.py:15-20](../src/mcps/rag/interfaces.py#L15-L20)
 
 Implementation: [database.py:231-279](../src/mcps/rag/database.py#L231-L279)
 
-## Embedding Providers #config
+## Embedding Model Configuration #config
 
-**OpenAIEmbedding** class supports multiple providers via OpenAI-compatible API.
+RAG uses `LangChainEmbeddingService` over the provider-neutral LangChain `Embeddings` interface. Provider-specific adapter construction happens outside `src/mcps/rag` in [obsidian_models.py](../src/mcps/tools/obsidian_models.py) and points to LiteLLM Router.
 
-| Provider | Model | Dimensions | Condition |
-|----------|-------|------------|-----------|
-| VoyageAI | `voyage-3.5-lite` | 1024 | `voyage_api_key` set |
-| OpenAI | `text-embedding-3-small` | 1536 | `openai_api_key` set |
-| Ollama | `bge-m3` | 1024 | `ollama_api_base` set |
+| Config | Purpose | Default |
+|--------|---------|---------|
+| `rag_embedding_model` | LiteLLM Router embedding model name | `text-embedding-3-small` |
+| `rag_embedding_dimensions` | LanceDB embedding vector dimension | `1536` |
 
-Selection priority: VoyageAI > OpenAI > Ollama
-
-Implementation: [embeddings.py:15-58](../src/mcps/rag/embeddings.py#L15-L58)
-Factory: [vault.py:47-72](../src/mcps/rag/vault.py#L47-L72)
+Implementation: [embeddings.py](../src/mcps/rag/embeddings.py)
+Factory boundary: [obsidian_models.py](../src/mcps/tools/obsidian_models.py)
 
 ## Reranking Strategies #search
 
 | Strategy | Description | Condition |
 |----------|-------------|-----------|
-| **VoyageAIReranker** | API-based relevance scoring | `voyage_api_key` set |
-| **OllamaReranker** | LLM + embedding scoring | `ollama_api_base` set |
-| **RRFReranker** | Reciprocal Rank Fusion | Fallback |
+| **RRFReranker** | LanceDB reciprocal rank fusion for vector + full-text results | Always available |
+| **LangChainReranker** | Async post-retrieval relevance scoring through `BaseChatModel` | `rag_reranker_model` set |
 
-**OllamaReranker** combines:
-- LLM scoring: PERFECT(1.0), GOOD(0.75), SOME(0.5), BAD(0.25), NONE(0.0)
-- Embedding similarity (cosine)
-- Weighted combination (default: equal)
+**LangChainReranker** uses LLM scoring categories: PERFECT(1.0), GOOD(0.75), SOME(0.5), BAD(0.25), NONE(0.0).
 
-Implementation: [ollama_reranker.py:12-209](../src/mcps/rag/ollama_reranker.py#L12-L209)
-Factory: [vault.py:91-105](../src/mcps/rag/vault.py#L91-L105)
+Implementation: [reranking.py](../src/mcps/rag/reranking.py)
+Factory boundary: [obsidian_vault.py](../src/mcps/tools/obsidian_vault.py)
 
 ## Vault Orchestrator #module
 
 ### Factory Pattern
 
-`create_vault()` wires all dependencies from `ServerConfig`:
+`create_vault()` wires provider-neutral dependencies. Model construction and HTTP client ownership happen in the Obsidian tool lifespan:
 
 ```
-ServerConfig
-    ├── vault_dir → Vault.vault_path
-    ├── _create_file_traversal → MarkdownFileTraversal
-    ├── _create_document_processor → MarkdownProcessor
-    ├── _create_chunker → SemanticChunker
-    ├── _create_vector_store → LanceDBStore
-    │   ├── _create_embedding_function → OpenAIEmbedding
-    │   └── _create_reranker → VoyageAI/Ollama/RRF
-    └── _create_search_engine → SemanticSearchEngine
-        └── _create_result_formatter → MarkdownResultFormatter
+Obsidian lifespan
+    ├── shared httpx.AsyncClient
+    ├── build_obsidian_model_config → LangChain adapters via LiteLLM Router
+    ├── LangChainEmbeddingService → LanceDBStore
+    ├── optional LangChainReranker → SemanticSearchEngine
+    └── create_vault → Vault
 ```
 
 Implementation: [vault.py:502-555](../src/mcps/rag/vault.py#L502-L555)
@@ -290,12 +279,12 @@ Result formatter: [search.py:57-90](../src/mcps/rag/search.py#L57-L90)
 | Setting | Default | Purpose |
 |---------|---------|---------|
 | `vault_dir` | - | Path to Obsidian vault |
-| `voyage_api_key` | `""` | VoyageAI credentials |
-| `openai_api_key` | `""` | OpenAI credentials |
-| `ollama_api_base` | `""` | Ollama service URL |
 | `table_name` | `"documents"` | LanceDB table name |
 | `max_chunk_size` | `4000` | Max content in results |
 | `search_limit` | `20` | Max results returned |
+| `rag_embedding_model` | `"text-embedding-3-small"` | LiteLLM Router embedding model |
+| `rag_embedding_dimensions` | `1536` | LanceDB vector dimension |
+| `rag_reranker_model` | `""` | Optional LiteLLM Router chat reranker model |
 
 Configuration: [config.py:11-36](../src/mcps/config.py#L11-L36)
 
@@ -310,7 +299,7 @@ See [Configuration](config_environment.md) for complete environment variable ref
 - [src/mcps/rag/database.py](../src/mcps/rag/database.py) - LanceDB vector store
 - [src/mcps/rag/search.py](../src/mcps/rag/search.py) - Search engine and result formatting
 - [src/mcps/rag/embeddings.py](../src/mcps/rag/embeddings.py) - Embedding service
-- [src/mcps/rag/ollama_reranker.py](../src/mcps/rag/ollama_reranker.py) - LLM-based reranking
+- [src/mcps/rag/reranking.py](../src/mcps/rag/reranking.py) - Async LLM-based reranking
 
 ### Tests
 - [test/test_document_processing.py](../test/test_document_processing.py) - Parser and chunking tests

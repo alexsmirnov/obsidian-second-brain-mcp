@@ -1,11 +1,11 @@
-from datetime import datetime
-
-import pytest
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
 
-from mcps.rag.search_agent import SearchAgent
-from mcps.rag.interfaces import SearchQuery, Chunk
+import pytest
+from langchain_core.messages import AIMessage
 
+from mcps.rag.interfaces import Chunk, SearchQuery
+from mcps.rag.search_agent import SearchAgent
 
 # ---------------------------------------------------------------------------
 # Helper factories
@@ -21,7 +21,7 @@ def _make_chunk(id_: str, title: str | None = None) -> Chunk:
         outgoing_links=[],
         tags=[],
         source_path=f"path/{id_}.md",
-        modified_at=datetime.utcnow(),
+        modified_at=datetime.now(UTC),
         position=0,
     )
 
@@ -36,9 +36,9 @@ def vector_store_mock():
 
 @pytest.fixture()
 def llm_mock():
-    """Return a mock implementing the ILLM interface."""
+    """Return a mock implementing the LangChain chat model interface."""
     llm = MagicMock()
-    llm.generate = AsyncMock(return_value="")
+    llm.ainvoke = AsyncMock(return_value=AIMessage(content=""))
     return llm
 
 
@@ -54,25 +54,25 @@ def agent(vector_store_mock, llm_mock):
 
 @pytest.mark.asyncio
 async def test_rewrite_query_success(agent, llm_mock):
-    """LLM happy path – return the rewritten text."""
-    llm_mock.generate.return_value = "expanded query"
+    """LLM happy path - return the rewritten text."""
+    llm_mock.ainvoke.return_value = AIMessage(content="expanded query")
     query = SearchQuery(text="original", tags=[])
 
     result = await agent._rewrite_query(query)
 
-    llm_mock.generate.assert_awaited_once()
+    llm_mock.ainvoke.assert_awaited_once()
     assert result == "expanded query"
 
 
 @pytest.mark.asyncio
 async def test_rewrite_query_llm_error_returns_original(agent, llm_mock):
     """If LLM fails, the original query text should be returned."""
-    llm_mock.generate.side_effect = RuntimeError("boom")
+    llm_mock.ainvoke.side_effect = RuntimeError("boom")
     query = SearchQuery(text="original", tags=[])
 
     result = await agent._rewrite_query(query)
 
-    llm_mock.generate.assert_awaited_once()
+    llm_mock.ainvoke.assert_awaited_once()
     assert result == "original"
 
 
@@ -83,25 +83,25 @@ async def test_rewrite_query_llm_error_returns_original(agent, llm_mock):
 @pytest.mark.asyncio
 async def test_infer_tags_merges_and_deduplicates(agent, llm_mock):
     """Should merge LLM-inferred and user-provided tags without duplicates."""
-    llm_mock.generate.return_value = "tag2, tag3"
+    llm_mock.ainvoke.return_value = AIMessage(content="tag2, tag3")
     query = SearchQuery(text="query", tags=["tag1", "tag2"])
 
     result = await agent._infer_tags(query)
 
-    llm_mock.generate.assert_awaited_once()
-    # Order is not important – convert to set for comparison
+    llm_mock.ainvoke.assert_awaited_once()
+    # Order is not important - convert to set for comparison
     assert set(result) == {"tag1", "tag2", "tag3"}
 
 
 @pytest.mark.asyncio
 async def test_infer_tags_llm_error_returns_query_tags(agent, llm_mock):
     """If LLM fails, return the tags provided in the query as-is."""
-    llm_mock.generate.side_effect = RuntimeError("boom")
+    llm_mock.ainvoke.side_effect = RuntimeError("boom")
     query = SearchQuery(text="query", tags=["tag1", "tag2"])
 
     result = await agent._infer_tags(query)
 
-    llm_mock.generate.assert_awaited_once()
+    llm_mock.ainvoke.assert_awaited_once()
     assert result == ["tag1", "tag2"]
 
 
@@ -138,7 +138,7 @@ async def test_initial_search_error_returns_empty(agent, vector_store_mock):
 
 @pytest.mark.asyncio
 async def test_collect_linked_notes_empty_links_returns_empty(agent):
-    """No outgoing links – nothing to collect."""
+    """No outgoing links - nothing to collect."""
     query = SearchQuery(text="q", tags=[])
     result = await agent._collect_linked_notes(query, set())
     assert result == []
@@ -178,29 +178,29 @@ async def test_collect_incoming_notes_error_returns_empty(agent, vector_store_mo
 
 @pytest.mark.asyncio
 async def test_generate_answer_success(agent, llm_mock):
-    llm_mock.generate.return_value = "final answer"
+    llm_mock.ainvoke.return_value = AIMessage(content="final answer")
     query = SearchQuery(text="q", tags=[])
     chunks = {_make_chunk("1"), _make_chunk("2")}
 
     result = await agent._generate_answer(query, chunks)
 
-    llm_mock.generate.assert_awaited_once()
+    llm_mock.ainvoke.assert_awaited_once()
     assert result == "final answer"
 
 
 @pytest.mark.asyncio
 async def test_generate_answer_error_returns_fallback(agent, llm_mock):
-    llm_mock.generate.side_effect = RuntimeError("boom")
+    llm_mock.ainvoke.side_effect = RuntimeError("boom")
     query = SearchQuery(text="q", tags=[])
 
     result = await agent._generate_answer(query, set())
 
-    llm_mock.generate.assert_awaited_once()
+    llm_mock.ainvoke.assert_awaited_once()
     assert "Unable to generate" in result  # Expect some graceful degradation
 
 
 # ---------------------------------------------------------------------------
-# search – high-level orchestration
+# search - high-level orchestration
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
@@ -235,4 +235,4 @@ async def test_search_calls_all_steps(monkeypatch):
     agent._initial_search.assert_awaited_once_with("rewritten", ["t1"])
     agent._collect_linked_notes.assert_awaited_once()
     agent._collect_incoming_notes.assert_awaited_once()
-    agent._generate_answer.assert_awaited_once() 
+    agent._generate_answer.assert_awaited_once()

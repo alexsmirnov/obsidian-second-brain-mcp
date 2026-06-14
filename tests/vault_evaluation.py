@@ -10,7 +10,6 @@ about AI/ML, programming, projects, and personal knowledge management.
 """
 
 import asyncio
-import os
 from dotenv import load_dotenv, find_dotenv
 import logging
 from pathlib import Path
@@ -18,7 +17,10 @@ from typing import List, Dict, Any
 import pytest
 
 from mcps.config import ServerConfig
-from mcps.rag.vault import create_vault, Vault
+from mcps.rag.embeddings import LangChainEmbeddingService
+from mcps.rag.vault import Vault, create_vault, create_vector_store
+
+from tests.test_embedding_service import FakeEmbeddings
 
 
 # Configure logging for detailed test output
@@ -123,18 +125,15 @@ class VaultEvaluationTest:
             config = ServerConfig(
                 vault_dir=self.vault_path,
                 table_name="evaluation_test",
-                voyage_api_key=os.getenv("VOYAGE_API_KEY", ""),
-            ) if os.getenv("VOYAGE_API_KEY") else ServerConfig(
-
-                vault_dir=self.vault_path,
-                table_name="evaluation_test",
-                ollama_api_base=os.getenv("OLLAMA_API_BASE", ""),
             )
             logger.info(f"Setting up Vault with path: {self.vault_path}")
 
             # Initialize Vault with optimized settings for testing
-            self.vault = create_vault( config )
+            embedding_service = LangChainEmbeddingService(FakeEmbeddings(), dimensions=2)
+            vector_store = create_vector_store(config, embedding_service)
+            self.vault = create_vault(config, vector_store=vector_store)
             # Initialize and update index
+            await vector_store.initialize()
             await self.vault.initialize()
             logger.info("Vault initialized successfully")
 

@@ -4,38 +4,32 @@ Environment variables, configuration options, and server settings for the MCPS M
 
 ## Configuration Class
 
-**ServerConfig** [src/mcps/config.py:11-36](../src/mcps/config.py#L11-L36) - Dataclass containing all server configuration.
+**ServerConfig** [src/mcps/config.py:11-37](../src/mcps/config.py#L11-L37) - Dataclass containing all server configuration.
 
 ## Environment Variables
 
+### Router Configuration
+
+#### `LITELLM_ROUTER` (required for AI tools) #env
+LiteLLM Router base URL used by web research and Obsidian RAG model adapters.
+**Format**: `http://host:port`
+**Used by**: [src/mcps/tools/research/config.py](../src/mcps/tools/research/config.py), [src/mcps/tools/obsidian_models.py](../src/mcps/tools/obsidian_models.py)
+
+#### `LITELLM_ROUTER_KEY` (required for AI tools) #env
+Authentication token for the LiteLLM Router.
+**Format**: Router token string
+**Used by**: [src/mcps/tools/research/config.py](../src/mcps/tools/research/config.py), [src/mcps/tools/obsidian_models.py](../src/mcps/tools/obsidian_models.py)
+
 ### API Keys
 
-#### `OPENAI_API_KEY` (required) #env
-OpenAI API key for embedding service.
-**Format**: `sk-...` (OpenAI API key format)
-**Used by**: [src/mcps/rag/embeddings.py](../src/mcps/rag/embeddings.py)
-
-#### `VOYAGE_API_KEY` (required) #env
-VoyageAI API key for embedding and reranking services.
-**Format**: VoyageAI API key string
-**Used by**: [src/mcps/rag/vault.py:52-58](../src/mcps/rag/vault.py#L52-L58)
-
-#### `OLLAMA_API_BASE` (optional) #env
-Ollama API base URL for local embedding and reranking services.
-**Format**: `http://host:port` URL format
-**Default**: Ollama default endpoint
-**Example**: `http://localhost:11434`
-**Used by**: [src/mcps/rag/vault.py:65-70](../src/mcps/rag/vault.py#L65-L70)
+#### `OPENAI_API_KEY` (optional) #env
+OpenAI API key retained in server configuration for non-RAG integrations.
+RAG model access goes through `LITELLM_ROUTER`.
 
 #### `ANTHROPIC_API_KEY` (optional) #env
 Anthropic API key for Claude models.
 **Format**: Anthropic API key string
 **Used by**: Server configuration
-
-#### `PERPLEXITY_API_KEY` (optional) #env
-Perplexity AI API key for deep research functionality.
-**Format**: Perplexity API key string
-**Used by**: [src/mcps/tools/deep_research.py](../src/mcps/tools/deep_research.py)
 
 ### Vault Configuration
 
@@ -105,29 +99,26 @@ Maximum size of text chunks in characters.
 
 ### Model Configuration
 
-#### `ollama_embedding_model` #config
-Ollama model name for embeddings.
+#### `rag_embedding_model` #config
+LiteLLM Router model name for Obsidian RAG embeddings.
 **Type**: str
-**Default**: `"bge-m3:latest"`
-**Used by**: [src/mcps/rag/vault.py:65-70](../src/mcps/rag/vault.py#L65-L70)
+**Default**: `"text-embedding-3-small"`
+**Environment**: `RAG_EMBEDDING_MODEL`
+**Used by**: [src/mcps/tools/obsidian_models.py](../src/mcps/tools/obsidian_models.py)
 
-#### `voyage_embedding_model` #config
-VoyageAI model name for embeddings.
-**Type**: str
-**Default**: `"voyage-3-lite"`
-**Used by**: [src/mcps/rag/vault.py:52-58](../src/mcps/rag/vault.py#L52-L58)
+#### `rag_embedding_dimensions` #config
+Embedding vector dimension used for LanceDB schema.
+**Type**: int
+**Default**: `1536`
+**Environment**: `RAG_EMBEDDING_DIMENSIONS`
+**Used by**: [src/mcps/rag/embeddings.py](../src/mcps/rag/embeddings.py), [src/mcps/rag/database.py](../src/mcps/rag/database.py)
 
-#### `ollama_reranker_model` #config
-Ollama model name for reranking.
+#### `rag_reranker_model` #config
+LiteLLM Router chat model name for async post-retrieval reranking. Empty disables model reranking.
 **Type**: str
-**Default**: `"phi4-mini:latest"`
-**Used by**: [src/mcps/rag/ollama_reranker.py](../src/mcps/rag/ollama_reranker.py)
-
-#### `voyage_reranker_model` #config
-VoyageAI model name for reranking.
-**Type**: str
-**Default**: `"rerank-2-lite"`
-**Used by**: [src/mcps/rag/vault.py:93-94](../src/mcps/rag/vault.py#L93-L94)
+**Default**: `""`
+**Environment**: `RAG_RERANKER_MODEL`
+**Used by**: [src/mcps/rag/reranking.py](../src/mcps/rag/reranking.py), [src/mcps/tools/obsidian_models.py](../src/mcps/tools/obsidian_models.py)
 
 ### Search Configuration
 
@@ -213,16 +204,17 @@ Asyncio fixture loop scope.
 ## Example .env File
 
 ```bash
-# Required API Keys
-OPENAI_API_KEY=sk-...
-VOYAGE_API_KEY=pa-...
+# LiteLLM Router
+LITELLM_ROUTER=http://localhost:4000
+LITELLM_ROUTER_KEY=sk-router-token
 
 # Optional API Keys
 ANTHROPIC_API_KEY=sk-ant-...
-PERPLEXITY_API_KEY=pplx-...
 
-# Ollama Configuration
-OLLAMA_API_BASE=http://localhost:11434
+# RAG Models
+RAG_EMBEDDING_MODEL=text-embedding-3-small
+RAG_EMBEDDING_DIMENSIONS=1536
+RAG_RERANKER_MODEL=gpt-4o-mini
 
 # Vault Configuration
 VAULT=/Users/username/Documents/ObsidianVault

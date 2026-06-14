@@ -33,14 +33,6 @@ class FakeVault:
         self.index_cancelled = False
         self._index_started = asyncio.Event()
 
-    @asynccontextmanager
-    async def lifespan(self):
-        self.entered = True
-        try:
-            yield self
-        finally:
-            self.exited = True
-
     async def update_index(self) -> None:
         self.index_started = True
         self._index_started.set()
@@ -77,28 +69,6 @@ async def test_obsidian_tools_are_not_registered_without_vault_dir():
     tool_names = {tool.name for tool in tools}
 
     assert OBSIDIAN_TOOL_NAMES.isdisjoint(tool_names)
-
-
-@pytest.mark.asyncio
-async def test_obsidian_lifespan_enters_vault_lifespan_and_cleans_up(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-):
-    fake_vault = FakeVault()
-    monkeypatch.setattr(obsidian_vault, "create_vault", lambda _config: fake_vault)
-    config = ServerConfig(vault_dir=tmp_path)
-    mcp = FastMCP("test")
-    lifespan = obsidian_vault.build_obsidian_lifespan(config)
-
-    async with lifespan(mcp) as context:
-        await fake_vault._index_started.wait()
-        assert context["obsidian_vault"] is fake_vault
-        assert context["obsidian_config"] is config
-        assert fake_vault.entered
-        assert fake_vault.index_started
-
-    assert fake_vault.exited
-    assert fake_vault.index_cancelled
 
 
 @pytest.mark.asyncio

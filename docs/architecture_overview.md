@@ -14,10 +14,9 @@ FastMCP-based Model Context Protocol server with RAG capabilities for Obsidian v
 - **rank-bm25** - BM25 algorithm for keyword-based ranking
 
 ### AI Services
-- **VoyageAI v0.3.2** - Primary embedding and reranking service [src/mcps/rag/vault.py:52-58](../src/mcps/rag/vault.py#L52-L58)
-- **OpenAI v1.97.1** - Secondary embedding service with OpenAI-compatible API support [src/mcps/rag/vault.py:59-64](../src/mcps/rag/vault.py#L59-L64)
-- **Ollama v0.5.1** - Local embedding and reranking service [src/mcps/rag/vault.py:65-70](../src/mcps/rag/vault.py#L65-L70)
-- **Perplexity AI** - Deep research capabilities via API [src/mcps/tools/deep_research.py:16](../src/mcps/tools/deep_research.py#L16)
+- **LiteLLM Router** - Central model gateway for web research and Obsidian RAG models.
+- **LangChain core interfaces** - Provider-neutral `BaseChatModel` and `Embeddings` contracts inside RAG.
+- **langchain-openai adapters** - OpenAI-compatible adapters outside RAG, configured against LiteLLM Router.
 
 ### Document Processing
 - **markdown v3.4.0** - Markdown parsing
@@ -122,7 +121,7 @@ The RAG pipeline in [src/mcps/rag/vault.py:129-360](../src/mcps/rag/vault.py#L12
 - Hybrid search combining vector similarity and full-text search
 - Tag filtering with LanceDB `array_has_all` operator
 - Path filtering with SQL LIKE clauses
-- Multiple reranking strategies (VoyageAI, Ollama, RRF)
+- LanceDB RRF reranking plus optional async LangChain post-retrieval reranking
 
 **Index Types** [src/mcps/rag/database.py:231-279](../src/mcps/rag/database.py#L231-L279):
 - Full-text search indexes on content, title, description columns
@@ -130,16 +129,12 @@ The RAG pipeline in [src/mcps/rag/vault.py:129-360](../src/mcps/rag/vault.py#L12
 
 #### Reranking Strategies
 
-**VoyageAI Reranker** [src/mcps/rag/vault.py:93-94](../src/mcps/rag/vault.py#L93-L94):
-- API-based relevance scoring
+**LangChainReranker** [src/mcps/rag/reranking.py](../src/mcps/rag/reranking.py):
+- Async LLM-based relevance scoring with categories (PERFECT, GOOD, SOME, BAD, NONE)
+- Uses provider-neutral `BaseChatModel`
 
-**OllamaReranker** [src/mcps/rag/ollama_reranker.py:12-209](../src/mcps/rag/ollama_reranker.py#L12-L209):
-- LLM-based relevance scoring with categories (PERFECT, GOOD, SOME, BAD, NONE)
-- Embedding similarity scoring
-- Weighted combination of LLM and embedding scores
-
-**RRF (Reciprocal Rank Fusion)** [src/mcps/rag/vault.py:105](../src/mcps/rag/vault.py#L105):
-- Fallback reranking strategy combining multiple signals
+**RRF (Reciprocal Rank Fusion)**:
+- LanceDB reranking strategy combining vector and full-text signals
 
 ## MCP Server Features
 
@@ -172,8 +167,8 @@ The RAG pipeline in [src/mcps/rag/vault.py:129-360](../src/mcps/rag/vault.py#L12
 ### Interface Segregation
 All components implement specific interfaces enabling:
 - Flexible component replacement without code changes
-- Multiple embedding service providers (VoyageAI, OpenAI, Ollama)
-- Multiple reranking strategies (VoyageAI, Ollama, RRF)
+- Provider-neutral embedding and chat-model adapters
+- RRF plus optional async LangChain reranking
 - Multiple chunking strategies (FixedSize, Semantic)
 
 ### Async Context Managers

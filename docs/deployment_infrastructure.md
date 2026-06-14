@@ -62,9 +62,8 @@ Core dependencies [pyproject.toml:10-20](../pyproject.toml#L10-L20):
 - rank_bm25
 - python-dotenv >= 1.0.0
 - python-frontmatter >= 1.1.0
-- ollama >= 0.5.1
-- voyageai >= 0.3.2
-- openai >= 1.97.1
+- langchain-core / langchain-openai
+- httpx
 
 ## Development Environment
 
@@ -119,12 +118,9 @@ Core dependencies [pyproject.toml:10-20](../pyproject.toml#L10-L20):
 External API services required for full functionality:
 
 **Required**:
-- VoyageAI API (embedding and reranking)
-- OpenAI API (embedding fallback)
-- Ollama API (local embedding and reranking)
+- LiteLLM Router for model and embedding access
 
 **Optional**:
-- Perplexity API (deep research tool)
 - Serper API (web search tool)
 - Tavily API (web search tool)
 

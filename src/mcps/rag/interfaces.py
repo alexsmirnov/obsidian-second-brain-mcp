@@ -4,12 +4,10 @@ Abstract interfaces for the RAG search system components.
 
 from abc import ABC, abstractmethod
 from collections.abc import Generator
-from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum, auto
 from pathlib import Path
-from typing import Self
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -134,21 +132,8 @@ class IEmbeddingService(ABC):
         """Return the number of dimensions of the embeddings."""
         pass
 
-class ILLM(ABC):
-    """Interface for LLM operations."""
-
-    @abstractmethod
-    async def generate(self, prompt: str) -> str:
-        """Generate text from a prompt."""
-        pass
-
 class IVectorStore(ABC):
     """Interface for vector storage operations."""
-
-    @abstractmethod
-    def lifespan(self) -> AbstractAsyncContextManager[Self]:
-        """Manage vector store resources for a bounded async lifetime."""
-        pass
 
     @abstractmethod
     async def initialize(self) -> None:
@@ -236,11 +221,6 @@ class IVault(ABC):
     Supports operations to search information from vault, read whole file by name
     or partial path, and get directory content.
     """
-
-    @abstractmethod
-    def lifespan(self) -> AbstractAsyncContextManager[Self]:
-        """Manage vault resources for a bounded async lifetime."""
-        pass
 
     @abstractmethod
     async def initialize(self) -> None:

@@ -25,16 +25,14 @@ Tests for agentic search functionality including query rewriting and search para
 - `test_estimate_search_params_tags_only` - Tag extraction
 - `test_estimate_search_params_mixed` - Combined file and tag extraction
 
-### [test/test_embedding_service.py](../test/test_embedding_service.py)
-Tests for OpenAI-compatible embedding service supporting multiple providers.
+### [tests/test_embedding_service.py](../tests/test_embedding_service.py)
+Tests for LangChain-backed embedding service.
 
 **Coverage**:
-- Embedding generation for VoyageAI
-- Embedding generation for OpenAI
-- Embedding generation for Ollama
-- Batch embedding processing
+- Empty input without model calls
+- Document embedding order preservation
 - Query vs document embedding modes
-- API error handling
+- Configured dimension reporting
 
 ### [test/test_document_processing.py](../test/test_document_processing.py)
 Tests for document processing, file traversal, markdown parsing, and chunking.
@@ -75,15 +73,26 @@ Tests for chunk data models and validation.
 - Metadata handling
 - Serialization and deserialization
 
-### [test/test_ollama_reranker.py](../test/test_ollama_reranker.py)
-Tests for Ollama-based result reranking.
+### [tests/test_langchain_reranker.py](../tests/test_langchain_reranker.py)
+Tests for provider-neutral async LangChain reranking.
 
 **Coverage**:
 - LLM-based relevance scoring
-- Embedding similarity scoring
-- Combined score calculation
 - Relevance category classification (PERFECT, GOOD, SOME, BAD, NONE)
-- Error handling for LLM failures
+- Empty result handling
+- Invalid score handling
+
+### [tests/test_obsidian_model_config.py](../tests/test_obsidian_model_config.py)
+Tests for LiteLLM Router model adapter construction outside RAG.
+
+**Coverage**:
+- Router URL/key usage
+- Shared `httpx.AsyncClient` injection
+- Embedding model and dimension config
+- Optional reranker model config
+
+### [tests/test_rag_provider_boundaries.py](../tests/test_rag_provider_boundaries.py)
+Architectural boundary test ensuring `src/mcps/rag` does not import provider-specific model libraries.
 
 ## Evaluation Scripts
 
@@ -148,9 +157,9 @@ Helper functions create test data:
 
 ### Integration Points
 - LanceDB database operations
-- OpenAI API integration
-- VoyageAI API integration
-- Ollama API integration
+- LiteLLM Router model adapter construction
+- Shared `httpx.AsyncClient` injection
+- RAG provider-import boundary enforcement
 
 ### Error Handling
 - API failure scenarios

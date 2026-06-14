@@ -1,18 +1,11 @@
 """
 Comprehensive pytest tests for the enhanced LanceDBStore class.
 
-Tests cover:
-- Basic functionality (initialization, storage, search, deletion)
-- Pydantic model integration
-- OpenAI embedding functionality
-- Full text search (FTS) with Tantivy-based indexing
-- Hybrid search capabilities
-- Error handling and edge cases
+Tests cover basic storage, search, deletion, indexing, and lifecycle behavior.
 """
 
 import hashlib
 import logging
-import os
 import tempfile
 from collections.abc import AsyncGenerator, Generator
 from datetime import datetime
@@ -20,10 +13,8 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from dotenv import find_dotenv, load_dotenv
 
 from mcps.rag.database import LanceDBStore
-from mcps.rag.embeddings import OpenAIEmbedding
 from mcps.rag.interfaces import (
     Chunk,
     IEmbeddingService,
@@ -31,9 +22,6 @@ from mcps.rag.interfaces import (
     NotInitializedError,
     SearchScope,
 )
-
-load_dotenv(find_dotenv())
-load_dotenv(find_dotenv(usecwd=True))
 
 
 # Test fixtures
@@ -48,11 +36,14 @@ def temp_db_path() -> Generator[Path]:
 def sample_chunks():
     """Create sample chunks for testing."""
     base_time = datetime.now()
-    
+
     chunks = [
         Chunk(
             id="chunk_1",
-            content="Machine learning is a subset of artificial intelligence that focuses on algorithms.",
+            content=(
+                "Machine learning is a subset of artificial intelligence that "
+                "focuses on algorithms."
+            ),
             source="AI Tutorial",
             description="Machine learning basics",
             title="ML Introduction",
@@ -63,11 +54,14 @@ def sample_chunks():
             position=0,
         ),
         Chunk(
-            id="chunk_2", 
-            content="Deep learning uses neural networks with multiple layers to process data.",
-                source="Deep Learning Guide",
-                description="Neural networks and deep learning",
-                title="Deep Learning Basics",
+            id="chunk_2",
+            content=(
+                "Deep learning uses neural networks with multiple layers to "
+                "process data."
+            ),
+            source="Deep Learning Guide",
+            description="Neural networks and deep learning",
+            title="Deep Learning Basics",
             outgoing_links=["neural_networks"],
             tags=["deep-learning", "neural-networks"],
             source_path="/test/doc2.md",
@@ -76,10 +70,13 @@ def sample_chunks():
         ),
         Chunk(
             id="chunk_3",
-            content="Natural language processing enables computers to understand human language.",
-                source="NLP Handbook",
-                description="Natural language processing techniques",
-                title="NLP Overview",
+            content=(
+                "Natural language processing enables computers to understand "
+                "human language."
+            ),
+            source="NLP Handbook",
+            description="Natural language processing techniques",
+            title="NLP Overview",
             outgoing_links=["language_models"],
             tags=["nlp", "language"],
             source_path="/test/doc3.md",
@@ -88,53 +85,53 @@ def sample_chunks():
         ),
         Chunk(
             id="chunk_4",
-            content="Python programming language is widely used for data science and machine learning.",
-                source="Python Guide",
-                description="Python programming for data science",
-                title="Python Basics",
+            content=(
+                "Python programming language is widely used for data science "
+                "and machine learning."
+            ),
+            source="Python Guide",
+            description="Python programming for data science",
+            title="Python Basics",
             outgoing_links=["python", "data_science"],
             tags=["python", "programming"],
             source_path="/test/doc1.md",
             modified_at=base_time,
             position=0,
-        )
+        ),
     ]
     return chunks
-
 
 
 @pytest.fixture
 async def dummy_embedding_function() -> AsyncGenerator[IEmbeddingService]:
     """Create a dummy embedding function for testing.
-        The only assumption that embeddings for the same text will always be the same.
+
+    The only assumption that embeddings for the same text will always be the same.
     """
-    ollama_base_url = os.getenv("OLLAMA_API_BASE")
-    if ollama_base_url:
-        async with OpenAIEmbedding(
-            model_name="bge-m3",
-            dimensions=1024,
-            api_base=ollama_base_url + "/v1",
-            api_key="dummy",
-        ) as svc:
-            yield svc
-    else:
-        class DummyEmbeddingFunction(IEmbeddingService):
-            def _generate_embedding(self, text: str) -> np.ndarray:
-                hash_digest = hashlib.sha256(text.encode('utf-8')).digest()
-                embedding_int = np.frombuffer(hash_digest, dtype=np.uint16, count=16)
-                embedding_fp16 = (embedding_int / 65535.0).astype(np.float16)
 
-                return embedding_fp16
+    class DummyEmbeddingFunction(IEmbeddingService):
+        def _generate_embedding(self, text: str) -> np.ndarray:
+            hash_digest = hashlib.sha256(text.encode("utf-8")).digest()
+            embedding_int = np.frombuffer(hash_digest, dtype=np.uint16, count=16)
+            embedding_fp16 = (embedding_int / 65535.0).astype(np.float16)
 
-            async def generate_embeddings(self, texts: list[str], query: bool = False) -> list[list[float]]:
-                return [self._generate_embedding(text).tolist() for text in texts]
-            def ndims(self):
-                return 16
+            return embedding_fp16
 
-        yield DummyEmbeddingFunction()
+        async def generate_embeddings(
+            self,
+            texts: list[str],
+            query: bool = False,
+        ) -> list[list[float]]:
+            return [self._generate_embedding(text).tolist() for text in texts]
+
+        def ndims(self) -> int:
+            return 16
+
+    yield DummyEmbeddingFunction()
+
 
 @pytest.fixture
-def lancedb_store(temp_db_path,dummy_embedding_function) -> IVectorStore:
+def lancedb_store(temp_db_path, dummy_embedding_function) -> IVectorStore:
     """Create a LanceDBStore instance for testing."""
     store = LanceDBStore(temp_db_path, dummy_embedding_function, "test_chunks")
     return store
@@ -142,23 +139,30 @@ def lancedb_store(temp_db_path,dummy_embedding_function) -> IVectorStore:
 
 
 @pytest.fixture
-async def lancedb_store_with_data(temp_db_path, dummy_embedding_function, sample_chunks):
+async def lancedb_store_with_data(
+    temp_db_path,
+    dummy_embedding_function,
+    sample_chunks,
+):
     """Create a LanceDBStore instance with pre-loaded test data."""
-    if os.environ.get("VOYAGE_API_KEY") :
-        from lancedb.rerankers import VoyageAIReranker
-        reranker =  VoyageAIReranker(model_name="rerank-2-lite", column = "content", api_key=os.environ.get("VOYAGE_API_KEY"))
-    else:
-        from lancedb.rerankers import RRFReranker
-        reranker = RRFReranker(return_score='all')
+    from lancedb.rerankers import RRFReranker
 
-    store = LanceDBStore(temp_db_path, dummy_embedding_function, "test_chunks", reranker=reranker)
+    reranker = RRFReranker(return_score="all")
+
+    store = LanceDBStore(
+        temp_db_path,
+        dummy_embedding_function,
+        "test_chunks",
+        reranker=reranker,
+    )
     await store.initialize()  # Initialize without FTS first
-    
+
     # Store chunks with embeddings only
     await store.store(sample_chunks)
     await store.reindex()
-    
+
     yield store
+    await store.cleanup()
 
 
 # Test basic functionality
@@ -179,40 +183,14 @@ async def test_initialization(lancedb_store):
 
 
 @pytest.mark.asyncio
-async def test_lancedb_store_lifespan_initializes_and_deinitializes_store(
-    lancedb_store,
-):
-    async with lancedb_store.lifespan() as store:
-        assert store is lancedb_store
-        assert store._initialized
-
-    assert not lancedb_store._initialized
-    with pytest.raises(NotInitializedError):
-        await lancedb_store.store([])
-
-
-
-
-@pytest.mark.asyncio
 async def test_store_empty_chunks_list(lancedb_store):
     """Test storing an empty list of chunks."""
     await lancedb_store.initialize()
-    
+
     # Should not raise an error
     await lancedb_store.store([])
 
 
-@pytest.mark.asyncio
-async def test_store_chunks(lancedb_store, sample_chunks):
-    """Test storing chunks in the vector store."""
-    await lancedb_store.initialize()
-    
-    # Store chunks
-    await lancedb_store.store(sample_chunks)
-    
-    # We don't have direct access to the underlying store to verify storage in this IVectorStore test
-    # Just verifying the method executes without error is sufficient for the interface test
-    
 
 @pytest.mark.asyncio
 async def test_search(lancedb_store_with_data):
@@ -228,8 +206,8 @@ async def test_search(lancedb_store_with_data):
     
     # Search with where clause
     results = await lancedb_store_with_data.search(
-        "machine learning", 
-        tags=['machine-learning']
+        "machine learning",
+        tags=["machine-learning"],
     )
     _log_results(results)
     for chunk in results:
@@ -245,11 +223,13 @@ async def test_search_empty_results(lancedb_store_with_data):
     # LanceDB always returns results, even if there are no matches
     # assert len(results) == 0
 
+
 def _log_results(results):
     """Helper to log search results."""
     for r in results:
-        delattr(r, 'embeddings')  # Remove embeddings for cleaner output
+        delattr(r, "embeddings")  # Remove embeddings for cleaner output
         logging.info(f"Search result: {r.model_dump()}")
+
 
 @pytest.mark.asyncio
 async def test_delete_chunks(lancedb_store_with_data, sample_chunks):
@@ -257,12 +237,12 @@ async def test_delete_chunks(lancedb_store_with_data, sample_chunks):
     # First verify chunk exists via search
     results_before = await lancedb_store_with_data.search("machine learning")
     chunk_source_paths = [chunk.source_path for chunk in results_before]
-    
+
     # Delete the first chunk
     if chunk_source_paths:
         await lancedb_store_with_data.delete([chunk_source_paths[0]])
         await lancedb_store_with_data.reindex()
-        # Verify it was deleted (this is an indirect test since we're working with the interface)
+        # Verify deletion indirectly through the public search contract.
         results_after = await lancedb_store_with_data.search("machine learning")
         after_ids = {chunk.source_path for chunk in results_after}
         assert chunk_source_paths[0] not in after_ids
@@ -279,11 +259,13 @@ async def test_delete_nonexistent_chunks(lancedb_store_with_data):
 async def test_store_and_search_workflow(lancedb_store, sample_chunks):
     """Test complete workflow of storing and then searching chunks."""
     await lancedb_store.initialize()
-    
+
     # Store only specific chunks for targeted testing
-    python_chunk = next(chunk for chunk in sample_chunks if "python" in chunk.content.lower())
+    python_chunk = next(
+        chunk for chunk in sample_chunks if "python" in chunk.content.lower()
+    )
     await lancedb_store.store([python_chunk])
-    
+
     # Search for the stored content
     results = await lancedb_store.search("python programming")
     
@@ -296,7 +278,7 @@ async def test_search_with_filters(lancedb_store_with_data):
     """Test search with various filter conditions."""
     # Search with source filter
     results = await lancedb_store_with_data.search(
-        "machine learning", 
+        "machine learning",
         scope=SearchScope.CONTENT,
     )
     _log_results(results)

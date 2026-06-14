@@ -5,6 +5,7 @@ from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Annotated, Any
 
+import httpx
 from fastmcp import Context, FastMCP
 from fastmcp.server.lifespan import Lifespan, lifespan
 from pydantic import Field
@@ -87,21 +88,38 @@ SearchQuery = Annotated[
 
 
 def build_obsidian_lifespan(config: ServerConfig) -> Lifespan:
+    assert config.vault_dir is not None
+
+    if not config.vault_dir.exists():
+        raise FileNotFoundError(
+            f"Vault dir does not exist: {config.vault_dir}"
+        )
+
+    if not config.vault_dir.is_dir():
+        raise ValueError(
+            f"Vault dir is not a directory: {config.vault_dir}"
+                    )
     @lifespan
     async def obsidian_lifespan(server: FastMCP) -> AsyncIterator[dict[str, Any]]:
-        vault = create_vault(config)
-        async with vault.lifespan():
-            index_task = asyncio.create_task(vault.update_index())
-            try:
-                logger.info("Obsidian vault initialized and indexing started")
-                yield {"obsidian_vault": vault, "obsidian_config": config}
-            finally:
-                if not index_task.done():
-                    index_task.cancel()
+        async with httpx.AsyncClient(
+            timeout=30.0,
+            follow_redirects=True,
+        ) as http_client:
+            async with create_vault(
+                config,
+                http_client
+            ) as vault:
+                index_task = asyncio.create_task(vault.update_index())
                 try:
-                    await index_task
-                except asyncio.CancelledError:
-                    logger.debug("Obsidian index task cancelled during shutdown")
+                    logger.info("Obsidian vault initialized and indexing started")
+                    yield {"obsidian_vault": vault, "obsidian_config": config}
+                finally:
+                    if not index_task.done():
+                        index_task.cancel()
+                    try:
+                        await index_task
+                    except asyncio.CancelledError:
+                        logger.debug("Obsidian index task cancelled during shutdown")
 
     return obsidian_lifespan
 

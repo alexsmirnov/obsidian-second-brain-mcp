@@ -11,13 +11,16 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Self
 
-from lancedb.rerankers import Reranker, RRFReranker, VoyageAIReranker
+import httpx
+from lancedb.rerankers import Reranker, RRFReranker
+from langchain_core.embeddings import Embeddings
+from langchain_core.language_models import BaseChatModel
+from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+from pydantic import SecretStr
 
 from mcps.config import ServerConfig
-from mcps.rag.embeddings import OpenAIEmbedding
-from mcps.rag.openai_reranker import OpenAiReranker
+from mcps.rag.embeddings import LangChainEmbeddingService
 
 from .database import LanceDBStore
 from .document_processing import (
@@ -38,43 +41,10 @@ from .interfaces import (
     SearchQuery,
     SearchScope,
 )
+from .reranking import IRerankingService
 from .search import MarkdownResultFormatter, SemanticSearchEngine
 
 logger = logging.getLogger("mcps.vault")
-
-
-def _create_embedding_function(config: ServerConfig) -> IEmbeddingService:
-    """Create and configure embedding function."""
-    ollama_base_url = config.ollama_api_base
-    voyage_api_key = config.voyage_api_key
-    openai_api_key = config.openai_api_key
-    if voyage_api_key:
-        return OpenAIEmbedding(
-            model_name="voyage-3.5-lite",
-            dimensions=1024,
-            api_key=voyage_api_key,
-            api_base="https://api.voyageai.com/v1",
-            provider="voyage",
-        )
-    elif openai_api_key:
-        return OpenAIEmbedding(
-            model_name="text-embedding-3-small",
-            dimensions=1536,
-            api_key=openai_api_key,
-            provider="openai",
-        )
-    elif ollama_base_url:
-        return OpenAIEmbedding(
-            model_name="bge-m3",
-            dimensions=1024,
-            api_base=ollama_base_url + "/v1",
-            api_key="dummy",
-        )
-    else:
-        raise RuntimeError(
-            "No embedding service configured. Set OLLAMA_API_BASE or "
-            "VOYAGE_API_KEY environment variable."
-        )
 
 
 def _create_file_traversal(vault_path: Path) -> IFileTraversal:
@@ -93,45 +63,68 @@ def _create_chunker() -> IChunker:
     return SemanticChunker()
 
 
-def _create_reranker(config: ServerConfig) -> Reranker:
-    """Create and configure reranker."""
-    if config.voyage_api_key:
-        return VoyageAIReranker(
-            model_name=config.voyage_reranker_model,
-            column="content",
-            api_key=config.voyage_api_key,
-        )
-    elif config.ollama_api_base:
-        return OpenAiReranker(
-            model_name=config.ollama_reranker_model,
-            api_base=f"{config.ollama_api_base}/v1",
-            api_key="dummy",
-            embedding_model=config.ollama_embedding_model,
-            return_score="relevance",
-            column="content",
-            weight=1.0,
-        )
-    else:
-        return RRFReranker(return_score="all")
-
-
-def _create_vector_store(config: ServerConfig) -> IVectorStore:
-    """Create and configure vector store service."""
-    return LanceDBStore(
-        db_path=config.vault_dir / ".vault_db",  # type: ignore
-        embedding_service=_create_embedding_function(config),
-        table_name=config.table_name,
-        reranker=_create_reranker(config),
+def _create_embeddings(
+        config: ServerConfig,
+        http_client: httpx.AsyncClient
+    ) -> IEmbeddingService:
+    base_url = config.litellm_router
+    api_key = SecretStr(config.litellm_router_key)
+    embeddings = OpenAIEmbeddings(
+        model=config.rag_embedding_model,
+        dimensions=config.rag_embedding_dimensions,
+        base_url=base_url,
+        api_key=api_key,
+        http_async_client=http_client,
     )
+    return LangChainEmbeddingService(
+                embeddings=embeddings,
+                dimensions=config.rag_embedding_dimensions,
+            )
+
+def _create_reranker(
+        config: ServerConfig,
+        http_client: httpx.AsyncClient
+    ) -> Reranker:
+    if config.rag_reranker_model:
+        api_key = SecretStr(config.litellm_router_key)
+        reranker_model = ChatOpenAI(
+            model=config.rag_reranker_model,
+            base_url=config.litellm_router,
+            api_key=api_key,
+            http_async_client=http_client,
+        )
+    return RRFReranker(return_score="relevance")
+
+@asynccontextmanager
+async def _create_vector_store(
+    config: ServerConfig,
+    embedding_service: IEmbeddingService,
+    reranker: Reranker | None = None,
+) -> AsyncIterator[IVectorStore]:
+    """Create and configure vector store service."""
+    store = LanceDBStore(
+        db_path=config.vault_dir / ".vault_db",  # type: ignore
+        embedding_service=embedding_service,
+        table_name=config.table_name,
+        reranker=reranker,
+    )
+    try:
+        await store.initialize()
+        yield store
+    finally:
+        await store.cleanup()
 
 
 def _create_search_engine(
-    vector_store: IVectorStore, config: ServerConfig
+    vector_store: IVectorStore,
+    config: ServerConfig,
 ) -> ISearchEngine:
     """Create and configure search engine service."""
     result_formatter = _create_result_formatter(config)
     return SemanticSearchEngine(
-        vector_store, result_formatter, limit=config.search_limit
+        vector_store,
+        result_formatter,
+        limit=config.search_limit,
     )
 
 
@@ -203,22 +196,12 @@ class Vault(IVault):
         
         logger.info(f"Vault initialized with injected services for path: {vault_path}")
 
-    @asynccontextmanager
-    async def lifespan(self) -> AsyncIterator[Self]:
-        async with self.vector_store.lifespan():
-            await self._initialize_without_vector_store()
-            try:
-                yield self
-            finally:
-                await self.cleanup()
-    
     async def initialize(self) -> None:
         """
         Initialize the vault manager and all its services.
         
         This method performs the following operations:
         - Validates the vault path exists
-        - Initializes the vector store and creates necessary indexes
         - Sets up the embedding service
         - Prepares all services for operation
         
@@ -226,37 +209,15 @@ class Vault(IVault):
             RuntimeError: If initialization fails
             FileNotFoundError: If vault path doesn't exist
         """
-        await self.vector_store.initialize()
-        await self._initialize_without_vector_store()
-
-    async def _initialize_without_vector_store(self) -> None:
         async with self._lock:
             if self._initialized:
                 logger.debug("Vault already initialized")
                 return
 
-            try:
-                logger.info("Starting Vault initialization")
-
-                if not self.vault_path.exists():
-                    raise FileNotFoundError(
-                        f"Vault path does not exist: {self.vault_path}"
-                    )
-
-                if not self.vault_path.is_dir():
-                    raise ValueError(
-                        f"Vault path is not a directory: {self.vault_path}"
-                    )
-
-                self._initialized = True
-                logger.info(
-                    f"Vault {self.vault_path} initialization completed successfully"
-                )
-
-            except Exception as e:
-                logger.error(f"Vault initialization failed: {e}")
-                self._initialized = False
-                raise RuntimeError(f"Failed to initialize Vault: {e}") from e
+            self._initialized = True
+            logger.info(
+                f"Vault {self.vault_path} initialization completed successfully"
+            )
     
     async def update_index(self) -> None:
         """
@@ -519,28 +480,17 @@ class Vault(IVault):
         This method should be called when the vault is no longer needed
         to ensure proper resource cleanup.
         """
-        try:
-            logger.info("Cleaning up Vault resources")
-            self._initialized = False
-            logger.info("Vault cleanup completed")
-            
-        except Exception as e:
-            logger.error(f"Error during vault cleanup: {e}")
+        self._initialized = False
+        logger.info("Vault cleanup completed")
     
-    def __del__(self):
-        """Destructor to ensure cleanup on garbage collection."""
-        if self._initialized:
-            try:
-                # Note: We can't call async cleanup from __del__
-                # This is just a safety net for resource cleanup
-                logger.debug("Vault destructor called")
-            except Exception:
-                pass  # Ignore errors in destructor
 
 
-def create_vault(
+@asynccontextmanager
+async def create_vault(
     config: ServerConfig,
-) -> Vault:
+    http_client: httpx.AsyncClient
+) -> AsyncIterator[Vault]:
+    
     """
     Factory method to create a fully configured Vault instance.
     
@@ -548,15 +498,7 @@ def create_vault(
     required services properly configured and injected.
     
     Args:
-        vault_path: Path to the vault directory containing documents
-        skip_patterns: List of patterns to skip during file traversal
-        chunk_size: Size of text chunks for processing
-        chunk_overlap: Overlap between consecutive chunks
-        embedding_model: Name of the embedding model to use
-        db_table_name: Name of the database table for storing chunks
-        max_content_length: Maximum content length for result formatting
-        include_metadata: Whether to include metadata in formatted results
-        batch_size: Number of files to process in each batch
+        config - MCP server configuration
         
     Returns:
         Configured Vault instance ready for use
@@ -569,25 +511,29 @@ def create_vault(
         logger.info(f"Creating Vault for path: {vault_path}")
         
         # Create all services using factory methods
-        file_traversal = _create_file_traversal(Path(vault_path) )
-        document_processor = _create_document_processor(Path(vault_path))
+        file_traversal = _create_file_traversal(vault_path)
+        document_processor = _create_document_processor(vault_path)
         chunker = _create_chunker()
-        
-        vector_store = _create_vector_store(config)
-        search_engine = _create_search_engine(vector_store, config)
-        
-        # Create and return Vault instance with injected services
-        vault = Vault(
-            vault_path=Path(vault_path),
-            file_traversal=file_traversal,
-            document_processor=document_processor,
-            chunker=chunker,
-            vector_store=vector_store,
-            search_engine=search_engine,
-        )
-        
-        logger.info("Vault factory method completed successfully")
-        return vault
+        embeddings = _create_embeddings(config,http_client)
+        async with _create_vector_store(config,embeddings,None) as vector_store:
+            search_engine = _create_search_engine(
+                vector_store,
+                config,
+            )
+            
+            # Create and return Vault instance with injected services
+            vault = Vault(
+                vault_path=Path(vault_path),
+                file_traversal=file_traversal,
+                document_processor=document_processor,
+                chunker=chunker,
+                vector_store=vector_store,
+                search_engine=search_engine,
+            )
+            await vault.initialize()
+            logger.info("Vault factory method completed successfully")
+            yield vault
+            await vault.cleanup()
         
     except Exception as e:
         logger.error(f"Failed to create Vault: {e}")

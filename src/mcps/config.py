@@ -20,8 +20,6 @@ class ServerConfig:
     litellm_router: str = ""
     litellm_router_key: str = ""
     # Obsidian Vault configuration
-    voyage_api_key: str = ""
-    ollama_api_base: str = ""
     vault_dir: Path | None = None
     table_name: str = "documents"
     skip_patterns: list[str] = field(default_factory=list)
@@ -29,11 +27,9 @@ class ServerConfig:
     # Chunking configuration
     max_chunk_size: int = 4000
     
-    ollama_embedding_model: str = "bge-m3:latest"
-    voyage_embedding_model: str = "voyage-3-lite"
-    
-    ollama_reranker_model: str = "phi4-mini:latest"
-    voyage_reranker_model: str = "rerank-2-lite"
+    rag_embedding_model: str = "text-embedding-3-small"
+    rag_embedding_dimensions: int = 1536
+    rag_reranker_model: str = ""
     
     search_limit: int = 20
 
@@ -71,8 +67,9 @@ def create_config(
         anthropic_api_key=os.getenv("ANTHROPIC_API_KEY", ""),
         litellm_router=os.getenv("LITELLM_ROUTER", ""),
         litellm_router_key=os.getenv("LITELLM_ROUTER_KEY", ""),
-        voyage_api_key=os.getenv("VOYAGE_API_KEY", ""),
-        ollama_api_base=os.getenv("OLLAMA_API_BASE", ""),
+        rag_embedding_model=os.getenv("RAG_EMBEDDING_MODEL", "text-embedding-3-small"),
+        rag_embedding_dimensions=int(os.getenv("RAG_EMBEDDING_DIMENSIONS", "1536")),
+        rag_reranker_model=os.getenv("RAG_RERANKER_MODEL", ""),
         vault_dir=Path(os.getenv("VAULT","")) if os.getenv("VAULT") else None,
         skip_patterns=default_skip_patterns
     )

@@ -2,13 +2,9 @@
 Vector database implementations for the RAG search system.
 """
 
-import inspect
 import logging
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Self
 
 import lancedb
 import pyarrow as pa
@@ -61,14 +57,6 @@ class LanceDBStore(IVectorStore):
         self.reranker = reranker or RRFReranker(return_score="all")
         self.embedding_service: IEmbeddingService = embedding_service
         self._initialized = False
-
-    @asynccontextmanager
-    async def lifespan(self) -> AsyncIterator[Self]:
-        await self.initialize()
-        try:
-            yield self
-        finally:
-            await self.cleanup()
 
     async def initialize(self) -> None:
         """

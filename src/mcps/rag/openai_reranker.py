@@ -8,6 +8,8 @@ import numpy as np
 import openai
 import pyarrow as pa
 from lancedb.rerankers import Reranker
+from langchain_core.embeddings import Embeddings
+from langchain_core.language_models import BaseChatModel
 
 logger = logging.getLogger("mcps.rag")
 
@@ -17,10 +19,8 @@ class OpenAiReranker(Reranker):
 
     def __init__(
         self,
-        model_name: str = "phi4-mini:latest",
-        api_base: str | None = None,
-        api_key: str | None = None,
-        embedding_model: str = "bge-m3:latest",
+        chat_model: BaseChatModel,
+        embeddings: Embeddings,
         return_score: str = "relevance",
         column: str = "content",
         weight: float = 1.0,
@@ -39,33 +39,11 @@ class OpenAiReranker(Reranker):
             embedding_batch_size: Embedding request batch size.
         """
         super().__init__(return_score)
-        self.model_name = model_name
-        self.embedding_model = embedding_model
-        self.client = openai.OpenAI(api_key=api_key or "dummy", base_url=api_base)
+        self.chat_model = chat_model
+        self.embeddings = embeddings
         self.weight = weight
         self.column = column
         self.embedding_batch_size = embedding_batch_size
-
-    def _embed(self, texts: list[str]) -> Sequence[Sequence[float]]:
-        response = self.client.embeddings.create(
-            model=self.embedding_model,
-            input=texts,
-        )
-        return [item.embedding for item in response.data]
-
-    def _get_openai_embeddings(self, texts: list[str]) -> list[list[float]]:
-        """Generate embeddings for texts using the configured API."""
-        try:
-            embed_batches = [
-                self._embed(texts[index : index + self.embedding_batch_size])
-                for index in range(0, len(texts), self.embedding_batch_size)
-            ]
-        except Exception as exc:
-            message = "Failed to fetch embeddings from OpenAI-compatible API"
-            raise RuntimeError(f"{message}: {exc}") from exc
-
-        vectors = itertools.chain.from_iterable(embed_batches)
-        return [list(vector) for vector in vectors]
 
     def _score_with_llm(self, query: str, documents: list[str]) -> list[float]:
         """Score documents using the configured chat completion model."""
@@ -74,9 +52,8 @@ class OpenAiReranker(Reranker):
     def _score_document_with_llm(self, query: str, document: str) -> float:
         prompt = self._create_relevance_prompt(query, document)
         try:
-            response = self.client.chat.completions.create(
-                model=self.model_name,
-                messages=[{"role": "user", "content": prompt}],
+            response = self.chat_model.invoke(
+                [{"role": "user", "content": prompt}],
                 temperature=0.1,
                 max_tokens=10,
             )
@@ -84,7 +61,7 @@ class OpenAiReranker(Reranker):
             logger.exception("Failed to score document with OpenAI-compatible API")
             return 0.0
 
-        score_text = response.choices[0].message.content or ""
+        score_text = str(response.content) or ""
         return self._parse_score(score_text)
 
     @staticmethod
@@ -123,9 +100,8 @@ Relevance:"""
 
     def _score_with_embeddings(self, query: str, documents: list[str]) -> list[float]:
         """Score documents using embedding cosine similarity."""
-        embeddings = self._get_openai_embeddings([query, *documents])
-        query_embedding = np.asarray(embeddings[0], dtype=np.float64)
-        doc_embeddings = np.asarray(embeddings[1:], dtype=np.float64)
+        query_embedding = np.asarray(self.embeddings.embed_query(query), dtype=np.float64)
+        doc_embeddings = np.asarray(self.embeddings.embed_documents(documents), dtype=np.float64)
 
         if query_embedding.ndim != 1 or doc_embeddings.ndim != 2:
             raise ValueError(

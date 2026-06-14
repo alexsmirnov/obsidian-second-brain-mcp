@@ -18,6 +18,5 @@ Model Context Protocol (MCP) server providing AI assistants with RAG-based Obsid
 - **markdown** - Markdown parsing for document processing, [docs](https://python-markdown.github.io/)
 - **rank_bm25** - BM25 algorithm implementation for keyword search ranking
 - **python-frontmatter** - YAML frontmatter parser for markdown files, [docs](https://python-frontmatter.readthedocs.io/)
-- **ollama** - Local LLM and embedding service client, [docs](https://github.com/ollama/ollama-python)
-- **voyageai** - VoyageAI embedding and reranking service client, [docs](https://docs.voyageai.com/)
-- **openai** - OpenAI-compatible API client for embeddings, [docs](https://platform.openai.com/docs/)
+- **langchain-core/langchain-openai** - Provider-neutral model interfaces and LiteLLM Router-compatible adapters
+- **httpx** - Shared async HTTP client for model and web requests

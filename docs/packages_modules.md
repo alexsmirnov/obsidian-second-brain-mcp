@@ -37,7 +37,7 @@ Abstract interface definitions for all RAG components using ABC and Pydantic mod
 
 ### [src/mcps/rag/vault.py](../src/mcps/rag/vault.py) #module
 High-level vault management orchestrating document processing, storage, and search.
-**Uses**: interfaces, document_processing, database, embeddings, search, ollama_reranker
+**Uses**: interfaces, document_processing, database, search
 **Used by**: tools.obsidian_vault
 
 ### [src/mcps/rag/document_processing.py](../src/mcps/rag/document_processing.py) #module
@@ -51,7 +51,7 @@ LanceDB vector store implementation with hybrid search capabilities.
 **Used by**: vault
 
 ### [src/mcps/rag/embeddings.py](../src/mcps/rag/embeddings.py) #module
-OpenAI-compatible embedding service supporting VoyageAI, OpenAI, and Ollama.
+Provider-neutral LangChain embedding adapter.
 **Uses**: interfaces
 **Used by**: vault
 
@@ -65,10 +65,10 @@ Agentic search with query rewriting and search parameter estimation.
 **Uses**: interfaces
 **Used by**: (planned future use)
 
-### [src/mcps/rag/ollama_reranker.py](../src/mcps/rag/ollama_reranker.py) #module
-LLM-based result reranking using Ollama models.
+### [src/mcps/rag/reranking.py](../src/mcps/rag/reranking.py) #module
+Provider-neutral async reranking using LangChain chat model interfaces.
 **Uses**: interfaces
-**Used by**: vault
+**Used by**: search, tools.obsidian_vault
 
 ## Sub-package: mcps.tools
 
@@ -137,9 +137,8 @@ Entry Point (__init__.py)
 │   │       ├── interfaces
 │   │       ├── document_processing
 │   │       ├── database
-│   │       ├── embeddings
 │   │       ├── search
-│   │       └── ollama_reranker
+│   │       └── reranking
 │   ├── resources
 │   └── prompts
 └── logs
