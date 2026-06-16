@@ -1,114 +1,143 @@
-import os
-from dotenv import load_dotenv, find_dotenv
-import logging
+"""Integration tests for `LlmReranker` (hybrid rerank) with different model pairs."""
 
-import numpy as np
+import logging
+import os
+from dataclasses import replace
+from typing import AsyncIterator
+
+import httpx
 import pyarrow as pa
 import pyarrow.compute as pc
 import pytest
+from lancedb.rerankers import Reranker
 
-from mcps import main
-from mcps.rag.llm_reranker import LlmReranker
+from mcps.config import ServerConfig, create_config
+from mcps.rag.vault import create_reranker
 
-# Configure logging for detailed test output
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-load_dotenv(find_dotenv())
-load_dotenv(find_dotenv(usecwd=True))
 
-# Skip all tests if OLLAMA_API_BASE is not set
-pytestmark = pytest.mark.skipif(
-    os.getenv("OLLAMA_API_BASE") is None,
-    reason="OLLAMA_API_BASE environment variable not set. Set it to run Ollama reranker tests.",
-)
+# (inference_model, embedding_model, embedding_dimensions)
+MODEL_CASES: list[tuple[str, str, int]] = [
+    ("gemini-flash-lite", "nomic-embed", 768),
+    ("gemini-flash-lite", "gemma-embed", 768),
+    ("local-gemma", "nomic-embed", 768),
+    ("local-gemma", "gemma-embed", 768),
+]
 
 
-class TestOpenAiRerankerHybrid:
-    """Test class for OpenAiReranker.rerank_hybrid method"""
 
-    @pytest.fixture
-    def ollama_base_url(self):
-        """Get Ollama base URL from environment"""
-        return os.getenv("OLLAMA_API_BASE", "http://localhost:11434")
+def _reranker_label(reranker: Reranker) -> str:
+    """Return a human-readable label for the active model pair (logging only)."""
+    chat = getattr(getattr(reranker, "chat_model", None), "model_name", "?")
+    embed = getattr(getattr(reranker, "embeddings", None), "model", "?")
+    return f"{chat}+{embed}"
 
-    @pytest.fixture
-    def reranker(self, ollama_base_url):
-        """Create OpenAiReranker instance with Ollama OpenAI API."""
-        return LlmReranker(
-            model_name="phi4-mini:latest",
-            api_base=f"{ollama_base_url}/v1",
-            api_key="dummy",
-            embedding_model="bge-m3:latest",
-            return_score="relevance",
-            weight=1.0,
+
+@pytest.fixture
+async def async_client() -> AsyncIterator[httpx.AsyncClient]:
+    async with httpx.AsyncClient() as client:
+        yield client
+
+
+@pytest.fixture
+def server_config() -> ServerConfig:
+    config = create_config()
+    if not config.litellm_router or not config.litellm_router_key:
+        pytest.skip(
+            "LITELLM_ROUTER / LITELLM_API_KEY are not set; "
+            "reranker tests need them to build a chat model + embeddings."
         )
+    return config
+
+
+@pytest.fixture(params=MODEL_CASES)
+def reranker(
+    request,
+    server_config: ServerConfig,
+    async_client: httpx.AsyncClient,
+) -> Reranker:
+    infer_model, embed_model, dimensions = request.param
+    config = replace(
+        server_config,
+        rag_reranker_infer_model=infer_model,
+        rag_embedding_model=embed_model,
+        rag_embedding_dimensions=dimensions,
+    )
+    return create_reranker(config, async_client)
+
+
+class TestLlmRerankerHybrid:
+    """Test `LlmReranker.rerank_hybrid` across model pairs."""
 
     @pytest.fixture
-    def sample_vector_results(self):
-        """Create sample vector search results"""
+    def sample_vector_results(self) -> pa.Table:
         return pa.Table.from_pydict(
             {
                 "_rowid": [1, 2, 3],
                 "content": [
-                    "Cream of wild mushroom recipe", 
+                    "Cream of wild mushroom recipe",
                     "Ollama is the service to run large language models",
-                    "RED6k is a comprehensive dataset containing **~6,000 samples** across **10 domains**" +
-                    " created by **Aizip** for evaluating language models as summarizers in retrieval-augmented generation (RAG) systems."],
+                    "RED6k is a comprehensive dataset containing **~6,000 samples** "
+                    "across **10 domains** created by **Aizip** for evaluating "
+                    "language models as summarizers in retrieval-augmented "
+                    "generation (RAG) systems.",
+                ],
                 "id": [1, 2, 3],
                 "_distance": [0.1, 0.2, 0.3],
             }
         )
 
     @pytest.fixture
-    def sample_fts_results(self):
-        """Create sample FTS search results"""
+    def sample_fts_results(self) -> pa.Table:
         return pa.Table.from_pydict(
             {
                 "_rowid": [4, 5],
                 "content": [
-                    "Common Mistakes in Vector Search (and How to Avoid Them) Neglecting Evaluations from the Get-Go", 
-                    "Reduce heat to medium and simmer for 20 minutes."],
+                    "Common Mistakes in Vector Search (and How to Avoid Them) "
+                    "Neglecting Evaluations from the Get-Go",
+                    "Reduce heat to medium and simmer for 20 minutes.",
+                ],
                 "id": [4, 5],
                 "_score": [0.9, 0.8],
             }
         )
 
     def test_rerank_hybrid_successful(
-        self, reranker, sample_vector_results, sample_fts_results
-    ):
-        """Test successful hybrid reranking with both vector and FTS results"""
-
-        # Call rerank_hybrid
+        self,
+        reranker: Reranker,
+        sample_vector_results: pa.Table,
+        sample_fts_results: pa.Table,
+    ) -> None:
         result = reranker.rerank_hybrid(
-            "how to perform evaluation for RAG", sample_vector_results, sample_fts_results
+            "how to perform evaluation for RAG",
+            sample_vector_results,
+            sample_fts_results,
         )
 
-        # Assertions
         assert isinstance(result, pa.Table)
         assert "_relevance_score" in result.column_names
-        assert result.num_rows == 5  # 3 vector + 2 FTS results
+        assert result.num_rows == 5
 
-        # Check that scores are within valid range
         scores = result["_relevance_score"].to_pylist()
         assert all(0 <= score <= 1 for score in scores)
 
-        # Checl that scores for selected rows as expected
         rowids = result["_rowid"].to_pylist()
         rowid_to_score = dict(zip(rowids, scores))
-        # log all rowid to score mappings for debugging
-        logger.info(f"RowID to Score Mapping: {rowid_to_score}")
-        # expected negatives
-        assert rowid_to_score[1] < 0.5  # receipe should not match
-        assert rowid_to_score[5] < 0.5  # receipe should not match
-        # expected negatives
+        logger.info(
+            "Model pair %s | RowID to Score: %s",
+            _reranker_label(reranker),
+            rowid_to_score,
+        )
+        # expected negatives (unrelated content)
+        assert rowid_to_score[1] < 0.5
+        assert rowid_to_score[5] < 0.5
+        # expected positives
         assert rowid_to_score[3] > 0.5
         assert rowid_to_score[4] > 0.5
         # related but not close enough
-        assert rowid_to_score[2] > 0.2  # ollama is
-        assert rowid_to_score[2] < 0.6  # ollama is
+        assert 0.2 < rowid_to_score[2] < 0.6
 
-    def test_rerank_hybrid_empty_results(self, reranker):
-        """Test reranking with empty vector and FTS results"""
+    def test_rerank_hybrid_empty_results(self, reranker: Reranker) -> None:
         empty_vector = pa.table(
             {
                 "content": pa.array([], type=pa.string()),
@@ -129,35 +158,21 @@ class TestOpenAiRerankerHybrid:
         assert result.num_rows == 0
 
 
-class TestOpenAiRerankerEvaluation:
-    """Evaluation test class for OpenAiReranker with real content fixtures."""
+class TestLlmRerankerEvaluation:
+    """Evaluate `LlmReranker` with real content fixtures across model pairs.
+
+    The same fixtures and the same expected top-5 are used for every model pair
+    so the resulting metrics are directly comparable across backends.
+    """
 
     @pytest.fixture
-    def ollama_base_url(self):
-        """Get Ollama base URL from environment"""
-        return os.getenv("OLLAMA_API_BASE", "http://localhost:11434")
-
-    @pytest.fixture
-    def reranker(self, ollama_base_url):
-        """Create OpenAiReranker instance with Ollama OpenAI API."""
-        return LlmReranker(
-            model_name="phi4-mini:latest",
-            api_base=f"{ollama_base_url}/v1",
-            api_key="dummy",
-            embedding_model="bge-m3:latest",
-            return_score="relevance",
-            weight=0.5,
-        )
-
-    @pytest.fixture
-    def vector_results(self):
-        """Create vector search results from real content"""
+    def vector_results(self) -> pa.Table:
         return pa.Table.from_pydict(
             {
                 "_rowid": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
                 "content": [
                     "Vector databases are a relatively new way for interacting with abstract data representations derived from opaque machine learning models such as deep learning architectures. These representations are often called vectors or embeddings and they are a compressed version of the data used to train a machine learning model.",
-                    "Neglecting Evaluations from the Get-Go: Create a small, reliable eval set: Even 50–100 labeled queries is enough to reveal huge gaps. Use standard metrics: NDCG, MRR, recall — whatever. Start with something, then refine it. Monitor improvements: Each time you tweak chunking or switch embeddings, run the eval again.",
+                    "Neglecting Evaluations from the Get-Go: Create a small, reliable eval set: Even 50-100 labeled queries is enough to reveal huge gaps. Use standard metrics: NDCG, MRR, recall - whatever. Start with something, then refine it. Monitor improvements: Each time you tweak chunking or switch embeddings, run the eval again.",
                     "Faiss is a library for efficient similarity search and clustering of dense vectors. It contains algorithms that search in sets of vectors of any size, up to ones that possibly do not fit in RAM. It also contains supporting code for evaluation and parameter tuning.",
                     "The study found that a decline in HbA1c, and key markers of long-term blood sugar levels, are associated with significant positive changes in specific brain regions commonly affected by age-related atrophy. Brain MRI results showed that lower HbA1c levels corresponded to greater deviations in the thalamus, caudate nucleus, and cerebellum.",
                     "Record notes anything that 'resonates', e.g interesting. Save contradictory ideas as well. All notes came to some inbox, sorted about once a week into PARA folders. Organize by context, not a topic: Projects, Areas, Resources, Archive.",
@@ -167,16 +182,18 @@ class TestOpenAiRerankerEvaluation:
                     "Classification intent_examples with OpenAI embeddings: response = openai.embeddings.create(input=[e['text'] for e in intent_examples], model='text-embedding-3-small'). Add embeddings to Faiss index for similarity search.",
                     "Charles Schwab $226000, %7 / yr. Convert to more aggressive? Fidelity 401-k $312000, %10 / yr Ok. E-trade $1755000, no grow. Have to sell some CRM at peak value, convert to S&P 500 ETF.",
                     "In terms of perfecting workflows, here's an example. This is my current coding workflow that I run on my Mac Studio: Step 1: Command-R 08-2024 breaks down requirements from the user's most recent messages. Step 2: Qwen 32b-Coder takes a swing at implementation.",
-                    "LanceDB provides support for full-text search via Lance, allowing you to incorporate keyword-based search (based on BM25) in your retrieval solutions. Currently, the Lance full text search is missing some features that are in the Tantivy full text search."
+                    "LanceDB provides support for full-text search via Lance, allowing you to incorporate keyword-based search (based on BM25) in your retrieval solutions. Currently, the Lance full text search is missing some features that are in the Tantivy full text search.",
                 ],
                 "id": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
-                "_distance": [0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5, 0.55, 0.6, 0.65],
+                "_distance": [
+                    0.1, 0.15, 0.2, 0.25, 0.3, 0.35,
+                    0.4, 0.45, 0.5, 0.55, 0.6, 0.65,
+                ],
             }
         )
 
     @pytest.fixture
-    def fts_results(self):
-        """Create FTS search results from real content"""
+    def fts_results(self) -> pa.Table:
         return pa.Table.from_pydict(
             {
                 "_rowid": [13, 14, 15, 16, 17, 18, 19, 20],
@@ -188,38 +205,56 @@ class TestOpenAiRerankerEvaluation:
                     "Create a prompt file with the Create Prompt command from the Command Palette. This command creates a .prompt.md file in the .github/prompts folder at the root of your workspace. Describe your prompt and relevant context in Markdown format.",
                     "Request access to Calendar API for google Oauth. Full text search in backend. Configure network access for MongoDb. Resize applicant image to small size. Configure domain for Websocket API Gateway startup context coding.",
                     "Reusable prompts enable you to save a prompt for a specific task with its context and instructions in a file. You can then attach and reuse that prompt in chat. If you store the prompt in your workspace, you can also share it with your team.",
-                    "Северокорейский хакер, Ушедший Род, Полуварвар, Танго фрезерных станков. Online library HathiTrust: we are stewards of the largest digitized collection of knowledge allowable by copyright law. Bobiverse release Brothers of the Line (The Karus Saga Book 5)"
+                    "\u0421\u0435\u0432\u0435\u0440\u043e\u043a\u043e\u0440\u0435\u0439\u0441\u043a\u0438\u0439 \u0445\u0430\u043a\u0435\u0440, \u0423\u0448\u0435\u0434\u0448\u0438\u0439 \u0420\u043e\u0434, \u041f\u043e\u043b\u0443\u0432\u0430\u0440\u0432\u0430\u0440, \u0422\u0430\u043d\u0433\u043e \u0444\u0440\u0435\u0437\u0435\u0440\u043d\u044b\u0445 \u0441\u0442\u0430\u043d\u043a\u043e\u0432. Online library HathiTrust: we are stewards of the largest digitized collection of knowledge allowable by copyright law. Bobiverse release Brothers of the Line (The Karus Saga Book 5)",
                 ],
                 "id": [13, 14, 15, 16, 17, 18, 19, 20],
                 "_score": [0.95, 0.9, 0.85, 0.8, 0.75, 0.7, 0.65, 0.6],
             }
         )
 
-    def evaluate_reranking_accuracy(self, reranker, vector_results, fts_results, question, expected_top_5):
-        """Helper to evaluate reranker accuracy and return metrics"""
+    def evaluate_reranking_accuracy(
+        self,
+        reranker: Reranker,
+        vector_results: pa.Table,
+        fts_results: pa.Table,
+        question: str,
+        expected_top_5: list[int],
+    ) -> dict:
         result = reranker.rerank_hybrid(question, vector_results, fts_results)
-        sort_indices = pc.sort_indices(result, sort_keys=[('_relevance_score', 'descending')])
-        sorted_result = pc.take(result, sort_indices)
-        actual_top_5 = sorted_result['_rowid'].slice(0, 5).to_pylist()
-        correct_count = sum(1 for actual, expected in zip(actual_top_5, expected_top_5) if actual == expected)
+        sorted_result = result.sort_by([("_relevance_score", "descending")])
+        actual_top_5 = sorted_result["_rowid"].slice(0, 5).to_pylist()
+        correct_count = sum(
+            1
+            for actual, expected in zip(actual_top_5, expected_top_5)
+            if actual == expected
+        )
         position_accuracy = correct_count / 5
         overlap_count = len(set(actual_top_5) & set(expected_top_5))
         overlap_accuracy = overlap_count / 5
-        logger.info(f"Question: {question}")
-        logger.info(f"Expected top 5: {expected_top_5}")
-        logger.info(f"Actual top 5: {actual_top_5}")
-        logger.info(f"Position accuracy: {position_accuracy:.2f}")
-        logger.info(f"Overlap accuracy: {overlap_accuracy:.2f}")
+        logger.info(
+            "Model %s | Q: %s | expected: %s | actual: %s | "
+            "pos_acc: %.2f | overlap_acc: %.2f",
+            _reranker_label(reranker),
+            question,
+            expected_top_5,
+            actual_top_5,
+            position_accuracy,
+            overlap_accuracy,
+        )
         return {
-            'question': question,
-            'position_accuracy': position_accuracy,
-            'overlap_accuracy': overlap_accuracy,
-            'expected': expected_top_5,
-            'actual': actual_top_5
+            "question": question,
+            "position_accuracy": position_accuracy,
+            "overlap_accuracy": overlap_accuracy,
+            "expected": expected_top_5,
+            "actual": actual_top_5,
         }
 
-    def test_calculate_overall_metrics(self, reranker, vector_results, fts_results):
-        """Calculate and report overall evaluation metrics for all questions"""
+    def test_calculate_overall_metrics(
+        self,
+        reranker: Reranker,
+        vector_results: pa.Table,
+        fts_results: pa.Table,
+    ) -> None:
         test_cases = [
             ("How to evaluate vector search systems?", [2, 13, 3, 1, 14]),
             ("What are vector databases and how do they work?", [1, 3, 14, 2, 12]),
@@ -228,21 +263,31 @@ class TestOpenAiRerankerEvaluation:
             ("How to manage personal finances and investments?", [10, 15, 9, 6, 4]),
             ("What is the Mediterranean diet and health benefits?", [4, 16, 5, 6, 1]),
         ]
-        metrics = [self.evaluate_reranking_accuracy(reranker, vector_results, fts_results, question, expected_top_5)
-                    for question, expected_top_5 in test_cases]
-        avg_position_accuracy = sum(m['position_accuracy'] for m in metrics) / len(metrics)
-        avg_overlap_accuracy = sum(m['overlap_accuracy'] for m in metrics) / len(metrics)
-        total_correct_positions = sum(m['position_accuracy'] * 5 for m in metrics)
+        metrics = [
+            self.evaluate_reranking_accuracy(
+                reranker, vector_results, fts_results, question, expected_top_5
+            )
+            for question, expected_top_5 in test_cases
+        ]
+        avg_position_accuracy = sum(
+            m["position_accuracy"] for m in metrics
+        ) / len(metrics)
+        avg_overlap_accuracy = sum(
+            m["overlap_accuracy"] for m in metrics
+        ) / len(metrics)
+        total_correct_positions = sum(m["position_accuracy"] * 5 for m in metrics)
         total_possible_positions = len(metrics) * 5
         overall_position_ratio = total_correct_positions / total_possible_positions
-        logger.info(f"\n=== OVERALL EVALUATION METRICS ===")
-        logger.info(f"Total test questions: {len(metrics)}")
-        logger.info(f"Average position accuracy: {avg_position_accuracy:.3f}")
-        logger.info(f"Average overlap accuracy: {avg_overlap_accuracy:.3f}")
-        logger.info(f"Overall correct position ratio: {overall_position_ratio:.3f}")
-        logger.info(f"Total correctly ranked items: {total_correct_positions:.1f}/{total_possible_positions}")
-        logger.info(f"\n=== PER-QUESTION BREAKDOWN ===")
-        for i, metric in enumerate(metrics, 1):
-            logger.info(f"{i}. {metric['question'][:50]}...")
-            logger.info(f"   Position accuracy: {metric['position_accuracy']:.2f}, Overlap accuracy: {metric['overlap_accuracy']:.2f}")
-        assert overall_position_ratio >= 0.2, f"Overall position ratio {overall_position_ratio:.3f} below minimum threshold 0.2"
+        logger.info(
+            "=== EVAL [%s] | Qs: %d | avg_pos: %.3f | "
+            "avg_overlap: %.3f | overall_pos_ratio: %.3f ===",
+            _reranker_label(reranker),
+            len(metrics),
+            avg_position_accuracy,
+            avg_overlap_accuracy,
+            overall_position_ratio,
+        )
+        assert overall_position_ratio >= 0.2, (
+            f"Overall position ratio {overall_position_ratio:.3f} "
+            f"below minimum threshold 0.2 for {_reranker_label(reranker)}"
+        )

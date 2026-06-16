@@ -27,7 +27,8 @@ class ServerConfig:
     
     rag_embedding_model: str = "text-embedding-3-small"
     rag_embedding_dimensions: int = 1536
-    rag_reranker_model: str = ""
+    rag_reranker_model: str = "" # Rerank model to use in ProxyReranker
+    # Embeddings and inferrence models used by LlmReranker
     rag_reranker_embedding_model: str = ""
     rag_reranker_embedding_dimensions: int = 736
     rag_reranker_infer_model: str = ""

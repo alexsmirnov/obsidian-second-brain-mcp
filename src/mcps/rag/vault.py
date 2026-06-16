@@ -21,6 +21,8 @@ from pydantic import SecretStr
 
 from mcps.config import ServerConfig
 from mcps.rag.embeddings import LangChainEmbeddingService
+from mcps.rag.llm_reranker import LlmReranker
+from mcps.rag.proxy_reranker import LiteLLMProxyReranker
 
 from .database import LanceDBStore
 from .document_processing import (
@@ -81,17 +83,35 @@ def create_embeddings(
                 dimensions=config.rag_embedding_dimensions,
             )
 
-def _create_reranker(
+def create_reranker(
         config: ServerConfig,
         http_client: httpx.AsyncClient
     ) -> Reranker:
     if config.rag_reranker_model:
+        return LiteLLMProxyReranker(
+            model_name=config.rag_reranker_model,
+            proxy_url=config.litellm_router,
+            api_key=config.litellm_router_key
+        )
+    if config.rag_reranker_infer_model and config.rag_embedding_model and config.rag_embedding_dimensions:
+        base_url = config.litellm_router
         api_key = SecretStr(config.litellm_router_key)
-        reranker_model = ChatOpenAI(
-            model=config.rag_reranker_model,
-            base_url=config.litellm_router,
+        infer_model = ChatOpenAI(
+            model=config.rag_reranker_infer_model,
+            base_url=base_url,
             api_key=api_key,
-            http_async_client=http_client,
+            http_async_client=http_client
+        )
+        embed = OpenAIEmbeddings(
+            model=config.rag_embedding_model,
+            dimensions=config.rag_embedding_dimensions,
+            base_url=base_url,
+            api_key=api_key,
+            http_async_client=http_client
+        )
+        return LlmReranker(
+            infer_model,
+            embed,
         )
     return RRFReranker(return_score="relevance")
 
@@ -515,7 +535,7 @@ async def create_vault(
         document_processor = _create_document_processor(vault_path)
         chunker = _create_chunker()
         embeddings = create_embeddings(config,http_client)
-        reranker = _create_reranker(config,http_client)
+        reranker = create_reranker(config,http_client)
         async with _create_vector_store(config,embeddings,reranker) as vector_store:
             search_engine = _create_search_engine(
                 vector_store,
