@@ -63,7 +63,7 @@ def _create_chunker() -> IChunker:
     return SemanticChunker()
 
 
-def _create_embeddings(
+def create_embeddings(
         config: ServerConfig,
         http_client: httpx.AsyncClient
     ) -> IEmbeddingService:
@@ -514,8 +514,9 @@ async def create_vault(
         file_traversal = _create_file_traversal(vault_path)
         document_processor = _create_document_processor(vault_path)
         chunker = _create_chunker()
-        embeddings = _create_embeddings(config,http_client)
-        async with _create_vector_store(config,embeddings,None) as vector_store:
+        embeddings = create_embeddings(config,http_client)
+        reranker = _create_reranker(config,http_client)
+        async with _create_vector_store(config,embeddings,reranker) as vector_store:
             search_engine = _create_search_engine(
                 vector_store,
                 config,

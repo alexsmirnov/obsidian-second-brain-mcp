@@ -55,7 +55,7 @@ class LanceDBStore(IVectorStore):
         self.db_path = db_path
         self.table_name = table_name
         self.reranker = reranker or RRFReranker(return_score="all")
-        self.embedding_service: IEmbeddingService = embedding_service
+        self.embedding_service = embedding_service
         self._initialized = False
 
     async def initialize(self) -> None:
@@ -123,9 +123,7 @@ class LanceDBStore(IVectorStore):
         try:
             # Process chunks and generate embeddings if needed
             texts = [c.content for c in chunks]
-            embeddings = await self.embedding_service.generate_embeddings(
-                texts, query=False
-            )
+            embeddings = await self.embedding_service.documents_embeddings(texts)
             processed_chunks = [
                 chunk.model_copy(update={"embeddings": embedding}).model_dump()
                 for embedding, chunk in zip(embeddings, chunks, strict=True)
@@ -163,10 +161,7 @@ class LanceDBStore(IVectorStore):
             )
 
         # Calculate embedding for the query
-        query_embeddings = await self.embedding_service.generate_embeddings(
-            [query], query=True
-        )
-        query_embedding = query_embeddings[0]
+        query_embedding = await self.embedding_service.query_embeddings(query)
 
         # Apply scope filter
         if scope == SearchScope.CONTENT:

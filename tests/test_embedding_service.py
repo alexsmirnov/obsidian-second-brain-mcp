@@ -1,68 +1,76 @@
-"""Contract tests for LangChain-backed RAG embeddings."""
+"""Integration tests for model-backed RAG embeddings."""
 
-from langchain_core.embeddings import Embeddings
+from dataclasses import replace
 
-from mcps.rag.embeddings import LangChainEmbeddingService
+from typing import AsyncIterator
+
+import httpx
+import pytest
+
+from mcps.config import ServerConfig, create_config
 from mcps.rag.interfaces import IEmbeddingService
+from mcps.rag.vault import create_embeddings
+
+MODEL_CASES: list[tuple[str, int]] = [
+    ("text-embedding-3-small", 1536),
+    ("text-embedding-3-small", 512),
+    ("gemini-embed", 512),
+    ("bge-embed", 1024),
+    ("gemma-embed", 768),
+    ("nomic-embed", 768),
+]
 
 
-class FakeEmbeddings(Embeddings):
-    def __init__(self) -> None:
-        self.document_calls: list[list[str]] = []
-        self.query_calls: list[str] = []
-
-    def embed_documents(self, texts: list[str]) -> list[list[float]]:
-        self.document_calls.append(texts)
-        return [self._vector(text) for text in texts]
-
-    def embed_query(self, text: str) -> list[float]:
-        self.query_calls.append(text)
-        return [99.0, float(len(text))]
-
-    async def aembed_documents(self, texts: list[str]) -> list[list[float]]:
-        return self.embed_documents(texts)
-
-    async def aembed_query(self, text: str) -> list[float]:
-        return self.embed_query(text)
-
-    @staticmethod
-    def _vector(text: str) -> list[float]:
-        return [float(len(text)), float(sum(ord(char) for char in text) % 100)]
+@pytest.fixture
+async def async_client() -> AsyncIterator[httpx.AsyncClient]:
+    async with httpx.AsyncClient() as client:
+        yield client
 
 
-async def test_generate_embeddings_empty_texts_returns_empty_list() -> None:
-    embeddings = FakeEmbeddings()
-    service: IEmbeddingService = LangChainEmbeddingService(embeddings, dimensions=2)
-
-    result = await service.generate_embeddings([])
-
-    assert result == []
-    assert embeddings.document_calls == []
-    assert embeddings.query_calls == []
+@pytest.fixture
+def server_config() -> ServerConfig:
+    server_config = create_config()
+    if not server_config.litellm_router or not server_config.litellm_router_key:
+        pytest.skip("LITELLM router is not configured")
+    return server_config
 
 
-async def test_generate_embeddings_documents_preserves_input_order() -> None:
-    embeddings = FakeEmbeddings()
-    service = LangChainEmbeddingService(embeddings, dimensions=2)
-
-    result = await service.generate_embeddings(["first", "second"])
-
-    assert result == [FakeEmbeddings._vector("first"), FakeEmbeddings._vector("second")]
-    assert embeddings.document_calls == [["first", "second"]]
-
-
-async def test_generate_embeddings_query_uses_query_embedding_contract() -> None:
-    embeddings = FakeEmbeddings()
-    service = LangChainEmbeddingService(embeddings, dimensions=2)
-
-    result = await service.generate_embeddings(["question"], query=True)
-
-    assert result == [[99.0, 8.0]]
-    assert embeddings.query_calls == ["question"]
-    assert embeddings.document_calls == []
+@pytest.fixture( params = MODEL_CASES)
+def embedding_service(
+    request,
+    server_config: ServerConfig,
+    async_client: httpx.AsyncClient,
+) -> IEmbeddingService:
+    (model, dimensions) = request.param
+    config = replace(server_config,
+    rag_embedding_model = model,
+    rag_embedding_dimensions = dimensions
+    )
+    return create_embeddings(config, async_client)
 
 
-async def test_ndims_returns_configured_embedding_dimensions() -> None:
-    service = LangChainEmbeddingService(FakeEmbeddings(), dimensions=1536)
+@pytest.mark.asyncio
+async def test_generate_embeddings_documents_returns_expected_shape(
+    embedding_service: IEmbeddingService,
+) -> None:
 
-    assert service.ndims() == 1536
+    result = await embedding_service.documents_embeddings(["first document", "second document"])
+    dimensions = embedding_service.ndims()
+    assert isinstance(result, list)
+    assert len(result) == 2
+    assert all(isinstance(vector, list) for vector in result)
+    assert all(len(vector) == dimensions for vector in result)
+    assert all(all(isinstance(value, float) for value in vector) for vector in result)
+
+
+@pytest.mark.asyncio
+async def test_generate_embeddings_query_returns_expected_shape(
+    embedding_service: IEmbeddingService,
+) -> None:
+    result = await embedding_service.query_embeddings("query text")
+
+    dimensions = embedding_service.ndims()
+    assert isinstance(result, list)
+    assert isinstance(result, list)
+    assert len(result) == dimensions
+    assert all(isinstance(value, float) for value in result)

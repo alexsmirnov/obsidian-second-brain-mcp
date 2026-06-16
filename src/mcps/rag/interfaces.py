@@ -116,17 +116,26 @@ class IEmbeddingService(ABC):
     """Interface for embedding generation."""
 
     @abstractmethod
-    async def generate_embeddings(
-        self, texts: list[str], query: bool = False
+    async def documents_embeddings(
+        self, texts: list[str]
     ) -> list[list[float]]:
         """Generate embedding for a list of texts
         Args:
             texts (list[str]): List of texts to generate embeddings for.
-            query (bool): Whether the texts are queries or documents.
         Returns:
             list[list[float]]: List of embeddings arrays for the texts."""
         pass
 
+    @abstractmethod
+    async def query_embeddings(
+        self, query: str
+    ) -> list[float]:
+        """Generate embedding for a query
+        Args:
+            query (str): Query text to generate embeddings for.
+        Returns:
+            list[list[float]]: List of embeddings arrays for the texts."""
+        pass
     @abstractmethod
     def ndims(self) -> int:
         """Return the number of dimensions of the embeddings."""

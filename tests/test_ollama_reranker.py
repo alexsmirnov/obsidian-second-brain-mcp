@@ -8,7 +8,7 @@ import pyarrow.compute as pc
 import pytest
 
 from mcps import main
-from mcps.rag.openai_reranker import OpenAiReranker
+from mcps.rag.llm_reranker import LlmReranker
 
 # Configure logging for detailed test output
 logging.basicConfig(level=logging.INFO)
@@ -34,7 +34,7 @@ class TestOpenAiRerankerHybrid:
     @pytest.fixture
     def reranker(self, ollama_base_url):
         """Create OpenAiReranker instance with Ollama OpenAI API."""
-        return OpenAiReranker(
+        return LlmReranker(
             model_name="phi4-mini:latest",
             api_base=f"{ollama_base_url}/v1",
             api_key="dummy",
@@ -140,7 +140,7 @@ class TestOpenAiRerankerEvaluation:
     @pytest.fixture
     def reranker(self, ollama_base_url):
         """Create OpenAiReranker instance with Ollama OpenAI API."""
-        return OpenAiReranker(
+        return LlmReranker(
             model_name="phi4-mini:latest",
             api_base=f"{ollama_base_url}/v1",
             api_key="dummy",

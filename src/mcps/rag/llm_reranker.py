@@ -14,7 +14,7 @@ from langchain_core.language_models import BaseChatModel
 logger = logging.getLogger("mcps.rag")
 
 
-class OpenAiReranker(Reranker):
+class LlmReranker(Reranker):
     """Rerank search results using an OpenAI-compatible API."""
 
     def __init__(

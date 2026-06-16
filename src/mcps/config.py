@@ -15,8 +15,6 @@ class ServerConfig:
     tests_dir: Path = field(default_factory=lambda: Path(__file__).parent / "tests")
     library_docs: dict[str, str] = field(default_factory=dict)
     project_paths: dict[str, str] = field(default_factory=dict)
-    openai_api_key: str = ""
-    anthropic_api_key: str = ""
     litellm_router: str = ""
     litellm_router_key: str = ""
     # Obsidian Vault configuration
@@ -30,8 +28,16 @@ class ServerConfig:
     rag_embedding_model: str = "text-embedding-3-small"
     rag_embedding_dimensions: int = 1536
     rag_reranker_model: str = ""
+    rag_reranker_embedding_model: str = ""
+    rag_reranker_embedding_dimensions: int = 736
+    rag_reranker_infer_model: str = ""
     
     search_limit: int = 20
+    # Web deep research config
+    google_api_key: str = ""
+    google_search_id: str = ""
+    research_fast_model: str = "" # used to generate queries and clean fetch results
+    research_infer_model: str = "" # used for reflection and final result generation
 
 def create_config(
     prompts_dir: Path = Path("./prompts"),
@@ -63,13 +69,13 @@ def create_config(
         tests_dir=tests_dir,
         library_docs=library_docs,
         project_paths=project_paths,
-        openai_api_key=os.getenv("OPENAI_API_KEY", ""),
-        anthropic_api_key=os.getenv("ANTHROPIC_API_KEY", ""),
         litellm_router=os.getenv("LITELLM_ROUTER", ""),
-        litellm_router_key=os.getenv("LITELLM_ROUTER_KEY", ""),
+        litellm_router_key=os.getenv("LITELLM_API_KEY", ""),
         rag_embedding_model=os.getenv("RAG_EMBEDDING_MODEL", "text-embedding-3-small"),
         rag_embedding_dimensions=int(os.getenv("RAG_EMBEDDING_DIMENSIONS", "1536")),
         rag_reranker_model=os.getenv("RAG_RERANKER_MODEL", ""),
         vault_dir=Path(os.getenv("VAULT","")) if os.getenv("VAULT") else None,
-        skip_patterns=default_skip_patterns
+        skip_patterns=default_skip_patterns,
+        google_api_key=os.environ.get("GOOGLE_API_KEY",""),
+        google_search_id=os.environ.get("GOOGLE_SEARCH_ID","")
     )

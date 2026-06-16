@@ -16,18 +16,19 @@ class LangChainEmbeddingService(IEmbeddingService):
         self.embeddings = embeddings
         self.dimensions = dimensions
 
-    async def generate_embeddings(
-        self, texts: list[str], query: bool = False
+    async def documents_embeddings(
+        self, texts: list[str]
     ) -> list[list[float]]:
-        """Generate embeddings for texts using the injected LangChain adapter."""
         if not texts:
             return []
-
-        if query:
-            return [await self.embeddings.aembed_query(text) for text in texts]
-
         return await self.embeddings.aembed_documents(texts)
 
+    async def query_embeddings(
+        self, query: str
+    ) -> list[float]:
+        if not query:
+            return []
+        return await self.embeddings.aembed_query(query)
+
     def ndims(self) -> int:
-        """Return the number of dimensions of the embeddings."""
         return self.dimensions
