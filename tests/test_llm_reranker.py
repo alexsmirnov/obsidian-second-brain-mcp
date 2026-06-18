@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 MODEL_CASES: list[tuple[str, str, int]] = [
     ("gemini-flash-lite", "nomic-embed", 768),
     ("gemini-flash-lite", "gemma-embed", 768),
-    ("local-gemma", "nomic-embed", 768),
+    ("gpt-5-nano", "nomic-embed", 768),
     ("local-gemma", "gemma-embed", 768),
 ]
 
@@ -157,6 +157,20 @@ class TestLlmRerankerHybrid:
         assert "_relevance_score" in result.column_names
         assert result.num_rows == 0
 
+    def test_score_with_llm(
+        self,
+        reranker: Reranker,
+        sample_vector_results: pa.Table,
+        sample_fts_results: pa.Table,
+    ) -> None:
+        all_results = reranker.merge_results(sample_vector_results,sample_fts_results)
+        documents: list[str] = reranker._table_to_documents(all_results) # type: ignore
+        scores: list[float] = reranker._score_with_llm("how to perform evaluation for RAG",documents) # type: ignore
+        assert scores[0] < 0.5
+        assert scores[1] < 0.5
+        assert scores[2] > 0.5
+        assert scores[3] >= 0.5
+        assert scores[4] < 0.5
 
 class TestLlmRerankerEvaluation:
     """Evaluate `LlmReranker` with real content fixtures across model pairs.

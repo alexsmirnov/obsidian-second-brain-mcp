@@ -25,13 +25,13 @@ class ServerConfig:
     # Chunking configuration
     max_chunk_size: int = 4000
     
-    rag_embedding_model: str = "text-embedding-3-small"
-    rag_embedding_dimensions: int = 1536
+    rag_embedding_model: str = "nomic-embed"
+    rag_embedding_dimensions: int = 768
     rag_reranker_model: str = "" # Rerank model to use in ProxyReranker
     # Embeddings and inferrence models used by LlmReranker
-    rag_reranker_embedding_model: str = ""
-    rag_reranker_embedding_dimensions: int = 736
-    rag_reranker_infer_model: str = ""
+    rag_reranker_embedding_model: str = "nomic-embed"
+    rag_reranker_embedding_dimensions: int = 768
+    rag_reranker_infer_model: str = "gemini-flash-lite"
     
     search_limit: int = 20
     # Web deep research config

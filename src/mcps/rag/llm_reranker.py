@@ -13,6 +13,19 @@ from langchain_core.language_models import BaseChatModel
 
 logger = logging.getLogger("mcps.rag")
 
+SYSTEM_PROMPT="""
+Given the query and document below, rate how relevant the document is to answering
+the query. Output a single word:
+PERFECT if they are relevant
+GOOD if they are close but not exact, like both about programming but different
+    languages or libraries
+SOME if they are relevant in broad sense, like both about programming but one about
+    coding practices and another about algorithms
+BAD if there is only little similarity, like one about programming and another about
+    job interviews
+NONE if document unrelevant to question, like one about astronomy and another about
+    cooking recipes."""
+
 
 class LlmReranker(Reranker):
     """Rerank search results using an OpenAI-compatible API."""
@@ -53,33 +66,20 @@ class LlmReranker(Reranker):
         prompt = self._create_relevance_prompt(query, document)
         try:
             response = self.chat_model.invoke(
-                [{"role": "user", "content": prompt}],
-                temperature=0.1,
-                max_tokens=10,
+                [{"role": "system", "content": SYSTEM_PROMPT},{"role": "user", "content": prompt}],
+                # temperature=0.1,
+                # max_tokens=100,
             )
         except Exception:
             logger.exception("Failed to score document with OpenAI-compatible API")
             return 0.0
-
         score_text = str(response.content) or ""
+        logger.info("Llm score text is %.10s for query %.10s and doc %.10s",score_text,query,document)
         return self._parse_score(score_text)
 
     @staticmethod
     def _create_relevance_prompt(query: str, document: str) -> str:
-        return f"""
-Given the query and document below, rate how relevant the document is to answering
-the query. Output a single word:
-PERFECT if they are relevant
-GOOD if they are close but not exact, like both about programming but different
-    languages or libraries
-SOME if they are relevant in broad sense, like both about programming but one about
-    coding practices and another about algorithms
-BAD if there is only little similarity, like one about programming and another about
-    job interviews
-NONE if document unrelevant to question, like one about astronomy and another about
-    cooking recipes.
-
-Query: {query}
+        return f""" Query: {query}
 
 Document: {document}
 
@@ -140,8 +140,7 @@ Relevance:"""
                 pa.array([], type=pa.float32()),
             )
 
-        text_column = results[self.column]
-        documents = [str(text_column[index].as_py()) for index in range(num_rows)]
+        documents = self._table_to_documents(results)
         llm_scores = np.array(self._score_with_llm(query, documents))
         embedding_scores = np.array(self._score_with_embeddings(query, documents))
 
@@ -155,6 +154,12 @@ Relevance:"""
             "_relevance_score",
             pa.array(combined_scores.tolist()),
         )
+
+    def _table_to_documents(self, results):
+        """Extract text column to a list of strings"""
+        text_column = results[self.column]
+        documents = [str(text_column[index].as_py()) for index in range(results.num_rows)]
+        return documents
 
     def rerank_hybrid(
         self,

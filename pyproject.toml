@@ -54,7 +54,7 @@ lint = [
 [tool.pytest.ini_options]
 log_cli = true
 log_cli_level = "INFO"
-addopts = ["--import-mode=importlib"] 
+addopts = ["--import-mode=importlib","--durations=0"] 
 # addopts = [] 
 # pythonpath = ["src"] # Add the src directory to Python's search path
 testpaths = ["tests"]  # Specify the directory where your tests are located
