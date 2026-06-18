@@ -19,7 +19,6 @@ from mcps.rag.interfaces import (
     Chunk,
     IEmbeddingService,
     IVectorStore,
-    NotInitializedError,
     SearchScope,
 )
 
@@ -117,12 +116,17 @@ async def dummy_embedding_function() -> AsyncGenerator[IEmbeddingService]:
 
             return embedding_fp16
 
-        async def generate_embeddings(
+        async def documents_embeddings(
             self,
             texts: list[str],
-            query: bool = False,
         ) -> list[list[float]]:
             return [self._generate_embedding(text).tolist() for text in texts]
+
+        async def query_embeddings(
+            self,
+            query: str,
+        ) -> list[float]:
+            return self._generate_embedding(query).tolist()
 
         def ndims(self) -> int:
             return 16
