@@ -52,23 +52,27 @@ class TestServerConfigContract:
 
 class TestResearchConfigContract:
     def test_build_research_config_returns_valid_config(self):
+        server_config = ServerConfig(
+            litellm_router="http://localhost:4000",
+            litellm_router_key="sk-test",
+        )
         config = build_research_config(
-            router_url="http://localhost:4000",
-            router_key="sk-test",
+            server_config,
             http_client=httpx.AsyncClient(),
         )
         assert isinstance(config, ResearchConfig)
-        assert config.smart is not None
-        assert config.small is not None
         assert config.fast is not None
-        assert config.evaluation is not None
+        assert config.small is not None
         assert callable(config.search)
         assert callable(config.fetch)
 
     def test_research_config_fields_are_callables(self):
+        server_config = ServerConfig(
+            litellm_router="http://localhost:4000",
+            litellm_router_key="sk-test",
+        )
         config = build_research_config(
-            router_url="http://localhost:4000",
-            router_key="sk-test",
+            server_config,
             http_client=httpx.AsyncClient(),
         )
         import asyncio
@@ -85,9 +89,12 @@ class TestResearchConfigContract:
 class TestAgentContract:
     @pytest.fixture
     def mock_config(self):
+        server_config = ServerConfig(
+            litellm_router="http://localhost:4000",
+            litellm_router_key="sk-test",
+        )
         return build_research_config(
-            router_url="http://localhost:4000",
-            router_key="sk-test",
+            server_config,
             http_client=httpx.AsyncClient(),
         )
 

@@ -17,8 +17,7 @@ def build_research_lifespan(config: ServerConfig) -> Lifespan:
             timeout=30.0, follow_redirects=True
         ) as http_client:
             research_config = build_research_config(
-                router_url=config.litellm_router,
-                router_key=config.litellm_router_key,
+                config,
                 http_client=http_client,
             )
             researcher = create_researcher(

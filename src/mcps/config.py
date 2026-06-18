@@ -37,8 +37,10 @@ class ServerConfig:
     # Web deep research config
     google_api_key: str = ""
     google_search_id: str = ""
-    research_fast_model: str = "" # used to generate queries and clean fetch results
-    research_infer_model: str = "" # used for reflection and final result generation
+    # used to generate queries and clean fetch results
+    research_fast_model: str = "gemini-flash-lite"
+    # used for reflection and final result generation
+    research_infer_model: str = "gemini-flash"
 
 def create_config(
     prompts_dir: Path = Path("./prompts"),
@@ -71,7 +73,9 @@ def create_config(
         library_docs=library_docs,
         project_paths=project_paths,
         litellm_router=os.getenv("LITELLM_ROUTER", ""),
-        litellm_router_key=os.getenv("LITELLM_API_KEY", ""),
+        litellm_router_key=os.getenv(
+            "LITELLM_ROUTER_KEY", os.getenv("LITELLM_API_KEY", "")
+        ),
         rag_embedding_model=os.getenv("RAG_EMBEDDING_MODEL", "text-embedding-3-small"),
         rag_embedding_dimensions=int(os.getenv("RAG_EMBEDDING_DIMENSIONS", "1536")),
         rag_reranker_model=os.getenv("RAG_RERANKER_MODEL", ""),
