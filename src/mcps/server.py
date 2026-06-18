@@ -1,7 +1,10 @@
+import argparse
 import asyncio
 import logging
 from dataclasses import dataclass
+from pathlib import Path
 
+import httpx
 from fastmcp import Context, FastMCP
 from mcp import ClientCapabilities, RootsCapability
 from mcp.server.session import ServerSession
@@ -12,6 +15,8 @@ import mcps.resources.project_resource as project_resource
 import mcps.resources.url_resource as url_resource
 import mcps.tools.obsidian_vault as obsidian_vault
 from mcps.config import ServerConfig, create_config
+from mcps.logs import setup_logging
+from mcps.rag.vault import create_vault
 from mcps.tools.research.lifespan import build_research_lifespan
 
 logger = logging.getLogger("mcps")
@@ -147,7 +152,70 @@ def create_server(config: ServerConfig) -> DevAutomationServer:
     return server
 
 
-if __name__ == "__main__":
-    config = create_config()
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """Parse command-line arguments for the MCP server."""
+    parser = argparse.ArgumentParser(description="Development Automation Server")
+    parser.add_argument(
+        "--vault",
+        type=Path,
+        default=None,
+        help="Path to the Obsidian vault (overrides VAULT env var)",
+    )
+    parser.add_argument(
+        "--reindex",
+        action="store_true",
+        help="Re-index the vault and exit instead of starting the server",
+    )
+    return parser.parse_args(argv)
+
+
+async def _run_reindex(config: ServerConfig, http_client: httpx.AsyncClient) -> int:
+    """Re-index the configured vault using the factory context manager."""
+    async with create_vault(config, http_client) as vault:
+        await vault.update_index()
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Parse CLI arguments and either re-index the vault or start the server."""
+    args = parse_args(argv)
+    config = create_config(vault_dir=args.vault)
+
+    if args.reindex:
+        if config.vault_dir is None:
+            logger.error(
+                "--reindex requires a vault path via --vault or the VAULT env var"
+            )
+            return 1
+        if not config.vault_dir.exists() or not config.vault_dir.is_dir():
+            logger.error(
+                f"Vault path does not exist or is not a directory: {config.vault_dir}"
+            )
+            return 1
+
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        )
+
+        async def _reindex_flow() -> int:
+            async with httpx.AsyncClient(
+                timeout=30.0,
+                follow_redirects=True,
+            ) as http_client:
+                return await _run_reindex(config, http_client)
+
+        try:
+            return asyncio.run(_reindex_flow())
+        except Exception as e:
+            logger.error(f"Reindex failed: {e}")
+            return 1
+
+    setup_logging()
     server = create_server(config)
     asyncio.run(server.start())
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

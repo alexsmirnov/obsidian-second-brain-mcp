@@ -48,6 +48,7 @@ def create_config(
     tests_dir: Path = Path("./tests"),
     library_docs: dict[str, str] | None = None,
     project_paths: dict[str, str] | None = None,
+    vault_dir: Path | None = None,
 ) -> ServerConfig:
     """
     Creates a ServerConfig instance, ensuring directories exist and
@@ -76,10 +77,14 @@ def create_config(
         litellm_router_key=os.getenv(
             "LITELLM_ROUTER_KEY", os.getenv("LITELLM_API_KEY", "")
         ),
-        rag_embedding_model=os.getenv("RAG_EMBEDDING_MODEL", "text-embedding-3-small"),
-        rag_embedding_dimensions=int(os.getenv("RAG_EMBEDDING_DIMENSIONS", "1536")),
+        rag_embedding_model=os.getenv("RAG_EMBEDDING_MODEL", "nomic-embed"),
+        rag_embedding_dimensions=int(os.getenv("RAG_EMBEDDING_DIMENSIONS", "768")),
         rag_reranker_model=os.getenv("RAG_RERANKER_MODEL", ""),
-        vault_dir=Path(os.getenv("VAULT","")) if os.getenv("VAULT") else None,
+        vault_dir=(
+            vault_dir
+            if vault_dir is not None
+            else (Path(env_vault) if (env_vault := os.getenv("VAULT")) else None)
+        ),
         skip_patterns=default_skip_patterns,
         google_api_key=os.environ.get("GOOGLE_API_KEY",""),
         google_search_id=os.environ.get("GOOGLE_SEARCH_ID","")
