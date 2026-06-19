@@ -10,17 +10,19 @@ about AI/ML, programming, projects, and personal knowledge management.
 """
 
 import asyncio
-from dotenv import load_dotenv, find_dotenv
 import logging
+from collections.abc import AsyncGenerator
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import Any
+
+import httpx
 import pytest
+from dotenv import find_dotenv, load_dotenv
 
-from mcps.config import ServerConfig
-from mcps.rag.embeddings import LangChainEmbeddingService
-from mcps.rag.vault import Vault, create_vault, create_vector_store
+from mcps.config import ServerConfig, create_config
+from mcps.rag.vault import Vault, create_vault
 
-from tests.test_embedding_service import FakeEmbeddings
+logger = logging.getLogger(__name__)
 
 
 # Configure logging for detailed test output
@@ -32,9 +34,8 @@ load_dotenv(find_dotenv(usecwd=True))
 
 
 def _tc(
-    query: str, expected_words: List[str], unwanted_words: List[str]
-) -> Dict[str, Any]:
-
+    query: str, expected_words: list[str], unwanted_words: list[str]
+) -> dict[str, Any]:
     return {
         "query": query,
         "expected_words": expected_words,
@@ -51,101 +52,80 @@ class VaultEvaluationTest:
     - Recall: percentage of unwanted words NOT found in search results
     - F-score: harmonic mean of precision and recall
     """
-    vault: Vault
+    vault: Vault | None
+    config: ServerConfig
 
-    def __init__(self, vault_path: Path):
+    def __init__(self, vault_path: Path, config: ServerConfig):
         """
         Initialize the evaluation test.
 
         Args:
             vault_path: Path to the test content vault directory
+            config: Server configuration produced by the config factory
         """
         self.vault_path = vault_path
+        self.config = config
+        self.vault = None
         self.test_cases = self._create_test_cases()
 
-    def _create_test_cases(self) -> List[Dict[str, Any]]:
+    def _create_test_cases(self) -> list[dict[str, Any]]:
         """
         Read test cases from a colon-separated CSV file.
-        
+
         The CSV file should have 3 columns:
         - Query: The search query
         - Expected: Comma-separated list of expected words
         - Unwanted: Comma-separated list of unwanted words
-        
+
         Returns:
-            List of test case dictionaries with query, expected_words, and unwanted_words
+            Test case dictionaries with query, expected_words,
+            and unwanted_words.
         """
         test_cases_file = self.vault_path / "evaluation_tests.csv"
-        
+
         if not test_cases_file.exists():
             raise FileNotFoundError(f"Test cases file not found at {test_cases_file}")
-            
+
         test_cases = []
         try:
-            with open(test_cases_file, 'r', encoding='utf-8') as f:
+            with open(test_cases_file, encoding="utf-8") as f:
                 # Skip header line
                 next(f)
-                
+
                 for line in f:
                     # Split by colon and strip whitespace
-                    parts = [part.strip() for part in line.split(':')]
-                    
+                    parts = [part.strip() for part in line.split(":")]
+
                     if len(parts) != 3:
                         logger.warning(f"Skipping invalid line: {line}")
                         continue
-                        
+
                     query, expected, unwanted = parts
-                    
+
                     # Split expected and unwanted words by comma and strip whitespace
-                    expected_words = [word.strip() for word in expected.split(',') if word.strip()]
-                    unwanted_words = [word.strip() for word in unwanted.split(',') if word.strip()]
-                    
+                    expected_words = [
+                        word.strip() for word in expected.split(",") if word.strip()
+                    ]
+                    unwanted_words = [
+                        word.strip() for word in unwanted.split(",") if word.strip()
+                    ]
+
                     test_cases.append({
                         "query": query,
                         "expected_words": expected_words,
                         "unwanted_words": unwanted_words,
                     })
-                    
+
         except Exception as e:
-            raise RuntimeError(f"Failed to read test cases: {e}")
-            
+            raise RuntimeError(f"Failed to read test cases: {e}") from e
+
         if not test_cases:
             raise ValueError("No valid test cases found in file")
-            
+
         return test_cases
 
-    async def setup_vault(self) -> None:
-        """
-        Set up and initialize the Vault with test content.
-
-        Raises:
-            RuntimeError: If vault setup fails
-        """
-        try:
-            config = ServerConfig(
-                vault_dir=self.vault_path,
-                table_name="evaluation_test",
-            )
-            logger.info(f"Setting up Vault with path: {self.vault_path}")
-
-            # Initialize Vault with optimized settings for testing
-            embedding_service = LangChainEmbeddingService(FakeEmbeddings(), dimensions=2)
-            vector_store = create_vector_store(config, embedding_service)
-            self.vault = create_vault(config, vector_store=vector_store)
-            # Initialize and update index
-            await vector_store.initialize()
-            await self.vault.initialize()
-            logger.info("Vault initialized successfully")
-
-            await self.vault.update_index()
-            logger.info("Vault index updated successfully")
-
-        except Exception as e:
-            logger.error(f"Failed to setup vault: {e}")
-            raise RuntimeError(f"Vault setup failed: {e}") from e
-
     def calculate_precision(
-        self, search_results: str, expected_words: List[str]
+        self, search_results: str, expected_words: list[str]
     ) -> float:
         """
         Calculate precision: percentage of expected words found in search results.
@@ -161,16 +141,13 @@ class VaultEvaluationTest:
             return 1.0
 
         search_results_lower = search_results.lower()
-        found_words = 0
+        found_words = sum(
+            1 for word in expected_words if word.lower() in search_results_lower
+        )
 
-        for word in expected_words:
-            if word.lower() in search_results_lower:
-                found_words += 1
+        return found_words / len(expected_words)
 
-        precision = found_words / len(expected_words)
-        return precision
-
-    def calculate_recall(self, search_results: str, unwanted_words: List[str]) -> float:
+    def calculate_recall(self, search_results: str, unwanted_words: list[str]) -> float:
         """
         Calculate recall: percentage of unwanted words NOT found in search results.
 
@@ -185,15 +162,12 @@ class VaultEvaluationTest:
             return 1.0
 
         search_results_lower = search_results.lower()
-        unwanted_found = 0
-
-        for word in unwanted_words:
-            if word.lower() in search_results_lower:
-                unwanted_found += 1
+        unwanted_found = sum(
+            1 for word in unwanted_words if word.lower() in search_results_lower
+        )
 
         # Recall is the percentage of unwanted words NOT found
-        recall = (len(unwanted_words) - unwanted_found) / len(unwanted_words)
-        return recall
+        return (len(unwanted_words) - unwanted_found) / len(unwanted_words)
 
     def calculate_f_score(self, precision: float, recall: float) -> float:
         """
@@ -209,10 +183,9 @@ class VaultEvaluationTest:
         if precision + recall == 0:
             return 0.0
 
-        f_score = 2 * (precision * recall) / (precision + recall)
-        return f_score
+        return 2 * (precision * recall) / (precision + recall)
 
-    async def run_single_test(self, test_case: Dict[str, Any]) -> Dict[str, Any]:
+    async def run_single_test(self, test_case: dict[str, Any]) -> dict[str, Any]:
         """
         Run a single test case and calculate evaluation metrics.
 
@@ -222,6 +195,9 @@ class VaultEvaluationTest:
         Returns:
             Dictionary with test results and metrics
         """
+        if self.vault is None:
+            raise RuntimeError("Vault has not been initialized")
+
         try:
             logger.info(f"Query: {test_case['query']}")
 
@@ -265,7 +241,7 @@ class VaultEvaluationTest:
                 "success": False,
             }
 
-    async def run_all_tests(self) -> List[Dict[str, Any]]:
+    async def run_all_tests(self) -> list[dict[str, Any]]:
         """
         Run all test cases and return comprehensive results.
 
@@ -284,7 +260,7 @@ class VaultEvaluationTest:
 
         return results
 
-    def print_summary(self, results: List[Dict[str, Any]]) -> None:
+    def print_summary(self, results: list[dict[str, Any]]) -> None:
         """
         Print a comprehensive summary of all test results.
 
@@ -313,12 +289,12 @@ class VaultEvaluationTest:
                 successful_tests
             )
 
-            logger.info(f"\nOverall Metrics:")
+            logger.info("\nOverall Metrics:")
             logger.info(f"Average Precision: {avg_precision:.3f}")
             logger.info(f"Average Recall: {avg_recall:.3f}")
             logger.info(f"Average F-score: {avg_f_score:.3f}")
 
-        logger.info(f"\nDetailed Results:")
+        logger.info("\nDetailed Results:")
         for result in results:
             status = "✓" if result["success"] else "✗"
             logger.info(
@@ -328,20 +304,11 @@ class VaultEvaluationTest:
                 logger.info(f"  Error: {result.get('error', 'Unknown error')}")
 
         if failed_tests:
-            logger.info(f"\nFailed Tests:")
+            logger.info("\nFailed Tests:")
             for result in failed_tests:
                 logger.info(
                     f"- {result['query']}: {result.get('error', 'Unknown error')}"
                 )
-
-    async def cleanup(self) -> None:
-        """Clean up vault resources."""
-        if self.vault:
-            try:
-                await self.vault.cleanup()
-                logger.info("Vault cleanup completed")
-            except Exception as e:
-                logger.error(f"Error during cleanup: {e}")
 
 
 # Pytest fixtures and test functions
@@ -364,23 +331,35 @@ def test_content_path() -> Path:
 
 
 @pytest.fixture
-async def vault_evaluator(test_content_path) :
+async def vault_evaluator(
+    test_content_path: Path,
+) -> AsyncGenerator[VaultEvaluationTest]:
     """
-    Fixture to create and setup a VaultEvaluationTest instance.
+    Fixture to create and set up a VaultEvaluationTest instance.
+
+    Uses the production config and vault factories with real embeddings.
+    Skips the test when the LiteLLM router is not configured.
 
     Args:
         test_content_path: Path to the test content directory
 
-    Returns:
-        Configured VaultEvaluationTest instance
+    Yields:
+        Configured VaultEvaluationTest instance with an indexed vault
     """
-    evaluator = VaultEvaluationTest(test_content_path)
-    await evaluator.setup_vault()
+    config = create_config(vault_dir=test_content_path)
+    config.table_name = "evaluation_test"
 
-    yield evaluator
+    if not config.litellm_router or not config.litellm_router_key:
+        pytest.skip("LITELLM router is not configured")
 
-    # Cleanup
-    await evaluator.cleanup()
+    evaluator = VaultEvaluationTest(test_content_path, config)
+
+    async with httpx.AsyncClient() as http_client:
+        async with create_vault(config, http_client) as vault:
+            logger.info("Vault created; updating index for evaluation")
+            await vault.update_index()
+            evaluator.vault = vault
+            yield evaluator
 
 
 @pytest.mark.asyncio
@@ -412,7 +391,7 @@ async def test_vault_evaluation_comprehensive(vault_evaluator):
         assert avg_f_score > 0.1, f"Average F-score too low: {avg_f_score:.3f}"
 
         # Log final assessment
-        logger.info(f"\nFINAL ASSESSMENT:")
+        logger.info("FINAL ASSESSMENT:")
         logger.info(f"Average F-score: {avg_f_score:.3f}")
         if avg_f_score >= 0.7:
             logger.info("EXCELLENT: Vault search performance is excellent")
@@ -462,10 +441,10 @@ if __name__ == "__main__":
     Direct execution for manual testing.
 
     Usage:
-        python test/vault_evaluation.py
+        python tests/vault_evaluation.py
     """
 
-    async def main():
+    async def main() -> None:
         # Setup test content path
         project_root = Path(__file__).parent.parent
         test_content_path = project_root / "test_content"
@@ -475,17 +454,27 @@ if __name__ == "__main__":
             print("Please create a test_content folder with Obsidian vault content.")
             return
 
-        # Run evaluation
-        evaluator = VaultEvaluationTest(test_content_path)
+        config = create_config(vault_dir=test_content_path)
+        config.table_name = "evaluation_test"
+
+        if not config.litellm_router or not config.litellm_router_key:
+            print(
+                "Error: LITELLM router is not configured; "
+                "real embeddings are required for evaluation."
+            )
+            return
+
+        evaluator = VaultEvaluationTest(test_content_path, config)
 
         try:
-            await evaluator.setup_vault()
-            results = await evaluator.run_all_tests()
-            evaluator.print_summary(results)
+            async with httpx.AsyncClient() as http_client:
+                async with create_vault(config, http_client) as vault:
+                    evaluator.vault = vault
+                    await vault.update_index()
+                    results = await evaluator.run_all_tests()
+                    evaluator.print_summary(results)
         except Exception as e:
             logger.error(f"Evaluation failed: {e}")
-        finally:
-            await evaluator.cleanup()
 
     # Run the main function
     asyncio.run(main())
