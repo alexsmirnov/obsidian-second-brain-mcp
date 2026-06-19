@@ -10,8 +10,10 @@ import pyarrow as pa
 import pyarrow.compute as pc
 import pytest
 from lancedb.rerankers import Reranker
+from langchain_core.embeddings import Embeddings
 
 from mcps.config import ServerConfig, create_config
+from mcps.rag.llm_reranker import LlmReranker
 from mcps.rag.vault import create_reranker
 
 logger = logging.getLogger(__name__)
@@ -22,15 +24,30 @@ MODEL_CASES: list[tuple[str, str, int]] = [
     ("gemini-flash-lite", "gemma-embed", 768),
     ("gpt-5-nano", "nomic-embed", 768),
     ("local-gemma", "gemma-embed", 768),
+    ("", "gemma-embed", 768),
 ]
 
 
 
 def _reranker_label(reranker: Reranker) -> str:
     """Return a human-readable label for the active model pair (logging only)."""
-    chat = getattr(getattr(reranker, "chat_model", None), "model_name", "?")
+    chat_model = getattr(reranker, "chat_model", None)
+    chat = chat_model.model_name if chat_model is not None else "none"
     embed = getattr(getattr(reranker, "embeddings", None), "model", "?")
     return f"{chat}+{embed}"
+
+
+class FakeEmbeddings(Embeddings):
+    """Deterministic in-memory embeddings implementation for unit tests."""
+
+    def __init__(self, vectors: dict[str, list[float]]) -> None:
+        self.vectors = vectors
+
+    def embed_query(self, text: str) -> list[float]:
+        return self.vectors.get(text, [1.0, 0.0])
+
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        return [self.vectors.get(text, [1.0, 0.0]) for text in texts]
 
 
 @pytest.fixture
@@ -305,3 +322,87 @@ class TestLlmRerankerEvaluation:
             f"Overall position ratio {overall_position_ratio:.3f} "
             f"below minimum threshold 0.2 for {_reranker_label(reranker)}"
         )
+
+
+class TestLlmRerankerEmbeddingOnly:
+    """Unit tests for `LlmReranker` when no chat model is configured."""
+
+    @pytest.fixture
+    def reranker(self) -> LlmReranker:
+        vectors = {
+            "query": [1.0, 0.0],
+            "direct answer": [1.0, 0.0],
+            "somewhat related": [0.7, 0.7],
+            "unrelated": [0.0, 1.0],
+        }
+        return LlmReranker(chat_model=None, embeddings=FakeEmbeddings(vectors))
+
+    def test_score_with_llm_returns_zeros_without_chat_model(
+        self, reranker: LlmReranker
+    ) -> None:
+        scores = reranker._score_with_llm("query", ["direct answer", "unrelated"])
+
+        assert scores == [0.0, 0.0]
+
+    def test_rerank_vector_uses_only_embedding_similarity(
+        self, reranker: LlmReranker
+    ) -> None:
+        results = pa.Table.from_pydict(
+            {
+                "_rowid": [1, 2, 3],
+                "content": ["direct answer", "somewhat related", "unrelated"],
+            }
+        )
+
+        result = reranker.rerank_vector("query", results)
+
+        scores = result["_relevance_score"].to_pylist()
+        assert scores[0] > scores[1] > scores[2]
+
+
+class TestCreateRerankerEmbeddingOnly:
+    """Integration tests for factory-created embedding-only `LlmReranker`."""
+
+    @pytest.fixture
+    def embedding_only_config(self, server_config: ServerConfig) -> ServerConfig:
+        return replace(server_config, rag_reranker_infer_model="")
+
+    def test_factory_creates_llm_reranker_without_chat_model(
+        self,
+        embedding_only_config: ServerConfig,
+        async_client: httpx.AsyncClient,
+    ) -> None:
+        reranker = create_reranker(embedding_only_config, async_client)
+
+        assert isinstance(reranker, LlmReranker)
+        assert reranker.chat_model is None
+
+    def test_factory_rerank_hybrid_uses_embeddings_only(
+        self,
+        embedding_only_config: ServerConfig,
+        async_client: httpx.AsyncClient,
+    ) -> None:
+        reranker = create_reranker(embedding_only_config, async_client)
+        vector_results = pa.Table.from_pydict(
+            {
+                "_rowid": [1, 2],
+                "content": ["direct answer", "unrelated topic"],
+                "id": [1, 2],
+                "_distance": [0.1, 0.9],
+            }
+        )
+        fts_results = pa.Table.from_pydict(
+            {
+                "_rowid": [3, 4],
+                "content": ["another direct answer", "cooking recipe"],
+                "id": [3, 4],
+                "_score": [0.9, 0.1],
+            }
+        )
+
+        result = reranker.rerank_hybrid("query", vector_results, fts_results)
+
+        assert isinstance(result, pa.Table)
+        assert "_relevance_score" in result.column_names
+        assert result.num_rows == 4
+        assert all(0 <= score <= 1 for score in result["_relevance_score"].to_pylist())

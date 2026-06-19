@@ -1,11 +1,8 @@
 """OpenAI-compatible reranker for LanceDB search results."""
 
-import itertools
 import logging
-from collections.abc import Sequence
 
 import numpy as np
-import openai
 import pyarrow as pa
 from lancedb.rerankers import Reranker
 from langchain_core.embeddings import Embeddings
@@ -32,7 +29,7 @@ class LlmReranker(Reranker):
 
     def __init__(
         self,
-        chat_model: BaseChatModel,
+        chat_model: BaseChatModel | None,
         embeddings: Embeddings,
         return_score: str = "relevance",
         column: str = "content",
@@ -42,10 +39,9 @@ class LlmReranker(Reranker):
         """Initialize an OpenAI-compatible reranker.
 
         Args:
-            model_name: Chat model name for LLM-based scoring.
-            api_base: Base URL for the OpenAI-compatible API.
-            api_key: API key for the provider. Ollama accepts any value.
-            embedding_model: Embedding model name for similarity scoring.
+            chat_model: Chat model for LLM-based scoring. If None, LLM scoring
+                is skipped and only embedding similarity is used.
+            embeddings: Embedding model for similarity scoring.
             return_score: Score return type passed to LanceDB.
             column: Result table column containing document text.
             weight: Weight for score fusion. Values above 1.0 favor the LLM.
@@ -59,22 +55,36 @@ class LlmReranker(Reranker):
         self.embedding_batch_size = embedding_batch_size
 
     def _score_with_llm(self, query: str, documents: list[str]) -> list[float]:
-        """Score documents using the configured chat completion model."""
-        return [self._score_document_with_llm(query, document) for document in documents]
+        """Score documents using the configured chat completion model.
+
+        Returns zeros when no chat model is configured.
+        """
+        if self.chat_model is None:
+            return [0.0] * len(documents)
+        return [
+            self._score_document_with_llm(query, document)
+            for document in documents
+        ]
 
     def _score_document_with_llm(self, query: str, document: str) -> float:
         prompt = self._create_relevance_prompt(query, document)
         try:
             response = self.chat_model.invoke(
-                [{"role": "system", "content": SYSTEM_PROMPT},{"role": "user", "content": prompt}],
-                # temperature=0.1,
-                # max_tokens=100,
+                [
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": prompt},
+                ],
             )
         except Exception:
             logger.exception("Failed to score document with OpenAI-compatible API")
             return 0.0
         score_text = str(response.content) or ""
-        logger.info("Llm score text is %.10s for query %.10s and doc %.10s",score_text,query,document)
+        logger.info(
+            "Llm score text is %s for query %s and doc %s",
+            score_text[:10],
+            query[:10],
+            document[:10],
+        )
         return self._parse_score(score_text)
 
     @staticmethod
@@ -100,8 +110,12 @@ Relevance:"""
 
     def _score_with_embeddings(self, query: str, documents: list[str]) -> list[float]:
         """Score documents using embedding cosine similarity."""
-        query_embedding = np.asarray(self.embeddings.embed_query(query), dtype=np.float64)
-        doc_embeddings = np.asarray(self.embeddings.embed_documents(documents), dtype=np.float64)
+        query_embedding = np.asarray(
+            self.embeddings.embed_query(query), dtype=np.float64
+        )
+        doc_embeddings = np.asarray(
+            self.embeddings.embed_documents(documents), dtype=np.float64
+        )
 
         if query_embedding.ndim != 1 or doc_embeddings.ndim != 2:
             raise ValueError(
@@ -141,14 +155,19 @@ Relevance:"""
             )
 
         documents = self._table_to_documents(results)
-        llm_scores = np.array(self._score_with_llm(query, documents))
         embedding_scores = np.array(self._score_with_embeddings(query, documents))
-
-        llm_scores = np.clip(llm_scores, 0, 1)
         embedding_scores = np.clip(embedding_scores, 0, 1)
-        llm_weight = self.weight / (1 + self.weight)
-        embedding_weight = 1 / (1 + self.weight)
-        combined_scores = llm_weight * llm_scores + embedding_weight * embedding_scores
+
+        if self.chat_model is None:
+            combined_scores = embedding_scores
+        else:
+            llm_scores = np.array(self._score_with_llm(query, documents))
+            llm_scores = np.clip(llm_scores, 0, 1)
+            llm_weight = self.weight / (1 + self.weight)
+            embedding_weight = 1 / (1 + self.weight)
+            combined_scores = (
+                llm_weight * llm_scores + embedding_weight * embedding_scores
+            )
 
         return results.append_column(
             "_relevance_score",
@@ -158,7 +177,10 @@ Relevance:"""
     def _table_to_documents(self, results):
         """Extract text column to a list of strings"""
         text_column = results[self.column]
-        documents = [str(text_column[index].as_py()) for index in range(results.num_rows)]
+        documents = [
+            str(text_column[index].as_py())
+            for index in range(results.num_rows)
+        ]
         return documents
 
     def rerank_hybrid(

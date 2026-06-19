@@ -77,6 +77,7 @@ def create_embeddings(
         base_url=base_url,
         api_key=api_key,
         http_async_client=http_client,
+        check_embedding_ctx_length=False
     )
     return LangChainEmbeddingService(
                 embeddings=embeddings,
@@ -93,27 +94,29 @@ def create_reranker(
             proxy_url=config.litellm_router,
             api_key=config.litellm_router_key
         )
-    if config.rag_reranker_infer_model and config.rag_embedding_model and config.rag_embedding_dimensions:
-        base_url = config.litellm_router
-        api_key = SecretStr(config.litellm_router_key)
-        infer_model = ChatOpenAI(
-            model=config.rag_reranker_infer_model,
-            base_url=base_url,
-            api_key=api_key,
-            http_async_client=http_client
-        )
-        embed = OpenAIEmbeddings(
-            model=config.rag_embedding_model,
-            dimensions=config.rag_embedding_dimensions,
-            base_url=base_url,
-            api_key=api_key,
-            http_async_client=http_client
-        )
-        return LlmReranker(
-            infer_model,
-            embed,
-        )
-    return RRFReranker(return_score="relevance")
+    if not (config.rag_embedding_model and config.rag_embedding_dimensions):
+        return RRFReranker(return_score="relevance")
+
+    base_url = config.litellm_router
+    api_key = SecretStr(config.litellm_router_key)
+    embed = OpenAIEmbeddings(
+        model=config.rag_embedding_model,
+        dimensions=config.rag_embedding_dimensions,
+        base_url=base_url,
+        api_key=api_key,
+        http_async_client=http_client,
+        check_embedding_ctx_length=False
+    )
+    if not config.rag_reranker_infer_model:
+        return LlmReranker(chat_model=None, embeddings=embed)
+
+    infer_model = ChatOpenAI(
+        model=config.rag_reranker_infer_model,
+        base_url=base_url,
+        api_key=api_key,
+        http_async_client=http_client
+    )
+    return LlmReranker(infer_model, embed)
 
 @asynccontextmanager
 async def _create_vector_store(

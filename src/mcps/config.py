@@ -80,6 +80,7 @@ def create_config(
         rag_embedding_model=os.getenv("RAG_EMBEDDING_MODEL", "nomic-embed"),
         rag_embedding_dimensions=int(os.getenv("RAG_EMBEDDING_DIMENSIONS", "768")),
         rag_reranker_model=os.getenv("RAG_RERANKER_MODEL", ""),
+        rag_reranker_infer_model=os.getenv("RAG_RERANKER_INFER_MODEL", ""),
         vault_dir=(
             vault_dir
             if vault_dir is not None
