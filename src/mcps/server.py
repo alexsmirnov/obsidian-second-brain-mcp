@@ -17,7 +17,7 @@ import mcps.tools.obsidian_vault as obsidian_vault
 from mcps.config import ServerConfig, create_config
 from mcps.logs import setup_logging
 from mcps.rag.vault import create_vault
-from mcps.tools.research.lifespan import build_research_lifespan
+from mcps.research.lifespan import build_research_lifespan
 
 logger = logging.getLogger("mcps")
 

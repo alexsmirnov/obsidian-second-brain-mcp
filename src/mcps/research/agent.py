@@ -5,10 +5,10 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, Literal, TypedDict
 
-from mcps.tools.research.deep_research import ResearchAgent, create_deep_research_graph
+from mcps.research.deep_research import ResearchAgent, create_deep_research_graph
 
 if TYPE_CHECKING:
-    from mcps.tools.research.config import ResearchConfig
+    from mcps.research.config import ResearchConfig
 
 __all__ = ["create_deep_research_graph", "create_researcher"]
 

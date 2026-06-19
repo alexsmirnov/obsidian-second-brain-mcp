@@ -16,7 +16,7 @@ from langchain_core.language_models import BaseChatModel
 from langchain_openai import ChatOpenAI
 
 from mcps.config import ServerConfig
-from mcps.tools.research.tools import (
+from mcps.research.tools import (
     SearchResult,
     create_duckduckgo_search,
     create_fetch,

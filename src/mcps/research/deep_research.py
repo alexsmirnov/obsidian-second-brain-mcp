@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-# ruff: noqa: E501
+# ruff: noqa: E501, W291
 import asyncio
 import logging
 from operator import add
@@ -14,20 +14,19 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages as _add_messages
 from langgraph.types import Overwrite, Send
 from pydantic import BaseModel, Field
-
-from mcps.tools.research.tools import SearchResult
+from mcps.research.tools import SearchResult
 
 if TYPE_CHECKING:
     from langgraph.graph.state import CompiledStateGraph
 
-    from mcps.tools.research.agent import ResearchResponse
-    from mcps.tools.research.config import ResearchConfig
+    from mcps.research.agent import ResearchResponse
+    from mcps.research.config import ResearchConfig
 
 __all__ = [
-    "RawWebResult",
-    "ResearchAgent",
-    "SummarizeSourceState",
     "create_deep_research_graph",
+    "ResearchAgent",
+    "RawWebResult",
+    "SummarizeSourceState",
 ]
 
 logger = logging.getLogger(__name__)
@@ -36,41 +35,46 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _GENERATE_QUERY_PROMPT = """You are a search query optimizer.
-Generate exactly 4 web search queries for the user question.
+Generate exactly 5 short web search queries for the user question.
 
-Rules:
-1) Preserve user constraints exactly when present:
-   - source constraints (e.g., English Wikipedia, official docs, specific site)
-   - time/version constraints (e.g., 2022 version, before December)
-   - output format constraints that affect evidence retrieval
-2) Queries must be specific and non-generic.
-   - Reject single-word or generic queries such as "right", "definition", "answer".
-   - Each query must include at least one anchor entity from the question.
-3) Use coverage strategy:
-   - Query A: direct constraint-preserving query
-   - Query B: disambiguation query (resolve similarly named entities/pages)
-   - Query C: authoritative-source query (official/primary source)
-   - Query D: verification query (cross-check disputed values/classification)
-4) Prefer robust search syntax when useful:
-   - include site filters when source is specified (e.g., site:en.wikipedia.org)
-   - include year/version terms when required
-5) Do not produce conversational questions. Use compact keyword queries.
-6) If user question contains concrete URL, use it as a query to fetch directly without modification.
+Hard rules:
+1) Each query MUST be 2-5 keywords. Never exceed 6 words.
+2) Each query must include at least one named entity from the question.
+3) Queries must be orthogonal — each targets a DIFFERENT facet:
+   - Facet 1: core entity + primary attribute
+   - Facet 2: core entity + secondary attribute or comparison
+   - Facet 3: related entity or alternative name
+   - Facet 4: official source or documentation
+   - Facet 5: specific data point or constraint from the question
+4) Preserve source/time constraints when present:
+   - Use site: filters for specified sources
+   - Include year when version matters
+5) Never produce natural language questions or compound noun phrases.
+6) If user question contains a concrete URL, return it as-is.
 
-Output:
-- Return only 4 query strings.
+BAD (too long, compound):
+  "ChatGPT Enterprise native Microsoft Purview DLP integration support"
+  "compare Copilot Microsoft 365 vs ChatGPT Enterprise security governance"
+
+GOOD (short, orthogonal):
+  "ChatGPT Enterprise DLP integration"
+  "Microsoft Purview ChatGPT"
+  "ChatGPT Enterprise security features"
+  "Copilot 365 data governance"
+  "ChatGPT Enterprise admin controls"
+
+Output: Return only 5 query strings.
 """
-_CLEAN_RESULT_PROMPT = """You extract only evidence relevant to the user question and knowledge gap.
-
+_CLEAN_RESULT_PROMPT = """You extract evidence relevant to the user question and knowledge gap.
+Use broad relevance criteria, keep text even slyghtly related to the question.
 Hard constraints:
 - Keep verbatim excerpts only. No summarization, no conclusions.
-- Remove boilerplate, ads, nav, comments, and unrelated text.
+- Remove boilerplate, ads, nav, comments, and completely unrelated text.
 - Never output conversational text (e.g., "Based on...", "Please provide...", "Here is...").
 - Ignore tool/error artifacts and placeholders.
 
 If relevant evidence exists, output one or more blocks in this exact format:
 - Source URL: [url]
-- Snippet: [short relevance clue]
 - Content: [verbatim relevant excerpt]
 
 If no relevant evidence exists in provided content, output exactly:
@@ -97,7 +101,11 @@ Output requirements:
 - findings_summary must include all supporting evidence snippets grouped by tier and explicit conflict notes.
 - relevant_links should include only URLs actually used as evidence.
 - knowledge_gap must be concrete and actionable.
-- follow_ups must target unresolved constraints/conflicts, or contain exact URLs for direct fetch.
+- follow_ups must be SHORT keyword queries (2-5 words each).
+  Target ONE unresolved gap per query. Never combine multiple concepts.
+  BAD: "official documentation for X Y Z integration compatibility"
+  GOOD: "X Y compatibility", "Z integration docs"
+  Or contain exact URLs for direct fetch.
 """
 
 _FINALIZE_PROMPT = """Synthesize a final answer to the user's original question based on the research findings and sources gathered.
@@ -123,7 +131,7 @@ If the answer includes code snippets, ensure they are well-formatted and tested 
 class SearchQueryList(BaseModel):
     """Structured output for the generate_query node."""
 
-    query: list[str] = Field(description="Search queries for web research, or exact URLs for direct fetch.")
+    query: list[str] = Field(description="Exactly 5 short (2-5 keyword) search queries, or exact URLs for direct fetch.")
 
 
 class Reflection(BaseModel):
@@ -146,7 +154,7 @@ class Reflection(BaseModel):
     knowledge_gap: str = Field(description="What information is still missing or unverified community claims")
     follow_ups: list[str] = Field(
         default_factory=list,
-        description="Follow-up search queries to fill gaps, or exact URLs for direct fetch.",
+        description="Short (2-5 keyword) follow-up search queries to fill gaps, or exact URLs for direct fetch.",
     )
 
 
@@ -332,7 +340,7 @@ class ResearchAgent:
             f"Search Query: {question}\n"
             f"Knowledge Gaps: {knowledge_gap}\n\n"
             "Raw Web Search Results:\n"
-            + "\n\n".join((f"Source: {sr.url}\nSnippet: {sr.snippet}\nContent: {fr}" for sr, fr in zip(results, fetch_results, strict=False)))
+            + "\n\n".join((f"Source: {sr.url}\nSnippet: {sr.snippet}\nContent: {fr}" for sr, fr in zip(results, fetch_results)))
         )
         clean_result = (await self.config.fast.ainvoke(
             [
@@ -362,7 +370,7 @@ class ResearchAgent:
         )
         result = cast(
             dict[str, Any],
-            await chain.ainvoke([*state.get("messages", []), research_msg]),
+            await chain.ainvoke(state.get("messages", []) + [research_msg]),
         )
         raw_message = result["raw"]
         parsed = cast(Reflection, result["parsed"])

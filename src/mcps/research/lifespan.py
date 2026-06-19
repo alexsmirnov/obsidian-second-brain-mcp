@@ -6,8 +6,8 @@ from fastmcp import FastMCP
 from fastmcp.server.lifespan import Lifespan, lifespan
 
 from mcps.config import ServerConfig
-from mcps.tools.research.agent import create_researcher
-from mcps.tools.research.config import build_research_config
+from mcps.research.agent import create_researcher
+from mcps.research.config import build_research_config
 
 
 def build_research_lifespan(config: ServerConfig) -> Lifespan:

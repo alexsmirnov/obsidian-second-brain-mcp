@@ -7,6 +7,7 @@ optionally injected ``httpx.AsyncClient`` shared from FastMCP lifespan.
 
 from __future__ import annotations
 
+import asyncio
 import re
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -395,11 +396,21 @@ def _convert_pdf_to_markdown(pdf_bytes: bytes) -> str:
     import pymupdf
 
     page_text: list[str] = []
+    # Open, clean, and reload the PDF to fix annotation errors
     with pymupdf.open(stream=pdf_bytes, filetype="pdf") as document:
+        # clean=True fixes appearance streams; deflate recompresses objects
+        cleaned_bytes = document.tobytes(clean=True, deflate=True)
+        
+    with pymupdf.open(stream=cleaned_bytes, filetype="pdf") as document:
         for page in document:
+            # Strip out Screen annotations entirely if errors persist
+            for annot in page.annots():
+                if annot.type[0] == 21: # pymupdf.PDF_ANNOT_SCREEN:
+                    page.delete_annot(annot)
+                    
             raw_text = page.get_text("text")
             if not isinstance(raw_text, str):
-                raise TypeError("pdf page text is not a string")
+                continue
             extracted = raw_text.strip()
             if extracted:
                 page_text.append(extracted)
