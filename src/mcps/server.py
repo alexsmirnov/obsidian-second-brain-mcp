@@ -6,13 +6,13 @@ from pathlib import Path
 
 import httpx
 from fastmcp import Context, FastMCP
-from mcp import ClientCapabilities, RootsCapability
-from mcp.server.session import ServerSession
+# from mcp import ClientCapabilities, RootsCapability
+# from mcp.server.session import ServerSession
 
-import mcps.prompts as prompts_module
-import mcps.resources.doc_resource as doc_resource
-import mcps.resources.project_resource as project_resource
-import mcps.resources.url_resource as url_resource
+# import mcps.prompts as prompts_module
+# import mcps.resources.doc_resource as doc_resource
+# import mcps.resources.project_resource as project_resource
+# import mcps.resources.url_resource as url_resource
 import mcps.tools.obsidian_vault as obsidian_vault
 from mcps.config import ServerConfig, create_config
 from mcps.logs import setup_logging
@@ -75,40 +75,18 @@ class DevAutomationServer:
         )
 
     def register(self):
-        @self.mcp.resource("url://{encoded_url}")
-        async def url_resource_handler(encoded_url: str) -> str:
-            return await url_resource.get_resource(encoded_url, self.config)
+        # @self.mcp.resource("url://{encoded_url}")
+        # async def url_resource_handler(encoded_url: str) -> str:
+        #     return await url_resource.get_resource(encoded_url, self.config)
 
-        @self.mcp.resource("doc://{library_name}")
-        async def doc_resource_handler(library_name: str) -> str:
-            return await doc_resource.get_resource(library_name, self.config)
+        # @self.mcp.resource("doc://{library_name}")
+        # async def doc_resource_handler(library_name: str) -> str:
+        #     return await doc_resource.get_resource(library_name, self.config)
 
-        @self.mcp.resource("project://{project_name}")
-        async def project_resource_handler(project_name: str) -> str:
-            return await project_resource.get_resource(project_name, self.config)
+        # @self.mcp.resource("project://{project_name}")
+        # async def project_resource_handler(project_name: str) -> str:
+        #     return await project_resource.get_resource(project_name, self.config)
 
-        @self.mcp.resource(
-            "resource://test",
-            name="test/resource",
-            description="Test project resource",
-        )
-        async def test_resource_handler(context: Context) -> str:
-            try:
-                session: ServerSession = context.session
-                if session.check_client_capability(
-                    ClientCapabilities(roots=RootsCapability())
-                ):
-                    result = await session.list_roots()
-                    logger.info(f"Result: {result}")
-                    for root in result.roots:
-                        logger.info(f"Root: {root.name} , {root.uri}")
-            except Exception as e:
-                logger.error(f"Error listing roots: {e}")
-            return "Test project resource"
-
-        @self.mcp.resource("documentation://test/docs")
-        async def test_docs_handler() -> str:
-            return "Test project documentation"
 
         @self.mcp.tool(name="web_research", description=_WEB_RESEARCH_DESCRIPTION)
         async def web_research(query: str, ctx: Context) -> str:
@@ -131,7 +109,7 @@ class DevAutomationServer:
         if self.config.vault_dir:
             obsidian_vault.register_tools(self.mcp)
 
-        prompts_module.setup_prompts(self.mcp, self.config)
+        # prompts_module.setup_prompts(self.mcp, self.config)
 
     async def start(self):
         await self.mcp.run_async()

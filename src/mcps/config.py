@@ -25,13 +25,13 @@ class ServerConfig:
     # Chunking configuration
     max_chunk_size: int = 4000
     
-    rag_embedding_model: str = "nomic-embed"
+    rag_embedding_model: str = "bge-embed"
     rag_embedding_dimensions: int = 768
     rag_reranker_model: str = "" # Rerank model to use in ProxyReranker
     # Embeddings and inferrence models used by LlmReranker
-    rag_reranker_embedding_model: str = "nomic-embed"
+    rag_reranker_embedding_model: str = ""
     rag_reranker_embedding_dimensions: int = 768
-    rag_reranker_infer_model: str = "gemini-flash-lite"
+    rag_reranker_infer_model: str = ""
     
     search_limit: int = 20
     # Web deep research config
@@ -77,8 +77,8 @@ def create_config(
         litellm_router_key=os.getenv(
             "LITELLM_ROUTER_KEY", os.getenv("LITELLM_API_KEY", "")
         ),
-        rag_embedding_model=os.getenv("RAG_EMBEDDING_MODEL", "nomic-embed"),
-        rag_embedding_dimensions=int(os.getenv("RAG_EMBEDDING_DIMENSIONS", "768")),
+        rag_embedding_model=os.getenv("RAG_EMBEDDING_MODEL", "bge-embed"),
+        rag_embedding_dimensions=int(os.getenv("RAG_EMBEDDING_DIMENSIONS", "1024")),
         rag_reranker_model=os.getenv("RAG_RERANKER_MODEL", ""),
         rag_reranker_infer_model=os.getenv("RAG_RERANKER_INFER_MODEL", ""),
         vault_dir=(
