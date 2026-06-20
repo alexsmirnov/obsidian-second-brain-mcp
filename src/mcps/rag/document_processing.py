@@ -76,6 +76,7 @@ default_skip_patterns = [
             r'^\..*',
             r'node_modules/',
             r'__pycache__/',
+            r'/worktrees/',
             r'^scripts/',
             r'^templates/',
             r'^prompts/',
