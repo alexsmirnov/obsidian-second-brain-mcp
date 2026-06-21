@@ -152,6 +152,8 @@ class MarkdownProcessor(IDocumentProcessor):
             post = frontmatter.Post(
                 content=file_path.read_text(encoding='utf-8', errors='replace')
             )
+        if not post.content:
+            logger.warning("File %s is empty",file_path)
         # Extract metadata
         metadata = Metadata(
             source=self._metadata_as_str(post.metadata, 'source'),

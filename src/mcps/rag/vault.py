@@ -363,10 +363,13 @@ class Vault(IVault):
 
     async def _batch_process_files(self, files_to_add: list[Path]) -> None:
         logger.info(f"Add {len(files_to_add)} files in batch")
-        await asyncio.gather(
+        results = await asyncio.gather(
             *[self._process_file(path) for path in files_to_add],
             return_exceptions=True,
         )
+        for path, result in zip(files_to_add, results):
+            if isinstance(result, Exception):
+                logger.error("Failed to process file %s: %s", path, result)
         files_to_add.clear()
 
     async def _process_file(self, file_path: Path) -> None:
