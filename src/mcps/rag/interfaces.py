@@ -201,7 +201,7 @@ class ISearchEngine(ABC):
     """Interface for search operations."""
 
     @abstractmethod
-    async def search(self, query: SearchQuery) -> str:
+    async def search(self, query: SearchQuery) -> list[Chunk]:
         """Perform a search operation."""
         pass
 
@@ -249,8 +249,13 @@ class IVault(ABC):
         pass
 
     @abstractmethod
-    async def search(self, query: str) -> str:
-        """search files in vault by query. Return formatted string with results."""
+    async def search(
+        self,
+        query: str,
+        tags: list[str] | None = None,
+        path: str | None = None,
+    ) -> list[Chunk]:
+        """Search files in vault by query. Return list of matching chunks."""
         pass
 
     @abstractmethod

@@ -8,7 +8,7 @@ from typing import Annotated, Any
 import httpx
 from fastmcp import Context, FastMCP
 from fastmcp.server.lifespan import Lifespan, lifespan
-from pydantic import Field
+from pydantic import BaseModel, Field
 
 from mcps.config import ServerConfig
 from mcps.rag.interfaces import IVault
@@ -85,6 +85,41 @@ SearchQuery = Annotated[
         max_length=500,
     ),
 ]
+
+Tags = Annotated[
+    list[str] | None,
+    Field(
+        default=None,
+        description=(
+            "List of tags to filter search results. All specified tags must be "
+            "present on a note for it to match. Examples: ['project', 'python'], "
+            "['meeting']"
+        ),
+    ),
+]
+
+PathFilter = Annotated[
+    str | None,
+    Field(
+        default=None,
+        description=(
+            "File path prefix to limit search scope. Only notes whose path "
+            "starts with this value are searched. Use forward slashes for path "
+            "separation. Examples: 'Projects/', 'Daily Notes/2024/'"
+        ),
+        max_length=500,
+    ),
+]
+
+
+class SearchResultItem(BaseModel):
+    """Structured search result returned by the obsidian_search tool."""
+
+    title: str | None
+    description: str | None
+    content: str
+    tags: list[str]
+    source_path: str
 
 
 def build_obsidian_lifespan(config: ServerConfig) -> Lifespan:
@@ -254,17 +289,33 @@ async def rename_move_note(
         return f"Error renaming/moving note: {e!s}"
 
 
-async def search(query: SearchQuery, ctx: Context) -> str:
+async def search(
+    query: SearchQuery,
+    ctx: Context,
+    tags: Tags = None,
+    path: PathFilter = None,
+) -> list[SearchResultItem]:
     """Search for content within the Obsidian Vault using semantic search."""
     try:
         logger.info(f"Searching Obsidian Vault for: {query}")
-        search_results = await _vault_from_context(ctx).search(query)
+        chunks = await _vault_from_context(ctx).search(
+            query, tags=tags, path=path
+        )
         logger.info(f"Search completed for query: {query}")
-        return search_results
+        return [
+            SearchResultItem(
+                title=c.title,
+                description=c.description,
+                content=c.content,
+                tags=c.tags,
+                source_path=c.source_path,
+            )
+            for c in chunks
+        ]
 
     except Exception as e:
         logger.error(f"Failed to search vault for query '{query}': {e}")
-        return f"Error searching vault: {e!s}"
+        return []
 
 
 def _vault_from_context(ctx: Context) -> IVault:

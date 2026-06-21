@@ -124,6 +124,17 @@ class VaultEvaluationTest:
 
         return test_cases
 
+    def _chunks_to_text(self, chunks: list) -> str:
+        """Concatenate chunk content fields into a single searchable string."""
+        parts = []
+        for c in chunks:
+            if c.title:
+                parts.append(c.title)
+            if c.description:
+                parts.append(c.description)
+            parts.append(c.content)
+        return "\n".join(parts)
+
     def calculate_precision(
         self, search_results: str, expected_words: list[str]
     ) -> float:
@@ -131,7 +142,7 @@ class VaultEvaluationTest:
         Calculate precision: percentage of expected words found in search results.
 
         Args:
-            search_results: The formatted search results string
+            search_results: The combined search results text
             expected_words: List of words that should appear in results
 
         Returns:
@@ -152,7 +163,7 @@ class VaultEvaluationTest:
         Calculate recall: percentage of unwanted words NOT found in search results.
 
         Args:
-            search_results: The formatted search results string
+            search_results: The combined search results text
             unwanted_words: List of words that should NOT appear in results
 
         Returns:
@@ -202,7 +213,8 @@ class VaultEvaluationTest:
             logger.info(f"Query: {test_case['query']}")
 
             # Perform search
-            search_results = await self.vault.search(test_case["query"])
+            chunks = await self.vault.search(test_case["query"])
+            search_results = self._chunks_to_text(chunks)
             logger.info(f"Search results: {search_results[:150]}...")
             # Calculate metrics
             precision = self.calculate_precision(

@@ -31,6 +31,7 @@ from .document_processing import (
     SemanticChunker,
 )
 from .interfaces import (
+    Chunk,
     IChunker,
     IDocumentProcessor,
     IEmbeddingService,
@@ -143,10 +144,8 @@ def _create_search_engine(
     config: ServerConfig,
 ) -> ISearchEngine:
     """Create and configure search engine service."""
-    result_formatter = _create_result_formatter(config)
     return SemanticSearchEngine(
         vector_store,
-        result_formatter,
         limit=config.search_limit,
     )
 
@@ -335,43 +334,46 @@ class Vault(IVault):
         document = await self.document_processor.process(file_path)
         await self.vector_store.store(list(self.chunker.chunk(document)))
     
-    async def search(self, query: str) -> str:
+    async def search(
+        self,
+        query: str,
+        tags: list[str] | None = None,
+        path: str | None = None,
+    ) -> list[Chunk]:
         """
-        Search files in vault by query and return formatted results.
+        Search files in vault by query and return matching chunks.
+
         Args:
             query: The search query string
-            
+            tags: Optional list of tags to filter by (all must match)
+            path: Optional file path prefix to limit search scope
+
         Returns:
-            Formatted string with search results
-            
+            List of matching Chunk objects
+
         Raises:
             NotInitializedError: If vault is not initialized
             RuntimeError: If search operation fails
         """
         if not self._initialized:
             raise NotInitializedError("Vault must be initialized before searching")
-        
+
         try:
             logger.info(f"Searching for: {query}")
-            if (self._last_update_check is None or 
+            if (self._last_update_check is None or
                 datetime.now() - self._last_update_check > self._update_interval):
                 logger.info("Index update needed before search")
                 await self.update_index()
-            
+
             search_query = SearchQuery(
                 text=query,
-                tags=[],
+                tags=tags or [],
                 scope=SearchScope.ALL,
-                path=None
+                path=path,
             )
-            
-            formatted_results = await self.search_engine.search(
-                query=search_query,
-            )
-            
-            
-            return formatted_results
-            
+
+            return await self.search_engine.search(query=search_query)
+
         except Exception as e:
             logger.error(f"Search operation failed: {e}")
             raise RuntimeError(f"Failed to search vault: {e}") from e

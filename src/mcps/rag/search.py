@@ -21,20 +21,18 @@ logger = logging.getLogger("mcps.search")
 
 class SemanticSearchEngine(ISearchEngine):
     """Semantic search engine using embeddings and vector similarity."""
-    
+
     def __init__(
-        self, 
+        self,
         vector_store: IVectorStore,
-        formatter: IResultFormatter,
         limit: int = 25,
-        min_score = 0.5
+        min_score: float = 0.5,
     ):
         self.vector_store = vector_store
-        self.formatter = formatter
         self.limit = limit
         self.min_score = min_score
-    
-    async def search(self, query: SearchQuery) -> str:
+
+    async def search(self, query: SearchQuery) -> list[Chunk]:
         """Perform a semantic search operation."""
         chunks = await self.vector_store.search(
             query=query.text,
@@ -45,7 +43,7 @@ class SemanticSearchEngine(ISearchEngine):
         )
         relevant_chunks = [chunk for chunk in chunks if getattr(chunk, '_relevance_score', 1.0) >= self.min_score]
         logger.info(f"Search completed: found {len(relevant_chunks)} relevant results out of {len(chunks)} total")
-        return await self.formatter.format(relevant_chunks, query)
+        return relevant_chunks
     
 
 class MarkdownResultFormatter(IResultFormatter):
