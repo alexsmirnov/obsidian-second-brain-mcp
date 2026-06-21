@@ -6,9 +6,9 @@ from pathlib import Path
 
 import httpx
 from fastmcp import Context, FastMCP
+
 # from mcp import ClientCapabilities, RootsCapability
 # from mcp.server.session import ServerSession
-
 # import mcps.prompts as prompts_module
 # import mcps.resources.doc_resource as doc_resource
 # import mcps.resources.project_resource as project_resource
@@ -17,6 +17,7 @@ import mcps.tools.obsidian_vault as obsidian_vault
 from mcps.config import ServerConfig, create_config
 from mcps.logs import setup_logging
 from mcps.rag.vault import create_vault
+from mcps.research.agent import ResearchResponse
 from mcps.research.lifespan import build_research_lifespan
 
 logger = logging.getLogger("mcps")
@@ -89,22 +90,9 @@ class DevAutomationServer:
 
 
         @self.mcp.tool(name="web_research", description=_WEB_RESEARCH_DESCRIPTION)
-        async def web_research(query: str, ctx: Context) -> str:
+        async def web_research(query: str, ctx: Context) -> ResearchResponse:
             researcher = ctx.lifespan_context["researcher"]
-            result = await researcher(query)
-            answer = result["answer"]
-            explanation = result["explanation"]
-            sources = result["sources"]
-
-            text = answer
-            if explanation:
-                text = f"{text}\n\n{explanation}"
-            if sources:
-                return (
-                    f"{text}\n\nSources:\n"
-                    + "\n".join(f"- {s}" for s in sources)
-                )
-            return text
+            return await researcher(query)
 
         if self.config.vault_dir:
             obsidian_vault.register_tools(self.mcp)
