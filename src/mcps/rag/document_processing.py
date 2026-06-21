@@ -245,7 +245,7 @@ class FixedSizeChunker(IChunker):
 class SemanticChunker(IChunker):
     """Semantic chunker that splits on markdown sections."""
 
-    def __init__(self, max_chunk_size: int = 2000, min_chunk_size: int = 100):
+    def __init__(self, max_chunk_size: int = 4000, min_chunk_size: int = 1000):
         self.max_chunk_size = max_chunk_size
         self.min_chunk_size = min_chunk_size
 
@@ -271,7 +271,8 @@ class SemanticChunker(IChunker):
 
                     while (
                         j < len(sections)
-                        and len(merged_content.strip()) < self.min_chunk_size
+                        and len(merged_content.strip())  < self.min_chunk_size
+                        and len(merged_content.strip()) + len(sections[j])  < self.max_chunk_size
                     ):
                         merged_content += "\n\n" + sections[j]
                         j += 1
@@ -282,20 +283,10 @@ class SemanticChunker(IChunker):
                     if merged_content_is_large_enough or (
                         i == 0 and j == len(sections)
                     ):
-                        # If merged content is too large, split it further
-                        if len(merged_content) > self.max_chunk_size:
-                            sub_chunks = self._split_large_section(merged_content)
-                            for sub_chunk in sub_chunks:
-                                if len(sub_chunk.strip()) >= self.min_chunk_size:
-                                    chunk = create_chunk(document, sub_chunk, position)
-                                    yield chunk
-                                    position += 1
-                                    chunk_count += 1
-                        else:
-                            chunk = create_chunk(document, merged_content, position)
-                            yield chunk
-                            position += 1
-                            chunk_count += 1
+                        chunk = create_chunk(document, merged_content, position)
+                        yield chunk
+                        position += 1
+                        chunk_count += 1
 
                     # Move to the next unprocessed section
                     i = j
@@ -305,11 +296,10 @@ class SemanticChunker(IChunker):
                     if len(current_section) > self.max_chunk_size:
                         sub_chunks = self._split_large_section(current_section)
                         for sub_chunk in sub_chunks:
-                            if len(sub_chunk.strip()) >= self.min_chunk_size:
-                                chunk = create_chunk(document, sub_chunk, position)
-                                yield chunk
-                                position += 1
-                                chunk_count += 1
+                            chunk = create_chunk(document, sub_chunk, position)
+                            yield chunk
+                            position += 1
+                            chunk_count += 1
                     else:
                         chunk = create_chunk(document, current_section, position)
                         yield chunk
