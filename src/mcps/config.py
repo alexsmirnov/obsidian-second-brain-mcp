@@ -32,8 +32,9 @@ class ServerConfig:
     rag_reranker_embedding_model: str = ""
     rag_reranker_embedding_dimensions: int = 768
     rag_reranker_infer_model: str = ""
+    rag_infer_model: str = ""
     
-    search_limit: int = 20
+    search_limit: int = 30
     # Web deep research config
     google_api_key: str = ""
     google_search_id: str = ""
@@ -80,7 +81,7 @@ def create_config(
         rag_embedding_model=os.getenv("RAG_EMBEDDING_MODEL", "bge-embed"),
         rag_embedding_dimensions=int(os.getenv("RAG_EMBEDDING_DIMENSIONS", "1024")),
         rag_reranker_model=os.getenv("RAG_RERANKER_MODEL", ""),
-        rag_reranker_infer_model=os.getenv("RAG_RERANKER_INFER_MODEL", ""),
+        rag_infer_model=os.getenv("RAG_INFER_MODEL", "gpt-5-nano"),
         vault_dir=(
             vault_dir
             if vault_dir is not None

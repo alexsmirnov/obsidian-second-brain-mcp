@@ -253,16 +253,20 @@ Search Request
     │
     ▼
 SemanticSearchEngine.search()
+    ├── Generate hypothetical document with rag_infer_model (optional)
     │
     ▼
 LanceDBStore.search()
-    ├── Generate query embedding (query=True mode)
+    ├── Generate embedding from hypothetical document or original query
     ├── Build hybrid query (vector + FTS)
     ├── Apply filters (tags, path)
-    └── Rerank results
+    └── Apply DB-level reranking
     │
     ▼
 Filter by min_score (0.5 default)
+    │
+    ▼
+One-call structured reranking by chunk IDs (optional)
     │
     ▼
 MarkdownResultFormatter.format()
@@ -271,8 +275,10 @@ MarkdownResultFormatter.format()
 Formatted Markdown String
 ```
 
-Search engine: [search.py:37-48](../src/mcps/rag/search.py#L37-L48)
+Search engine: [search.py](../src/mcps/rag/search.py)
 Result formatter: [search.py:57-90](../src/mcps/rag/search.py#L57-L90)
+
+If HyDE generation or search-level reranking fails, search logs the error and returns the min-score-filtered vector-store results. `rag_infer_model` controls this search-level inference path. `rag_reranker_*` settings remain limited to DB-level LanceDB reranking.
 
 ## Configuration #config
 
@@ -284,7 +290,8 @@ Result formatter: [search.py:57-90](../src/mcps/rag/search.py#L57-L90)
 | `search_limit` | `20` | Max results returned |
 | `rag_embedding_model` | `"text-embedding-3-small"` | LiteLLM Router embedding model |
 | `rag_embedding_dimensions` | `1536` | LanceDB vector dimension |
-| `rag_reranker_model` | `""` | Optional LiteLLM Router chat reranker model |
+| `rag_infer_model` | `""` | Optional search-level HyDE and structured reranking model |
+| `rag_reranker_model` | `""` | Optional DB-level LanceDB reranker model |
 
 Configuration: [config.py:11-36](../src/mcps/config.py#L11-L36)
 

@@ -15,11 +15,13 @@ import pytest
 from mcps.rag.document_processing import (
     MarkdownFileTraversal,
     MarkdownProcessor,
+    SUMMARY_CHUNK_POSITION,
+    create_summary_chunk,
     default_skip_patterns,
     extract_content_tags,
     extract_wikilinks,
 )
-from mcps.rag.interfaces import Document
+from mcps.rag.interfaces import Document, Metadata
 
 
 class TestMarkdownFileTraversal:
@@ -372,6 +374,64 @@ Numbers in tags: #tag123 and #123tag.
 
 Invalid tags: # (space after hash), #-invalid (starts with hyphen).
 """
+
+    def test_create_summary_chunk_uses_reserved_position_and_id_convention(self):
+        document = Document(
+            id="note-123",
+            content="Note content",
+            metadata=Metadata(title="Note", description="Description", source="source"),
+            tags=["frontmatter"],
+            source_path="folder/note.md",
+            modified_at=datetime(2024, 1, 2, 3, 4, 5),
+        )
+
+        chunk = create_summary_chunk(document, "Summary content")
+
+        assert chunk.position == SUMMARY_CHUNK_POSITION
+        assert chunk.id == f"{document.id}_{SUMMARY_CHUNK_POSITION}"
+
+    def test_create_summary_chunk_extracts_tags_and_links_from_whole_document(self):
+        document = Document(
+            id="note-123",
+            content=(
+                "# Note\n\n"
+                "Summary text does not contain metadata.\n\n"
+                "See [[Global Link]] and [[Second Link|display]].\n"
+                "#inline-tag #frontmatter"
+            ),
+            metadata=Metadata(title="Note", description="Description", source="source"),
+            tags=["frontmatter", "yaml-only"],
+            source_path="folder/note.md",
+            modified_at=datetime(2024, 1, 2, 3, 4, 5),
+        )
+
+        chunk = create_summary_chunk(
+            document,
+            "Generated summary without links or tags",
+        )
+
+        assert set(chunk.outgoing_links) == {"Global Link", "Second Link"}
+        assert set(chunk.tags) == {"frontmatter", "yaml-only", "inline-tag"}
+
+    def test_create_summary_chunk_preserves_document_metadata(self):
+        modified_at = datetime(2024, 1, 2, 3, 4, 5)
+        document = Document(
+            id="note-123",
+            content="Note content",
+            metadata=Metadata(title="Note", description="Description", source="source"),
+            tags=["frontmatter"],
+            source_path="folder/note.md",
+            modified_at=modified_at,
+        )
+
+        chunk = create_summary_chunk(document, "\n  Summary content  \n")
+
+        assert chunk.content == "Summary content"
+        assert chunk.title == "Note"
+        assert chunk.description == "Description"
+        assert chunk.source == "source"
+        assert chunk.source_path == "folder/note.md"
+        assert chunk.modified_at == modified_at
 
     async def test_process_basic_markdown_file(self, processor, temp_file, sample_markdown_content):
         """Test processing a basic markdown file with frontmatter."""

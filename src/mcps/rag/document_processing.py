@@ -1,6 +1,4 @@
-"""
-Document processing module containing file discovery, traversal, document processing, and chunking.
-"""
+"""Document processing, traversal, and chunking."""
 
 import hashlib
 import logging
@@ -8,13 +6,21 @@ import re
 from collections.abc import Generator
 from datetime import datetime
 from pathlib import Path
-from typing import Dict
-from yaml.parser import ParserError
-
-import frontmatter
 from typing import override
 
-from .interfaces import Chunk, Document, IChunker, IDocumentProcessor, IFileTraversal, Metadata
+import frontmatter
+from yaml.parser import ParserError
+
+from .interfaces import (
+    Chunk,
+    Document,
+    IChunker,
+    IDocumentProcessor,
+    IFileTraversal,
+    Metadata,
+)
+
+SUMMARY_CHUNK_POSITION = -1
 
 
 def extract_wikilinks(content: str) -> list[str]:
@@ -67,33 +73,55 @@ def create_chunk(document: Document, content: str, position: int) -> Chunk:
         tags=combined_tags,
         source_path=document.source_path,
         modified_at=document.modified_at,
-        position=position
+        position=position,
+    )
+
+
+def create_summary_chunk(document: Document, summary: str) -> Chunk:
+    """Create a whole-document summary chunk."""
+    return Chunk(
+        id=f"{document.id}_{SUMMARY_CHUNK_POSITION}",
+        content=summary.strip(),
+        title=document.metadata.title,
+        description=document.metadata.description,
+        source=document.metadata.source,
+        outgoing_links=extract_wikilinks(document.content),
+        tags=list(set(document.tags + extract_content_tags(document.content))),
+        source_path=document.source_path,
+        modified_at=document.modified_at,
+        position=SUMMARY_CHUNK_POSITION,
     )
 
 logger = logging.getLogger("mcps.documents")
-        
+
 default_skip_patterns = [
-            r'^\..*',
-            r'node_modules/',
-            r'__pycache__/',
-            r'/worktrees/',
-            r'^scripts/',
-            r'^templates/',
-            r'^prompts/',
-        ]
+    r'^\..*',
+    r'node_modules/',
+    r'__pycache__/',
+    r'/worktrees/',
+    r'^scripts/',
+    r'^templates/',
+    r'^prompts/',
+]
 
 
 class MarkdownFileTraversal(IFileTraversal):
     """File traversal implementation for markdown files."""
 
-    def __init__(self, base_path: Path, skip_patterns: list[str] = default_skip_patterns):
+    def __init__(
+        self,
+        base_path: Path,
+        skip_patterns: list[str] = default_skip_patterns,
+    ):
         self.base_path = base_path
         self.skip_patterns = skip_patterns
 
     def _is_path_allowed(self, path: Path) -> bool:
         """Check if the path is allowed based on skip patterns."""
         relative_path = str(path.relative_to(self.base_path))
-        return not any(re.search(pattern, relative_path) for pattern in self.skip_patterns)
+        return not any(
+            re.search(pattern, relative_path) for pattern in self.skip_patterns
+        )
 
     @override
     def find_files(self) -> Generator[Path]:
@@ -103,11 +131,14 @@ class MarkdownFileTraversal(IFileTraversal):
             logger.warning(f"Search path does not exist: {self.base_path}")
             yield from ()
 
-        yield from  (path for path in self.base_path.rglob("*.md") if self._is_path_allowed(path))
+        yield from (
+            path for path in self.base_path.rglob("*.md") if self._is_path_allowed(path)
+        )
 
 
 class MarkdownProcessor(IDocumentProcessor):
     """Markdown document processor."""
+
     def __init__(self, base_path: Path):
         self.base_path = base_path
 
@@ -117,14 +148,15 @@ class MarkdownProcessor(IDocumentProcessor):
         try:
             with open(file_path, encoding='utf-8') as f:
                 post = frontmatter.load(f)
-        except ParserError as e:
-                # Handle frontmatter parsing errors gracefully
-                post = frontmatter.Post(content=file_path.read_text(encoding='utf-8', errors='replace'))
+        except ParserError:
+            post = frontmatter.Post(
+                content=file_path.read_text(encoding='utf-8', errors='replace')
+            )
         # Extract metadata
         metadata = Metadata(
-            source = self._metadata_as_str(post.metadata,'source'),
-            title = self._metadata_as_str(post.metadata,'title'),
-            description = self._metadata_as_str(post.metadata,'description'),
+            source=self._metadata_as_str(post.metadata, 'source'),
+            title=self._metadata_as_str(post.metadata, 'title'),
+            description=self._metadata_as_str(post.metadata, 'description'),
         )
 
         # Extract tags from frontmatter only
@@ -143,13 +175,12 @@ class MarkdownProcessor(IDocumentProcessor):
             metadata=metadata,
             tags=tags,
             source_path=file_path.relative_to(self.base_path).as_posix(),
-            modified_at=modified_at
+            modified_at=modified_at,
         )
 
-    def _metadata_as_str(self, metadata: Dict[str,object], field) -> str | None:
+    def _metadata_as_str(self, metadata: dict[str, object], field) -> str | None:
         """Convert metadata dictionary value to a string representation."""
         return str(metadata.get(field, '')) if field in metadata else None
-
 
     def _extract_frontmatter_tags(self, content: frontmatter.Post) -> list[str]:
         """Extract tags from frontmatter only."""
@@ -160,7 +191,6 @@ class MarkdownProcessor(IDocumentProcessor):
         elif not isinstance(fm_tags, list):
             fm_tags = []
         return list(set(fm_tags))  # Remove duplicates
-        
 
     def _generate_document_id(self, file_path: Path) -> str:
         """Generate a unique document ID."""
@@ -176,7 +206,7 @@ class FixedSizeChunker(IChunker):
         self.chunk_size = chunk_size
         self.overlap = overlap
 
-    def chunk(self, document: Document) -> Generator[Chunk, None, None]:
+    def chunk(self, document: Document) -> Generator[Chunk]:
         """Split a document into fixed-size chunks with overlap."""
         content = document.content
 
@@ -198,7 +228,6 @@ class FixedSizeChunker(IChunker):
             chunk_content = content[start:end].strip()
 
             if chunk_content:  # Only create non-empty chunks
-                # Use the create_chunk helper function to create chunk with appropriate tags and links
                 chunk = create_chunk(document, chunk_content, position)
 
                 yield chunk
@@ -218,7 +247,7 @@ class SemanticChunker(IChunker):
         self.max_chunk_size = max_chunk_size
         self.min_chunk_size = min_chunk_size
 
-    def chunk(self, document: Document) -> Generator[Chunk, None, None]:
+    def chunk(self, document: Document) -> Generator[Chunk]:
         """Split document into semantic chunks based on markdown structure."""
         content = document.content
         chunk_count = 0
@@ -230,22 +259,27 @@ class SemanticChunker(IChunker):
 
             position = 0
             i = 0
-            
+
             while i < len(sections):
                 current_section = sections[i]
-                
-                # If section is too small, merge with next sections until min_chunk_size is reached
+
                 if len(current_section.strip()) < self.min_chunk_size:
                     merged_content = current_section
                     j = i + 1
-                    
-                    # Keep merging sections until we reach min_chunk_size or run out of sections
-                    while j < len(sections) and len(merged_content.strip()) < self.min_chunk_size:
+
+                    while (
+                        j < len(sections)
+                        and len(merged_content.strip()) < self.min_chunk_size
+                    ):
                         merged_content += "\n\n" + sections[j]
                         j += 1
-                    
-                    # Only create chunk if we have content and it meets min size after merging
-                    if len(merged_content.strip()) >= self.min_chunk_size or (i == 0 and j == len(sections)):
+
+                    merged_content_is_large_enough = (
+                        len(merged_content.strip()) >= self.min_chunk_size
+                    )
+                    if merged_content_is_large_enough or (
+                        i == 0 and j == len(sections)
+                    ):
                         # If merged content is too large, split it further
                         if len(merged_content) > self.max_chunk_size:
                             sub_chunks = self._split_large_section(merged_content)
@@ -260,7 +294,7 @@ class SemanticChunker(IChunker):
                             yield chunk
                             position += 1
                             chunk_count += 1
-                    
+
                     # Move to the next unprocessed section
                     i = j
                 else:
@@ -279,10 +313,14 @@ class SemanticChunker(IChunker):
                         yield chunk
                         position += 1
                         chunk_count += 1
-                    
+
                     i += 1
 
-        logger.info(f"Created {chunk_count} semantic chunks from document {document.source_path}")
+        logger.info(
+            "Created %s semantic chunks from document %s",
+            chunk_count,
+            document.source_path,
+        )
 
     def _split_by_headers(self, content: str) -> list[str]:
         """Split content by markdown headers."""
@@ -328,4 +366,3 @@ class SemanticChunker(IChunker):
             chunks.append('\n\n'.join(current_chunk))
 
         return chunks
-

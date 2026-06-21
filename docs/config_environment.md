@@ -114,11 +114,18 @@ Embedding vector dimension used for LanceDB schema.
 **Used by**: [src/mcps/rag/embeddings.py](../src/mcps/rag/embeddings.py), [src/mcps/rag/database.py](../src/mcps/rag/database.py)
 
 #### `rag_reranker_model` #config
-LiteLLM Router chat model name for async post-retrieval reranking. Empty disables model reranking.
+LiteLLM Router model name for DB-level LanceDB reranking. Empty uses the local LanceDB reranking path.
 **Type**: str
 **Default**: `""`
 **Environment**: `RAG_RERANKER_MODEL`
-**Used by**: [src/mcps/rag/reranking.py](../src/mcps/rag/reranking.py), [src/mcps/tools/obsidian_models.py](../src/mcps/tools/obsidian_models.py)
+**Used by**: [src/mcps/rag/proxy_reranker.py](../src/mcps/rag/proxy_reranker.py), [src/mcps/rag/vault.py](../src/mcps/rag/vault.py)
+
+#### `rag_infer_model` #config
+LiteLLM Router chat model name for search-level HyDE generation and one-call structured reranking. Empty disables search-level LLM inference and preserves vector-only search behavior.
+**Type**: str
+**Default**: `""`
+**Environment**: `RAG_INFER_MODEL`
+**Used by**: [src/mcps/rag/search.py](../src/mcps/rag/search.py), [src/mcps/rag/reranking.py](../src/mcps/rag/reranking.py), [src/mcps/rag/vault.py](../src/mcps/rag/vault.py)
 
 ### Search Configuration
 

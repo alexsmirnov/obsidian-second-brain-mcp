@@ -14,8 +14,6 @@ from pathlib import Path
 
 import httpx
 from lancedb.rerankers import Reranker, RRFReranker
-from langchain_core.embeddings import Embeddings
-from langchain_core.language_models import BaseChatModel
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from pydantic import SecretStr
 
@@ -29,11 +27,13 @@ from .document_processing import (
     MarkdownFileTraversal,
     MarkdownProcessor,
     SemanticChunker,
+    create_summary_chunk,
 )
 from .interfaces import (
     Chunk,
     IChunker,
     IDocumentProcessor,
+    IDocumentSummaryGenerator,
     IEmbeddingService,
     IFileTraversal,
     IResultFormatter,
@@ -44,8 +44,13 @@ from .interfaces import (
     SearchQuery,
     SearchScope,
 )
-from .reranking import IRerankingService
-from .search import MarkdownResultFormatter, SemanticSearchEngine
+from .reranking import LangChainReranker
+from .search import (
+    HypotheticalDocumentGenerator,
+    MarkdownResultFormatter,
+    SemanticSearchEngine,
+)
+from .summarization import LangChainDocumentSummaryGenerator
 
 logger = logging.getLogger("mcps.vault")
 
@@ -142,12 +147,44 @@ async def _create_vector_store(
 def _create_search_engine(
     vector_store: IVectorStore,
     config: ServerConfig,
+    http_client: httpx.AsyncClient,
 ) -> ISearchEngine:
     """Create and configure search engine service."""
+    if not config.rag_infer_model:
+        return SemanticSearchEngine(
+            vector_store,
+            limit=config.search_limit,
+        )
+
+    search_model = ChatOpenAI(
+        model=config.rag_infer_model,
+        base_url=config.litellm_router,
+        api_key=SecretStr(config.litellm_router_key),
+        http_async_client=http_client,
+    )
     return SemanticSearchEngine(
         vector_store,
         limit=config.search_limit,
+        hypothetical_document_generator=HypotheticalDocumentGenerator(search_model),
+        reranker=LangChainReranker(search_model),
     )
+
+
+def _create_document_summary_generator(
+    config: ServerConfig,
+    http_client: httpx.AsyncClient,
+) -> IDocumentSummaryGenerator | None:
+    if not config.rag_infer_model:
+        return None
+
+    summary_model = ChatOpenAI(
+        model=config.rag_infer_model,
+        base_url=config.litellm_router,
+        api_key=SecretStr(config.litellm_router_key),
+        http_async_client=http_client,
+        max_retries=2,
+    )
+    return LangChainDocumentSummaryGenerator(summary_model)
 
 
 def _create_result_formatter(config: ServerConfig) -> IResultFormatter:
@@ -186,6 +223,7 @@ class Vault(IVault):
         chunker: IChunker,
         vector_store: IVectorStore,
         search_engine: ISearchEngine,
+        document_summary_generator: IDocumentSummaryGenerator | None = None,
         batch_size: int = 8,
     ):
         """
@@ -215,6 +253,7 @@ class Vault(IVault):
         self.chunker = chunker
         self.vector_store = vector_store
         self.search_engine = search_engine
+        self.document_summary_generator = document_summary_generator
         
         logger.info(f"Vault initialized with injected services for path: {vault_path}")
 
@@ -332,7 +371,24 @@ class Vault(IVault):
 
     async def _process_file(self, file_path: Path) -> None:
         document = await self.document_processor.process(file_path)
-        await self.vector_store.store(list(self.chunker.chunk(document)))
+        chunks = list(self.chunker.chunk(document))
+        if self.document_summary_generator is not None and document.content.strip() and len(chunks) > 2:
+            try:
+                summary = await self.document_summary_generator.generate(document)
+                if summary.strip():
+                    logger.info(
+                        "Generated summary chunk for %s",
+                        document.source_path,
+                    )
+                    chunks = [create_summary_chunk(document, summary), *chunks]
+            except Exception as e:
+                logger.warning(
+                    "Failed to generate summary chunk for %s: %s",
+                    document.source_path,
+                    e,
+                )
+
+        await self.vector_store.store(chunks)
     
     async def search(
         self,
@@ -545,6 +601,11 @@ async def create_vault(
             search_engine = _create_search_engine(
                 vector_store,
                 config,
+                http_client,
+            )
+            document_summary_generator = _create_document_summary_generator(
+                config,
+                http_client,
             )
             
             # Create and return Vault instance with injected services
@@ -555,6 +616,7 @@ async def create_vault(
                 chunker=chunker,
                 vector_store=vector_store,
                 search_engine=search_engine,
+                document_summary_generator=document_summary_generator,
             )
             await vault.initialize()
             logger.info("Vault factory method completed successfully")

@@ -54,3 +54,19 @@ class TestCreateConfigReranker:
         config = create_config()
 
         assert config.rag_reranker_infer_model == "custom-model"
+
+
+class TestCreateConfigSearchInference:
+    def test_rag_infer_model_defaults_to_empty(self, monkeypatch):
+        monkeypatch.delenv("RAG_INFER_MODEL", raising=False)
+
+        config = create_config()
+
+        assert config.rag_infer_model == ""
+
+    def test_rag_infer_model_reads_env_var(self, monkeypatch):
+        monkeypatch.setenv("RAG_INFER_MODEL", "search-model")
+
+        config = create_config()
+
+        assert config.rag_infer_model == "search-model"

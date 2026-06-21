@@ -141,6 +141,15 @@ class IEmbeddingService(ABC):
         """Return the number of dimensions of the embeddings."""
         pass
 
+
+class IDocumentSummaryGenerator(ABC):
+    """Interface for whole-document summary generation."""
+
+    @abstractmethod
+    async def generate(self, document: Document) -> str:
+        """Generate a summary for the whole source document."""
+        pass
+
 class IVectorStore(ABC):
     """Interface for vector storage operations."""
 
@@ -158,6 +167,7 @@ class IVectorStore(ABC):
     async def search(
         self,
         query: str,
+        hypotetical_document: str | None = None,
         tags: list[str] | None = None,
         file_path: str | None = None,
         scope: SearchScope = SearchScope.ALL,

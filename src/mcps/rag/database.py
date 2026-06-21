@@ -122,7 +122,7 @@ class LanceDBStore(IVectorStore):
 
         try:
             # Process chunks and generate embeddings if needed
-            texts = [c.content for c in chunks]
+            texts = [f"{c.title}\ndescription: {c.description}\n\n{c.content}" for c in chunks]
             embeddings = await self.embedding_service.documents_embeddings(texts)
             processed_chunks = [
                 chunk.model_copy(update={"embeddings": embedding}).model_dump()
@@ -141,6 +141,7 @@ class LanceDBStore(IVectorStore):
     async def search(
         self,
         query: str,
+        hypotetical_document: str | None = None,
         tags: list[str] | None = None,
         file_path: str | None = None,
         scope: SearchScope = SearchScope.ALL,
@@ -150,6 +151,7 @@ class LanceDBStore(IVectorStore):
 
         Args:
             query (str): The search query text.
+            hypotetical_document: expected result document, if present used for vector search instead of query.
             tags: List of tags to filter by. All must be present.
             file_path: Substring of source_path to filter results.
             scope: Where to search: content, title, description, or all.
@@ -161,7 +163,7 @@ class LanceDBStore(IVectorStore):
             )
 
         # Calculate embedding for the query
-        query_embedding = await self.embedding_service.query_embeddings(query)
+        query_embedding = await self.embedding_service.query_embeddings(hypotetical_document or query)
 
         # Apply scope filter
         if scope == SearchScope.CONTENT:
