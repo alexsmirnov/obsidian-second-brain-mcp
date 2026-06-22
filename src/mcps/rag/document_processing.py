@@ -52,9 +52,16 @@ def extract_content_tags(text: str) -> list[str]:
     return list(set(matches))  # Remove duplicates
 
 
-def create_chunk(document: Document, content: str, position: int) -> Chunk:
+def create_chunk(
+    document: Document,
+    content: str,
+    position: int,
+    offset: int = 0,
+) -> Chunk:
     """Create a chunk from document and content."""
     chunk_id = f"{document.id}_{position}"
+    chunk_content = content.strip()
+    content_offset = offset + len(content) - len(content.lstrip())
     
     # Extract wikilinks from chunk content
     outgoing_links = extract_wikilinks(content)
@@ -65,32 +72,40 @@ def create_chunk(document: Document, content: str, position: int) -> Chunk:
 
     return Chunk(
         id=chunk_id,
-        content=content.strip(),
+        content=chunk_content,
         title=document.metadata.title,
         description=document.metadata.description,
         source=document.metadata.source,
         outgoing_links=outgoing_links,
         tags=combined_tags,
         source_path=document.source_path,
+        wikilink_name=document.wikilink_name,
         modified_at=document.modified_at,
         position=position,
+        offset=content_offset,
+        file_size=document.file_size,
     )
 
 
 def create_summary_chunk(document: Document, summary: str) -> Chunk:
     """Create a whole-document summary chunk."""
+    summary_content = summary.strip()
     return Chunk(
         id=f"{document.id}_{SUMMARY_CHUNK_POSITION}",
-        content=summary.strip(),
+        content=summary_content,
         title=document.metadata.title,
         description=document.metadata.description,
         source=document.metadata.source,
         outgoing_links=extract_wikilinks(document.content),
         tags=list(set(document.tags + extract_content_tags(document.content))),
         source_path=document.source_path,
+        wikilink_name=document.wikilink_name,
         modified_at=document.modified_at,
         position=SUMMARY_CHUNK_POSITION,
+        offset=0,
+        file_size=document.file_size,
     )
+
 
 logger = logging.getLogger("mcps.documents")
 
@@ -167,7 +182,7 @@ class MarkdownProcessor(IDocumentProcessor):
         # Get file modification time
         stat = file_path.stat()
         modified_at = datetime.fromtimestamp(stat.st_mtime)
-
+        size = stat.st_size
         # Generate document ID
         doc_id = self._generate_document_id(file_path)
 
@@ -177,6 +192,8 @@ class MarkdownProcessor(IDocumentProcessor):
             metadata=metadata,
             tags=tags,
             source_path=file_path.relative_to(self.base_path).as_posix(),
+            file_size=size,
+            wikilink_name=file_path.stem,
             modified_at=modified_at,
         )
 
@@ -219,6 +236,7 @@ class FixedSizeChunker(IChunker):
 
         while start < len(content):
             end = min(start + self.chunk_size, len(content))
+            broke_at_word_boundary = False
 
             # Try to break at word boundaries
             if end < len(content):
@@ -226,18 +244,22 @@ class FixedSizeChunker(IChunker):
                 last_space = content.rfind(' ', start, end)
                 if last_space > start:
                     end = last_space
+                    broke_at_word_boundary = True
 
-            chunk_content = content[start:end].strip()
+            chunk_content = content[start:end]
 
-            if chunk_content:  # Only create non-empty chunks
-                chunk = create_chunk(document, chunk_content, position)
+            if chunk_content.strip():  # Only create non-empty chunks
+                chunk = create_chunk(document, chunk_content, position, start)
 
                 yield chunk
                 position += 1
                 chunk_count += 1
 
             # Move start position with overlap
-            start = max(start + self.chunk_size - self.overlap, end)
+            start = end if broke_at_word_boundary else max(
+                start + self.chunk_size - self.overlap,
+                end,
+            )
 
         logger.debug(f"Created {chunk_count} chunks from document {document.id}")
 
@@ -263,7 +285,7 @@ class SemanticChunker(IChunker):
             i = 0
 
             while i < len(sections):
-                current_section = sections[i]
+                current_section, current_offset = sections[i]
 
                 if len(current_section.strip()) < self.min_chunk_size:
                     merged_content = current_section
@@ -271,10 +293,11 @@ class SemanticChunker(IChunker):
 
                     while (
                         j < len(sections)
-                        and len(merged_content.strip())  < self.min_chunk_size
-                        and len(merged_content.strip()) + len(sections[j])  < self.max_chunk_size
+                        and len(merged_content.strip()) < self.min_chunk_size
+                        and len(merged_content.strip()) + len(sections[j][0])
+                        < self.max_chunk_size
                     ):
-                        merged_content += "\n\n" + sections[j]
+                        merged_content += "\n\n" + sections[j][0]
                         j += 1
 
                     merged_content_is_large_enough = (
@@ -283,7 +306,12 @@ class SemanticChunker(IChunker):
                     if merged_content_is_large_enough or (
                         i == 0 and j == len(sections)
                     ):
-                        chunk = create_chunk(document, merged_content, position)
+                        chunk = create_chunk(
+                            document,
+                            merged_content,
+                            position,
+                            current_offset,
+                        )
                         yield chunk
                         position += 1
                         chunk_count += 1
@@ -295,13 +323,23 @@ class SemanticChunker(IChunker):
                     # If section is too large, split it further
                     if len(current_section) > self.max_chunk_size:
                         sub_chunks = self._split_large_section(current_section)
-                        for sub_chunk in sub_chunks:
-                            chunk = create_chunk(document, sub_chunk, position)
+                        for sub_chunk, sub_offset in sub_chunks:
+                            chunk = create_chunk(
+                                document,
+                                sub_chunk,
+                                position,
+                                current_offset + sub_offset,
+                            )
                             yield chunk
                             position += 1
                             chunk_count += 1
                     else:
-                        chunk = create_chunk(document, current_section, position)
+                        chunk = create_chunk(
+                            document,
+                            current_section,
+                            position,
+                            current_offset,
+                        )
                         yield chunk
                         position += 1
                         chunk_count += 1
@@ -314,47 +352,55 @@ class SemanticChunker(IChunker):
             document.source_path,
         )
 
-    def _split_by_headers(self, content: str) -> list[str]:
+    def _split_by_headers(self, content: str) -> list[tuple[str, int]]:
         """Split content by markdown headers."""
         # Split by headers while keeping the header with the content
         header_pattern = r'^(#{1,2}\s+.+)$'
-        lines = content.split('\n')
+        lines = content.splitlines(keepends=True)
         sections = []
         current_section = []
+        current_offset = 0
+        offset = 0
 
         for line in lines:
             if re.match(header_pattern, line) and current_section:
                 # Start new section
-                sections.append('\n'.join(current_section))
+                sections.append((''.join(current_section), current_offset))
                 current_section = [line]
+                current_offset = offset
             else:
                 current_section.append(line)
+            offset += len(line)
 
         if current_section:
-            sections.append('\n'.join(current_section))
+            sections.append((''.join(current_section), current_offset))
 
         return sections
 
-    def _split_large_section(self, section: str) -> list[str]:
+    def _split_large_section(self, section: str) -> list[tuple[str, int]]:
         """Split large sections into smaller chunks."""
         # Simple paragraph-based splitting for large sections
         paragraphs = section.split('\n\n')
         chunks = []
         current_chunk = []
         current_size = 0
+        current_offset = 0
+        paragraph_offset = 0
 
         for paragraph in paragraphs:
             paragraph_size = len(paragraph)
 
             if current_size + paragraph_size > self.max_chunk_size and current_chunk:
-                chunks.append('\n\n'.join(current_chunk))
+                chunks.append(('\n\n'.join(current_chunk), current_offset))
                 current_chunk = [paragraph]
                 current_size = paragraph_size
+                current_offset = paragraph_offset
             else:
                 current_chunk.append(paragraph)
                 current_size += paragraph_size
+            paragraph_offset += paragraph_size + 2
 
         if current_chunk:
-            chunks.append('\n\n'.join(current_chunk))
+            chunks.append(('\n\n'.join(current_chunk), current_offset))
 
         return chunks

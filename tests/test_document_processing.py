@@ -13,9 +13,12 @@ import frontmatter
 import pytest
 
 from mcps.rag.document_processing import (
+    FixedSizeChunker,
     MarkdownFileTraversal,
     MarkdownProcessor,
     SUMMARY_CHUNK_POSITION,
+    SemanticChunker,
+    create_chunk,
     create_summary_chunk,
     default_skip_patterns,
     extract_content_tags,
@@ -432,6 +435,115 @@ Invalid tags: # (space after hash), #-invalid (starts with hyphen).
         assert chunk.source == "source"
         assert chunk.source_path == "folder/note.md"
         assert chunk.modified_at == modified_at
+
+    def test_create_chunk_sets_full_wikilink_name_from_source_path(self):
+        document = Document(
+            id="note-123",
+            content="Note content",
+            metadata=Metadata(title="Note", description="Description", source="source"),
+            tags=[],
+            source_path="folder/note.md",
+            modified_at=datetime(2024, 1, 2, 3, 4, 5),
+        )
+
+        chunk = create_chunk(document, "Note content", 0, offset=0)
+
+        assert chunk.wikilink_name == "folder/note"
+
+    def test_create_chunk_sets_offset_and_size_from_content_position(self):
+        document = Document(
+            id="note-123",
+            content="Intro\n\n  Stored content  ",
+            metadata=Metadata(title="Note", description="Description", source="source"),
+            tags=[],
+            source_path="note.md",
+            modified_at=datetime(2024, 1, 2, 3, 4, 5),
+        )
+
+        chunk = create_chunk(document, "  Stored content  ", 0, offset=7)
+
+        assert chunk.content == "Stored content"
+        assert chunk.offset == 9
+        assert chunk.size == len("Stored content")
+
+    def test_create_summary_chunk_sets_wikilink_name_zero_offset_and_summary_size(self):
+        document = Document(
+            id="note-123",
+            content="Note content",
+            metadata=Metadata(title="Note", description="Description", source="source"),
+            tags=[],
+            source_path="folder/note.md",
+            modified_at=datetime(2024, 1, 2, 3, 4, 5),
+        )
+
+        chunk = create_summary_chunk(document, "  Summary content  ")
+
+        assert chunk.wikilink_name == "folder/note"
+        assert chunk.offset == 0
+        assert chunk.size == len("Summary content")
+
+    def test_fixed_size_chunker_preserves_character_offsets_in_chunks(self):
+        document = Document(
+            id="note-123",
+            content="alpha beta gamma delta",
+            metadata=Metadata(title="Note", description="Description", source="source"),
+            tags=[],
+            source_path="note.md",
+            modified_at=datetime(2024, 1, 2, 3, 4, 5),
+        )
+
+        chunks = list(FixedSizeChunker(chunk_size=12, overlap=0).chunk(document))
+
+        assert [(chunk.content, chunk.offset) for chunk in chunks] == [
+            ("alpha beta", 0),
+            ("gamma delta", 11),
+        ]
+
+    def test_semantic_chunker_preserves_character_offsets_in_chunks(self):
+        document = Document(
+            id="note-123",
+            content="# Title\n\nIntro\n\n## Second\n\nBody",
+            metadata=Metadata(title="Note", description="Description", source="source"),
+            tags=[],
+            source_path="note.md",
+            modified_at=datetime(2024, 1, 2, 3, 4, 5),
+        )
+
+        chunks = list(SemanticChunker(max_chunk_size=100, min_chunk_size=1).chunk(document))
+
+        assert [(chunk.content, chunk.offset) for chunk in chunks] == [
+            ("# Title\n\nIntro", 0),
+            ("## Second\n\nBody", document.content.index("## Second")),
+        ]
+
+    def test_semantic_chunker_offsets_with_repeated_section_text_are_monotonic(self):
+        document = Document(
+            id="note-123",
+            content="## Repeat\n\nSame text\n\n## Repeat\n\nSame text",
+            metadata=Metadata(title="Note", description="Description", source="source"),
+            tags=[],
+            source_path="note.md",
+            modified_at=datetime(2024, 1, 2, 3, 4, 5),
+        )
+
+        chunks = list(SemanticChunker(max_chunk_size=100, min_chunk_size=1).chunk(document))
+
+        assert [chunk.offset for chunk in chunks] == [0, document.content.rindex("## Repeat")]
+
+    def test_chunk_offsets_count_unicode_characters(self):
+        document = Document(
+            id="note-123",
+            content="a🙂bc def",
+            metadata=Metadata(title="Note", description="Description", source="source"),
+            tags=[],
+            source_path="note.md",
+            modified_at=datetime(2024, 1, 2, 3, 4, 5),
+        )
+
+        chunks = list(FixedSizeChunker(chunk_size=5, overlap=0).chunk(document))
+
+        assert chunks[1].content == "def"
+        assert chunks[1].offset == 5
 
     async def test_process_basic_markdown_file(self, processor, temp_file, sample_markdown_content):
         """Test processing a basic markdown file with frontmatter."""

@@ -42,6 +42,7 @@ class LanceDBStore(IVectorStore):
         # Hybrid search
         results = await store.search("deep learning")
     """
+
     db: AsyncConnection
     table: AsyncTable
 
@@ -122,7 +123,10 @@ class LanceDBStore(IVectorStore):
 
         try:
             # Process chunks and generate embeddings if needed
-            texts = [f"{c.title}\ndescription: {c.description}\n\n{c.content}" for c in chunks]
+            texts = [
+                f"{c.title}\ndescription: {c.description}\n\n{c.content}"
+                for c in chunks
+            ]
             embeddings = await self.embedding_service.documents_embeddings(texts)
             processed_chunks = [
                 chunk.model_copy(update={"embeddings": embedding}).model_dump()
@@ -151,7 +155,8 @@ class LanceDBStore(IVectorStore):
 
         Args:
             query (str): The search query text.
-            hypotetical_document: expected result document, if present used for vector search instead of query.
+            hypotetical_document: Expected result document, if present used for
+                vector search instead of query.
             tags: List of tags to filter by. All must be present.
             file_path: Substring of source_path to filter results.
             scope: Where to search: content, title, description, or all.
@@ -163,7 +168,9 @@ class LanceDBStore(IVectorStore):
             )
 
         # Calculate embedding for the query
-        query_embedding = await self.embedding_service.query_embeddings(hypotetical_document or query)
+        query_embedding = await self.embedding_service.query_embeddings(
+            hypotetical_document or query
+        )
 
         # Apply scope filter
         if scope == SearchScope.CONTENT:
@@ -186,9 +193,7 @@ class LanceDBStore(IVectorStore):
             # Apply filters based on parameters
             # Filter by tags if provided
             if tags:
-                tags_array = ",".join(
-                    [f"'{self._escape_sql_string(t)}'" for t in tags]
-                )
+                tags_array = ",".join([f"'{self._escape_sql_string(t)}'" for t in tags])
                 query_builder = query_builder.where(
                     f"array_has_all(tags, [{tags_array}])"
                 )
@@ -315,4 +320,23 @@ class LanceDBStore(IVectorStore):
             }
         except Exception as e:
             logger.error(f"Failed to fetch source updates from LanceDB: {e}")
+            raise
+
+    async def get_sources_by_name(self, wikilink_name: str) -> list[str]:
+        """Return distinct source paths matching an exact wikilink note name."""
+        if not self._initialized:
+            raise NotInitializedError(
+                "LanceDBStore is not initialized. Call await store.initialize() first."
+            )
+        try:
+            escaped_name = self._escape_sql_string(wikilink_name)
+            rows = (
+                await self.table.query()
+                .where(f"wikilink_name = '{escaped_name}'")
+                .select(["source_path"])
+                .to_list()
+            )
+            return sorted({row["source_path"] for row in rows})
+        except Exception as e:
+            logger.error(f"Failed to fetch source paths from LanceDB: {e}")
             raise

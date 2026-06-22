@@ -66,6 +66,9 @@ All components implement abstract interfaces enabling flexible dependency inject
 - `outgoing_links`: Extracted `[[wikilinks]]`
 - `tags`: Frontmatter + inline `#tags`
 - `position`: Order in document
+- `wikilink_name`: Vault-relative wikilink target without `.md`
+- `offset`: Character offset relative to the start of document content
+- `size`: Stored chunk content length in decoded characters
 
 Implementation: [interfaces.py:31-63](../src/mcps/rag/interfaces.py#L31-L63)
 
@@ -142,6 +145,7 @@ Combines document-level and chunk-level metadata:
 - Extracts wikilinks from chunk content
 - Extracts inline hashtags from chunk content
 - Merges with frontmatter tags
+- Stores the source note wikilink name, chunk start offset, and chunk size for partial reads
 
 Implementation: [document_processing.py:49-71](../src/mcps/rag/document_processing.py#L49-L71)
 

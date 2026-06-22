@@ -67,6 +67,9 @@ class FakeVectorStore(IVectorStore):
     async def sources(self) -> dict[str, datetime]:
         return {}
 
+    async def get_sources_by_name(self, wikilink_name: str) -> list[str]:
+        return []
+
 
 class FakeSearchEngine(ISearchEngine):
     async def search(self, query: SearchQuery) -> list[Chunk]:
@@ -119,8 +122,11 @@ def normal_chunks(document: Document) -> list[Chunk]:
             outgoing_links=[],
             tags=document.tags,
             source_path=document.source_path,
+            wikilink_name="folder/note",
             modified_at=document.modified_at,
             position=0,
+            offset=0,
+            size=len("Normal chunk"),
         )
     ]
 

@@ -16,6 +16,45 @@ from mcps.rag.interfaces import Document, Chunk, Metadata
 class TestLazyChunking:
     """Test cases for lazy chunking with generators."""
 
+    def test_chunk_accepts_wikilink_name_offset_and_size(self):
+        chunk = Chunk.model_validate(
+            {
+                "id": "chunk-1",
+                "content": "content",
+                "title": None,
+                "description": None,
+                "source_path": "Folder/Note.md",
+                "wikilink_name": "Folder/Note",
+                "modified_at": datetime.now(),
+                "position": 0,
+                "offset": 0,
+                "size": 7,
+            }
+        )
+
+        assert chunk.wikilink_name == "Folder/Note"
+        assert chunk.offset == 0
+        assert chunk.size == 7
+
+    @pytest.mark.parametrize("missing_field", ["wikilink_name", "offset", "size"])
+    def test_chunk_requires_wikilink_name_offset_and_size(self, missing_field):
+        data = {
+            "id": "chunk-1",
+            "content": "content",
+            "title": None,
+            "description": None,
+            "source_path": "Folder/Note.md",
+            "wikilink_name": "Folder/Note",
+            "modified_at": datetime.now(),
+            "position": 0,
+            "offset": 0,
+            "size": 7,
+        }
+        data.pop(missing_field)
+
+        with pytest.raises(ValueError):
+            Chunk.model_validate(data)
+
     @pytest.fixture
     def sample_document(self):
         """Create a sample document for testing."""

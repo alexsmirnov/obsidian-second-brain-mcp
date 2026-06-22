@@ -28,6 +28,21 @@ class AppContext:
     config: ServerConfig
 
 
+_SERVER_INSTRUCTIONS = (
+    "This server provides knowledge base tools that search the user's "
+    "personal wiki notes (Obsidian Vault) and the internet.\n"
+    "\n"
+    "Use these tools proactively to verify your assumptions and ground "
+    "your responses in the user's own knowledge and current web sources "
+    "rather than relying solely on training data.\n"
+    "\n"
+    "Knowledge base conventions:\n"
+    "- Tag taxonomy is documented in the `Tags.md` note — read it with "
+    "`obsidian_get_content` to understand available tags before filtering.\n"
+    "- Folder structure is documented in the `Folders.md` note — read it "
+    "with `obsidian_get_content` to understand how notes are organized."
+)
+
 _WEB_RESEARCH_DESCRIPTION = (
     "Use this tool to find information from the internet — "
     "including recent news, current pricing, live documentation, "
@@ -72,6 +87,7 @@ class DevAutomationServer:
             )
         self.mcp = FastMCP(
             "Development Automation Server",
+            instructions=_SERVER_INSTRUCTIONS,
             lifespan=server_lifespan,
         )
 

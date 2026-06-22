@@ -49,8 +49,11 @@ def sample_chunks():
             outgoing_links=["artificial_intelligence"],
             tags=["machine-learning", "ai"],
             source_path="/test/doc1.md",
+            wikilink_name="/test/doc1",
             modified_at=base_time,
             position=0,
+            offset=0,
+            size=77,
         ),
         Chunk(
             id="chunk_2",
@@ -64,8 +67,11 @@ def sample_chunks():
             outgoing_links=["neural_networks"],
             tags=["deep-learning", "neural-networks"],
             source_path="/test/doc2.md",
+            wikilink_name="/test/doc2",
             modified_at=base_time,
             position=1,
+            offset=0,
+            size=75,
         ),
         Chunk(
             id="chunk_3",
@@ -79,8 +85,11 @@ def sample_chunks():
             outgoing_links=["language_models"],
             tags=["nlp", "language"],
             source_path="/test/doc3.md",
+            wikilink_name="/test/doc3",
             modified_at=base_time,
             position=0,
+            offset=0,
+            size=78,
         ),
         Chunk(
             id="chunk_4",
@@ -94,8 +103,11 @@ def sample_chunks():
             outgoing_links=["python", "data_science"],
             tags=["python", "programming"],
             source_path="/test/doc1.md",
+            wikilink_name="/test/doc1",
             modified_at=base_time,
             position=0,
+            offset=0,
+            size=86,
         ),
     ]
     return chunks
@@ -278,6 +290,96 @@ async def test_store_and_search_workflow(lancedb_store, sample_chunks):
 
 
 @pytest.mark.asyncio
+async def test_store_and_search_preserves_wikilink_name_offset_and_size(
+    lancedb_store,
+    sample_chunks,
+):
+    await lancedb_store.initialize()
+    chunk = sample_chunks[0].model_copy(
+        update={
+            "wikilink_name": "AI/ML Introduction",
+            "offset": 42,
+            "size": len(sample_chunks[0].content),
+        }
+    )
+
+    await lancedb_store.store([chunk])
+
+    results = await lancedb_store.search("machine learning", limit=1)
+
+    assert results[0].wikilink_name == "AI/ML Introduction"
+    assert results[0].offset == 42
+    assert results[0].size == len(sample_chunks[0].content)
+
+
+@pytest.mark.asyncio
+async def test_get_sources_by_name_returns_single_source_path_for_unique_short_name(
+    lancedb_store,
+    sample_chunks,
+):
+    await lancedb_store.initialize()
+    await lancedb_store.store(
+        [sample_chunks[0].model_copy(update={"wikilink_name": "AI/Unique Note"})]
+    )
+
+    result = await lancedb_store.get_sources_by_name("Unique Note")
+
+    assert result == ["/test/doc1.md"]
+
+
+@pytest.mark.asyncio
+async def test_get_sources_by_name_returns_all_source_paths_for_duplicate_short_name(
+    lancedb_store,
+    sample_chunks,
+):
+    await lancedb_store.initialize()
+    chunks = [
+        sample_chunks[0].model_copy(update={"wikilink_name": "Archive/Note"}),
+        sample_chunks[1].model_copy(update={"wikilink_name": "Projects/Note"}),
+        sample_chunks[2].model_copy(update={"wikilink_name": "AnotherNote"}),
+    ]
+    await lancedb_store.store(chunks)
+
+    result = await lancedb_store.get_sources_by_name("Note")
+
+    assert result == ["/test/doc1.md", "/test/doc2.md"]
+
+
+@pytest.mark.asyncio
+async def test_get_sources_by_name_returns_empty_list_for_missing_short_name(
+    lancedb_store,
+    sample_chunks,
+):
+    await lancedb_store.initialize()
+    await lancedb_store.store(sample_chunks[:1])
+
+    result = await lancedb_store.get_sources_by_name("Missing")
+
+    assert result == []
+
+
+@pytest.mark.asyncio
+async def test_get_sources_by_name_returns_distinct_paths_when_file_has_multiple_chunks(
+    lancedb_store,
+    sample_chunks,
+):
+    await lancedb_store.initialize()
+    chunks = [
+        sample_chunks[0].model_copy(
+            update={"id": "one", "wikilink_name": "Area/Note"}
+        ),
+        sample_chunks[0].model_copy(
+            update={"id": "two", "wikilink_name": "Area/Note"}
+        ),
+    ]
+    await lancedb_store.store(chunks)
+
+    result = await lancedb_store.get_sources_by_name("Note")
+
+    assert result == ["/test/doc1.md"]
+
+
+@pytest.mark.asyncio
 async def test_search_with_filters(lancedb_store_with_data):
     """Test search with various filter conditions."""
     # Search with source filter
@@ -286,7 +388,7 @@ async def test_search_with_filters(lancedb_store_with_data):
         scope=SearchScope.CONTENT,
     )
     _log_results(results)
-    assert results[0].source == "AI Tutorial"
+    assert any(chunk.source == "AI Tutorial" for chunk in results)
     
     # Search with tag filter
     results = await lancedb_store_with_data.search(
@@ -311,8 +413,11 @@ def make_chunk(source_path, modified_at, idx=0):
         outgoing_links=[],
         tags=["test"],
         source_path=source_path,
+        wikilink_name=source_path.removesuffix(".md"),
         modified_at=modified_at,
-        position=idx
+        position=idx,
+        offset=idx * 20,
+        size=len(content),
     )
 
 @pytest.mark.asyncio

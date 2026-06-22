@@ -18,8 +18,11 @@ def make_chunk(
         title=None,
         description=None,
         source_path=f"{id_}.md",
+        wikilink_name=id_,
         modified_at=datetime.now(UTC),
         position=0,
+        offset=0,
+        size=len(content),
     )
     if relevance_score is not None:
         object.__setattr__(chunk, "_relevance_score", relevance_score)

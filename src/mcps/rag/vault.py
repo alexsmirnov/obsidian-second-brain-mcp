@@ -367,7 +367,7 @@ class Vault(IVault):
             *[self._process_file(path) for path in files_to_add],
             return_exceptions=True,
         )
-        for path, result in zip(files_to_add, results):
+        for path, result in zip(files_to_add, results, strict=True):
             if isinstance(result, Exception):
                 logger.error("Failed to process file %s: %s", path, result)
         files_to_add.clear()
@@ -437,15 +437,19 @@ class Vault(IVault):
             logger.error(f"Search operation failed: {e}")
             raise RuntimeError(f"Failed to search vault: {e}") from e
     
-    async def get_file(self, file_name: str) -> str:
+    async def get_file(
+        self,
+        wikilink_name: str,
+        offset: int | None = None,
+        limit: int | None = None,
+    ) -> str:
         """
-        Get file content by its name without extension or partial path.
-        
-        This method searches for files matching the given name and returns
-        the content of the first match found.
+        Get file content by wikilink name.
         
         Args:
-            file_name: File name without extension or partial path
+            wikilink_name: Full relative wikilink name without extension.
+            offset: Start character offset in decoded text.
+            limit: Maximum character count in decoded text.
             
         Returns:
             Content of the matched file
@@ -457,45 +461,42 @@ class Vault(IVault):
         """
         if not self._initialized:
             raise NotInitializedError("Vault must be initialized before getting files")
-        
-        try:
-            logger.debug(f"Looking for file: {file_name}")
-            
-            file_name_lower = file_name.lower()
-            target_file = next(
-                (
-                    file_path
-                    for file_path in self.file_traversal.find_files()
-                    if (
-                        file_path.stem.lower() == file_name_lower
-                        or file_name_lower
-                        in file_path.relative_to(self.vault_path).as_posix().lower()
-                    )
-                ),
-                None
+
+        logger.debug(f"Looking for file: {wikilink_name}")
+        source_path = await self._resolve_source_path(wikilink_name)
+        target_file = self.vault_path / source_path
+        if not target_file.exists():
+            raise FileNotFoundError(f"No file found matching: {wikilink_name}")
+        logger.info(f"Found file: {source_path}")
+
+        content = target_file.read_text(encoding="utf-8", errors="replace")
+        return self._slice_content(content, offset, limit)
+
+    async def _resolve_source_path(self, wikilink_name: str) -> str:
+        if "/" in wikilink_name:
+            return f"{wikilink_name}.md"
+
+        source_paths = await self.vector_store.get_sources_by_name(wikilink_name)
+        if not source_paths:
+            raise FileNotFoundError(f"No file found matching: {wikilink_name}")
+        if len(source_paths) > 1:
+            raise ValueError(
+                f"Ambiguous wikilink name '{wikilink_name}'. Matches: "
+                f"{', '.join(source_paths)}"
             )
-            if target_file is None:
-                raise FileNotFoundError(f"No file found matching: {file_name}")
-            logger.info(f"Found file: {target_file.relative_to(self.vault_path)}")
-            
-            try:
-                content = target_file.read_text(encoding="utf-8")
-                return content
-            except UnicodeDecodeError:
-                # Try with error handling for problematic files
-                content = target_file.read_text(encoding="utf-8", errors="replace")
-                logger.warning(
-                    f"File {target_file} had encoding issues, "
-                    "some characters may be corrupted"
-                )
-                return content
-            
-        except FileNotFoundError:
-            raise
-        except Exception as e:
-            logger.error(f"Failed to get file {file_name}: {e}")
-            raise RuntimeError(f"Failed to get file: {e}") from e
-    
+        return source_paths[0]
+
+    @staticmethod
+    def _slice_content(
+        content: str,
+        offset: int | None,
+        limit: int | None,
+    ) -> str:
+        start = offset or 0
+        if limit is None:
+            return content[start:]
+        return content[start:start + limit]
+
     async def list_files(self, directory: str) -> list[str]:
         """
         List all files in a directory.

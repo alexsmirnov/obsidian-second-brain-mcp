@@ -36,6 +36,8 @@ class Document(BaseModel):
     metadata: Metadata
     tags: list[str] = Field(default_factory=list)  # Tags from frontmatter only
     source_path: str  # file path relative to vault root
+    wikilink_name: str # file name without extension
+    file_size: int # file size in characters
     modified_at: datetime
 
 
@@ -51,8 +53,11 @@ class Chunk(BaseModel):
     outgoing_links: list[str] = Field(default_factory=list)  # Wikilinks
     tags: list[str] = Field(default_factory=list)
     source_path: str  # file path relative to vault root
+    wikilink_name: str  # source path without .md, as used in Obsidian wikilinks
     modified_at: datetime
     position: int
+    offset: int
+    file_size: int
     embeddings: list[float] | None = None
 
     def __hash__(self) -> int:                      # hash/id only, it's primary key
@@ -207,6 +212,11 @@ class IVectorStore(ABC):
         """Get last updates to source documents."""
         pass
 
+    @abstractmethod
+    async def get_sources_by_name(self, wikilink_name: str) -> list[str]:
+        """Return source paths matching a wikilink note name."""
+        pass
+
 class ISearchEngine(ABC):
     """Interface for search operations."""
 
@@ -269,9 +279,13 @@ class IVault(ABC):
         pass
 
     @abstractmethod
-    async def get_file(self, file_name: str) -> str:
-        """get file content by its name without extension or partial path.
-        If multiple files match, return the first one found."""
+    async def get_file(
+        self,
+        file_name: str,
+        offset: int | None = None,
+        limit: int | None = None,
+    ) -> str:
+        """Get content by full relative wikilink name without .md extension."""
         pass
 
     @abstractmethod

@@ -7,6 +7,7 @@ from typing import Annotated, Any
 
 import httpx
 from fastmcp import Context, FastMCP
+from fastmcp.exceptions import ToolError
 from fastmcp.server.lifespan import Lifespan, lifespan
 from pydantic import BaseModel, Field
 
@@ -30,14 +31,13 @@ FolderPath = Annotated[
     ),
 ]
 
-FilePath = Annotated[
+WikilinkName = Annotated[
     str,
     Field(
         description=(
-            "Path to the file within the Obsidian Vault to retrieve content from. "
-            "Include the file extension (.md for markdown files). Examples: "
-            "'Meeting Notes.md', 'Projects/Web App/README.md', "
-            "'Daily Notes/2024-01-15.md'. Use forward slashes for path separation"
+            "File name used in [[Wikilinks]] to retrieve content from. "
+            "Exclude the file extension (.md) for markdown files. Examples: "
+            "'Meeting Notes', 'README', '2024-01-15'."
         ),
         min_length=1,
         max_length=500,
@@ -76,10 +76,10 @@ SearchQuery = Annotated[
     str,
     Field(
         description=(
-            "Search query to find relevant content within the Obsidian Vault. Use "
-            "natural language or specific terms to search for notes, concepts, "
-            "or information. Examples: 'machine learning algorithms', 'project "
-            "meeting notes', 'python debugging tips'"
+            "Natural language search query describing what to find in the user's "
+            "notes. Can be a topic, concept, question, or keywords. Examples: "
+            "'machine learning algorithms', 'meeting notes about Q3 roadmap', "
+            "'python debugging tips', 'what I know about distributed systems'"
         ),
         min_length=1,
         max_length=500,
@@ -91,9 +91,10 @@ Tags = Annotated[
     Field(
         default=None,
         description=(
-            "List of tags to filter search results. All specified tags must be "
-            "present on a note for it to match. Examples: ['project', 'python'], "
-            "['meeting']"
+            "Optional list of tags to narrow results. Only notes with ALL "
+            "specified tags are returned. Use when the user mentions specific "
+            "categories or labels. Examples: ['project', 'python'], "
+            "['meeting', 'q3']"
         ),
     ),
 ]
@@ -103,11 +104,36 @@ PathFilter = Annotated[
     Field(
         default=None,
         description=(
-            "File path prefix to limit search scope. Only notes whose path "
-            "starts with this value are searched. Use forward slashes for path "
-            "separation. Examples: 'Projects/', 'Daily Notes/2024/'"
+            "Optional folder path prefix to limit search scope. Use when the "
+            "user specifies a particular section or folder of their vault. "
+            "Examples: 'Projects/', 'Daily Notes/2024/', 'Research/'"
         ),
         max_length=500,
+    ),
+]
+
+ReadOffset = Annotated[
+    int | None,
+    Field(
+        default=None,
+        description=(
+            "Optional decoded character offset to start reading from. Use offsets "
+            "returned by obsidian_search chunk results when reading a specific "
+            "section. Must be greater than or equal to 0."
+        ),
+        ge=0,
+    ),
+]
+
+ReadLimit = Annotated[
+    int | None,
+    Field(
+        default=None,
+        description=(
+            "Optional maximum number of decoded characters to return from the "
+            "requested note. Must be greater than or equal to 0."
+        ),
+        ge=0,
     ),
 ]
 
@@ -120,6 +146,9 @@ class SearchResultItem(BaseModel):
     content: str
     tags: list[str]
     source_path: str
+    wikilink_name: str
+    offset: int
+    file_size: int
 
 
 def build_obsidian_lifespan(config: ServerConfig) -> Lifespan:
@@ -182,7 +211,15 @@ def register_tools(mcp: FastMCP) -> None:
         search,
         name="obsidian_search",
         description=(
-            "Search for content within the Obsidian Vault using semantic search"
+            "Search the user's personal knowledge base (Obsidian Vault) to find "
+            "notes, ideas, and information they have previously written or saved. "
+            "Use this tool when the user asks what they know about a topic, wants "
+            "to recall something they wrote, asks to find or look up their notes "
+            "on a subject, refers to their knowledge base or vault, or asks "
+            "'do I have anything on...' / 'what did I write about...'. Returns "
+            "relevant note excerpts ranked by relevance. Does NOT list files or "
+            "read a specific file by path — use obsidian_list_files or "
+            "obsidian_get_content for those."
         ),
     )
 
@@ -208,23 +245,27 @@ async def list_files(folder_path: FolderPath, ctx: Context) -> str:
         return f"Error listing files in {folder_path}: {e!s}"
 
 
-async def get_file_content(file_path: FilePath, ctx: Context) -> str:
-    """Gets the content of a file within the Obsidian Vault."""
+async def get_file_content(
+    wikilink_name: WikilinkName,
+    ctx: Context,
+    offset: ReadOffset = None,
+    limit: ReadLimit = None,
+) -> str:
+    """Gets note content by Obsidian wikilink name."""
+    logger.info(f"Getting content of Obsidian Vault file: {wikilink_name}")
+    invalid_message = _validate_content_read_request(wikilink_name, offset, limit)
+    if invalid_message is not None:
+        raise ToolError(invalid_message)
+
     try:
-        logger.info(f"Getting content of Obsidian Vault file: {file_path}")
-        file_name = file_path[:-3] if file_path.endswith(".md") else file_path
-        content = await _vault_from_context(ctx).get_file(file_name)
-
-        logger.info(f"Successfully retrieved content for {file_path}")
-        return content
-
-    except FileNotFoundError:
-        error_msg = f"File not found: {file_path}"
-        logger.warning(error_msg)
-        return error_msg
+        return await _vault_from_context(ctx).get_file(
+            wikilink_name,
+            offset=offset,
+            limit=limit,
+        )
     except Exception as e:
-        logger.error(f"Failed to get content for {file_path}: {e}")
-        return f"Error retrieving file content: {e!s}"
+        logger.error(f"Failed to get content for {wikilink_name}: {e}")
+        raise ToolError(str(e)) from e
 
 
 async def rename_move_note(
@@ -309,6 +350,9 @@ async def search(
                 content=c.content,
                 tags=c.tags,
                 source_path=c.source_path,
+                wikilink_name=c.wikilink_name,
+                offset=c.offset,
+                file_size=c.file_size,
             )
             for c in chunks
         ]
@@ -324,6 +368,31 @@ def _vault_from_context(ctx: Context) -> IVault:
 
 def _config_from_context(ctx: Context) -> ServerConfig:
     return ctx.lifespan_context["obsidian_config"]
+
+
+def _validate_content_read_request(
+    wikilink_name: str,
+    offset: int | None,
+    limit: int | None,
+) -> str | None:
+    if offset is not None and offset < 0:
+        return "Invalid offset: must be greater than or equal to 0"
+    if limit is not None and limit < 0:
+        return "Invalid limit: must be greater than or equal to 0"
+    if _is_invalid_wikilink_name(wikilink_name):
+        return f"Invalid wikilink name: {wikilink_name}"
+    return None
+
+
+def _is_invalid_wikilink_name(wikilink_name: str) -> bool:
+    if not wikilink_name.strip():
+        return True
+    if wikilink_name.endswith(".md"):
+        return True
+    if "\\" in wikilink_name:
+        return True
+    path = Path(wikilink_name)
+    return path.is_absolute() or any(part in {"..", ""} for part in path.parts)
 
 
 async def _update_wikilinks(vault_path: Path, old_path: str, new_path: str) -> None:

@@ -65,9 +65,9 @@ Output: list of Markdoen files and directories
 get_file_content Tool ( read note from Obsidian Vault)
 
 Tool Name: get_file_content
-Argument: name (string, required) - full path or only name of requested note.
-Functionality: find file in Obsidian Vault by full or short name, return its content
-Output: Returns file as a string. If no such note found, return empty string
+Arguments: name (string, required) - Obsidian wikilink name without `.md`; offset (integer, optional) - decoded character offset; limit (integer, optional) - maximum decoded characters to return.
+Functionality: find file in Obsidian Vault by wikilink name only. Folder-qualified wikilinks like `Folder/Note` read exactly `{vault}/Folder/Note.md`. Short names resolve through indexed chunk metadata to unique source paths.
+Output: Returns note content as a string. Validation, not-found, and ambiguity failures are raised as tool errors.
 
 rename_move_note Tool (moves note in Obsidian Vault, preserve links)
 

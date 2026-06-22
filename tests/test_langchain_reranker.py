@@ -17,8 +17,11 @@ def make_chunk(id_: str, content: str) -> Chunk:
         title=None,
         description=None,
         source_path=f"{id_}.md",
+        wikilink_name=id_,
         modified_at=datetime.now(),
         position=0,
+        offset=0,
+        size=len(content),
     )
 
 
