@@ -190,20 +190,20 @@ class LanceDBStore(IVectorStore):
             )  # .distance_range(upper_bound=1000.0)
             query_builder = query_builder.nearest_to_text(query, columns=columns)
 
-            # Apply filters based on parameters
-            # Filter by tags if provided
+            # Apply filters: collect all predicates and issue a single .where()
+            # call, because chained .where() calls replace each other on the
+            # underlying async Rust query builder.
+            predicates: list[str] = []
             if tags:
-                tags_array = ",".join([f"'{self._escape_sql_string(t)}'" for t in tags])
-                query_builder = query_builder.where(
-                    f"array_has_all(tags, [{tags_array}])"
+                tags_array = ",".join(
+                    [f"'{self._escape_sql_string(t)}'" for t in tags]
                 )
-
-            # Filter by file path if provided
+                predicates.append(f"array_has_all(tags, [{tags_array}])")
             if file_path:
                 escaped_file_path = self._escape_sql_string(file_path)
-                query_builder = query_builder.where(
-                    f"source_path LIKE '{escaped_file_path}%'"
-                )
+                predicates.append(f"source_path LIKE '{escaped_file_path}%'")
+            if predicates:
+                query_builder = query_builder.where(" AND ".join(predicates))
 
             query_builder = query_builder.rerank(self.reranker)
             # Go!

@@ -213,7 +213,7 @@ async def test_search_returns_wikilink_name_offset_and_size_in_results():
             modified_at=datetime.now(UTC),
             position=0,
             offset=12,
-            size=7,
+            file_size=7,
         )
     ]
     ctx = cast(Context, FakeContext({"obsidian_vault": fake_vault}))
@@ -222,4 +222,4 @@ async def test_search_returns_wikilink_name_offset_and_size_in_results():
 
     assert results[0].wikilink_name == "Folder/Note"
     assert results[0].offset == 12
-    assert results[0].size == 7
+    assert results[0].file_size == 7

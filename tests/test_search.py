@@ -22,7 +22,7 @@ def make_chunk(
         modified_at=datetime.now(UTC),
         position=0,
         offset=0,
-        size=len(content),
+        file_size=len(content),
     )
     if relevance_score is not None:
         object.__setattr__(chunk, "_relevance_score", relevance_score)

@@ -49,11 +49,11 @@ def sample_chunks():
             outgoing_links=["artificial_intelligence"],
             tags=["machine-learning", "ai"],
             source_path="/test/doc1.md",
-            wikilink_name="/test/doc1",
+            wikilink_name="doc1",
             modified_at=base_time,
             position=0,
             offset=0,
-            size=77,
+            file_size=77,
         ),
         Chunk(
             id="chunk_2",
@@ -67,11 +67,11 @@ def sample_chunks():
             outgoing_links=["neural_networks"],
             tags=["deep-learning", "neural-networks"],
             source_path="/test/doc2.md",
-            wikilink_name="/test/doc2",
+            wikilink_name="doc2",
             modified_at=base_time,
             position=1,
             offset=0,
-            size=75,
+            file_size=75,
         ),
         Chunk(
             id="chunk_3",
@@ -85,11 +85,11 @@ def sample_chunks():
             outgoing_links=["language_models"],
             tags=["nlp", "language"],
             source_path="/test/doc3.md",
-            wikilink_name="/test/doc3",
+            wikilink_name="doc3",
             modified_at=base_time,
             position=0,
             offset=0,
-            size=78,
+            file_size=78,
         ),
         Chunk(
             id="chunk_4",
@@ -103,11 +103,11 @@ def sample_chunks():
             outgoing_links=["python", "data_science"],
             tags=["python", "programming"],
             source_path="/test/doc1.md",
-            wikilink_name="/test/doc1",
+            wikilink_name="doc1",
             modified_at=base_time,
             position=0,
             offset=0,
-            size=86,
+            file_size=86,
         ),
     ]
     return chunks
@@ -212,20 +212,21 @@ async def test_store_empty_chunks_list(lancedb_store):
 async def test_search(lancedb_store_with_data):
     """Test searching for chunks by query text."""
     # Basic search
-    results = await lancedb_store_with_data.search("machine learning")
+    results = await lancedb_store_with_data.search("learning")
     assert isinstance(results, list)
-    assert len(results) <= 5  # Default limit
+    assert len(results) == 4  # Default limit
     
     # Search with limit
-    results = await lancedb_store_with_data.search("machine learning", limit=2)
-    assert len(results) <= 2
+    results = await lancedb_store_with_data.search("learning", limit=2)
+    assert len(results) == 2
     
     # Search with where clause
     results = await lancedb_store_with_data.search(
-        "machine learning",
+        "learning",
         tags=["machine-learning"],
     )
     _log_results(results)
+    assert len(results) == 1
     for chunk in results:
         assert "machine-learning" in chunk.tags
 
@@ -299,7 +300,7 @@ async def test_store_and_search_preserves_wikilink_name_offset_and_size(
         update={
             "wikilink_name": "AI/ML Introduction",
             "offset": 42,
-            "size": len(sample_chunks[0].content),
+            "file_size": len(sample_chunks[0].content),
         }
     )
 
@@ -309,7 +310,7 @@ async def test_store_and_search_preserves_wikilink_name_offset_and_size(
 
     assert results[0].wikilink_name == "AI/ML Introduction"
     assert results[0].offset == 42
-    assert results[0].size == len(sample_chunks[0].content)
+    assert results[0].file_size == len(sample_chunks[0].content)
 
 
 @pytest.mark.asyncio
@@ -319,7 +320,7 @@ async def test_get_sources_by_name_returns_single_source_path_for_unique_short_n
 ):
     await lancedb_store.initialize()
     await lancedb_store.store(
-        [sample_chunks[0].model_copy(update={"wikilink_name": "AI/Unique Note"})]
+        [sample_chunks[0].model_copy(update={"wikilink_name": "Unique Note"})]
     )
 
     result = await lancedb_store.get_sources_by_name("Unique Note")
@@ -334,8 +335,8 @@ async def test_get_sources_by_name_returns_all_source_paths_for_duplicate_short_
 ):
     await lancedb_store.initialize()
     chunks = [
-        sample_chunks[0].model_copy(update={"wikilink_name": "Archive/Note"}),
-        sample_chunks[1].model_copy(update={"wikilink_name": "Projects/Note"}),
+        sample_chunks[0].model_copy(update={"wikilink_name": "Note"}),
+        sample_chunks[1].model_copy(update={"wikilink_name": "Note"}),
         sample_chunks[2].model_copy(update={"wikilink_name": "AnotherNote"}),
     ]
     await lancedb_store.store(chunks)
@@ -366,10 +367,10 @@ async def test_get_sources_by_name_returns_distinct_paths_when_file_has_multiple
     await lancedb_store.initialize()
     chunks = [
         sample_chunks[0].model_copy(
-            update={"id": "one", "wikilink_name": "Area/Note"}
+            update={"id": "one", "wikilink_name": "Note"}
         ),
         sample_chunks[0].model_copy(
-            update={"id": "two", "wikilink_name": "Area/Note"}
+            update={"id": "two", "wikilink_name": "Note"}
         ),
     ]
     await lancedb_store.store(chunks)
@@ -389,15 +390,53 @@ async def test_search_with_filters(lancedb_store_with_data):
     )
     _log_results(results)
     assert any(chunk.source == "AI Tutorial" for chunk in results)
-    
+
     # Search with tag filter
     results = await lancedb_store_with_data.search(
-        "neural", 
+        "neural",
         tags=['neural-networks']
     )
-    
+
     for chunk in results:
         assert "neural-networks" in chunk.tags
+
+
+@pytest.mark.asyncio
+async def test_search_tags_and_path_both_applied(lancedb_store_with_data):
+    """Both tags and file_path filters must be ANDed, not the last one replacing the first.
+
+    Regression for: chained .where() calls on AsyncHybridQuery replacing each other.
+    chunk_1 has tags=["machine-learning", "ai"] at source_path=/test/doc1.md
+    chunk_2 has tags=["deep-learning", "neural-networks"] at source_path=/test/doc2.md
+    Querying tags=["machine-learning"] + file_path="/test/doc2" must return nothing
+    because no single chunk satisfies both constraints.
+    If the tags filter were silently dropped, chunk_2 would appear.
+    """
+    results = await lancedb_store_with_data.search(
+        "learning",
+        tags=["machine-learning"],   # only chunk_1 has this tag
+        file_path="/test/doc2",      # only chunk_2 is under this path
+    )
+    for chunk in results:
+        # Every result must satisfy the tags constraint
+        assert "machine-learning" in chunk.tags, (
+            f"Tags filter bypassed: chunk {chunk.id!r} returned "
+            f"without 'machine-learning' tag (tags={chunk.tags})"
+        )
+
+
+@pytest.mark.asyncio
+async def test_search_tags_filter_excludes_mismatched_tags(lancedb_store_with_data):
+    """A tags-only filter must exclude chunks that lack the requested tag."""
+    results = await lancedb_store_with_data.search(
+        "machine learning",
+        tags=["nlp"],   # only chunk_3 has this tag
+    )
+    for chunk in results:
+        assert "nlp" in chunk.tags, (
+            f"Tags filter returned chunk {chunk.id!r} without 'nlp' tag "
+            f"(tags={chunk.tags})"
+        )
 
 
 def make_chunk(source_path, modified_at, idx=0):
@@ -417,7 +456,7 @@ def make_chunk(source_path, modified_at, idx=0):
         modified_at=modified_at,
         position=idx,
         offset=idx * 20,
-        size=len(content),
+        file_size=len(content),
     )
 
 @pytest.mark.asyncio
