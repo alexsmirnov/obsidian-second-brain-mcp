@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-# ruff: noqa: E501, W291
+# ruff: noqa: E501
 import asyncio
 import logging
+from datetime import datetime
 from operator import add
 from typing import TYPE_CHECKING, Annotated, Any, Literal, TypedDict, cast
 from urllib.parse import urlparse
@@ -14,6 +15,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages as _add_messages
 from langgraph.types import Overwrite, Send
 from pydantic import BaseModel, Field
+
 from mcps.research.tools import SearchResult
 
 if TYPE_CHECKING:
@@ -23,10 +25,10 @@ if TYPE_CHECKING:
     from mcps.research.config import ResearchConfig
 
 __all__ = [
-    "create_deep_research_graph",
-    "ResearchAgent",
     "RawWebResult",
+    "ResearchAgent",
     "SummarizeSourceState",
+    "create_deep_research_graph",
 ]
 
 logger = logging.getLogger(__name__)
@@ -66,12 +68,14 @@ GOOD (short, orthogonal):
 Output: Return only 5 query strings.
 """
 _CLEAN_RESULT_PROMPT = """You extract evidence relevant to the user question and knowledge gap.
-Use broad relevance criteria, keep text even slyghtly related to the question.
+Use broad relevance criteria, keep text even slyghtly related to the question. Contradiction is also important information
+Include links that may contain related information
+Include facts, methods, and tools that does not explicitly related to question but support, or even contradict extracted facts
 Hard constraints:
 - Keep verbatim excerpts only. No summarization, no conclusions.
+- Keep verbatim excerpts. Do not summarize, but specifically extract sentences that contain exact quantitative metrics, software package names, mathematical assumptions, and specific methodological frameworks.
 - Remove boilerplate, ads, nav, comments, and completely unrelated text.
 - Never output conversational text (e.g., "Based on...", "Please provide...", "Here is...").
-- Ignore tool/error artifacts and placeholders.
 
 If relevant evidence exists, output one or more blocks in this exact format:
 - Source URL: [url]
@@ -81,7 +85,27 @@ If no relevant evidence exists in provided content, output exactly:
 NO_RELEVANT_EVIDENCE
 """
 
-_REFLECTION_PROMPT = """Analyze gathered research for correctness, sufficiency, and source quality.
+_FAILURE_RECOVERY_PROMPT = """You are an autonomous web research agent tasked to fill a specific information gap.
+
+You will be given the User's core Question and Knowledge Gap, along with a list of target URLs that may contain required information.
+
+CRITICAL INSTRUCTIONS:
+1. MANDATORY FETCH: Do not rely on your internal training knowledge base to guess the website's contents.
+2. DISCOVERY LOGIC: For each URL, read the web page and extract raw, verbatim evidence that answers or relates to the User's question and knowledge gap. Use a broad criteria for relevance. Keep verbatim excerpts. Do not summarize, but specifically extract sentences that contain exact quantitative metrics, software package names, mathematical assumptions, and specific methodological frameworks.
+3. HANDLING TRAPS/FAILURES: If the URL is behind a hard login wall, completely blank, or returns an explicit error page even through your tool, omit it from the final result. Do not invent contents for a page you cannot see.
+
+OUTPUT FORMAT REQUIREMENTS:
+If relevant evidence present on web page, format your entire response into one or more blocks matching this exact schema:
+- Source URL: [insert exact fetched url]
+- Content: [verbatim relevant excerpt extracted from the tool's page payload]
+
+If no relevant evidence can be extracted from any of the recovered URLs, your entire final response must be exactly:
+NO_RELEVANT_EVIDENCE
+
+Important: Never output any conversational filler (e.g., "I have fetched the pages for you...", "According to the tool..."). Output only the matching evidence blocks or the exact fallback phrase.
+"""
+
+_REFLECTION_PROMPT = f"""Analyze gathered research for correctness, sufficiency, and source quality.
 
 Source tiers:
 - Tier 1: official documentation, primary records, peer-reviewed papers, official archives.
@@ -89,37 +113,64 @@ Source tiers:
 - Tier 3: general summaries and tertiary sources.
 
 Sufficiency gate (strict):
-- Do not set is_sufficient=True unless the core claim is directly supported.
+- Do not set is_sufficient=True if core empirical metrics, specific software library names, or mathematical assumptions requested in the prompt are still missing. Once these specific technical constraints are met, you may mark it sufficient.
 - If the user requested required source/time/version constraints, do not set is_sufficient=True until those constraints are verified in evidence.
 - If evidence is conflicting, unresolved, or mostly NO_RELEVANT_EVIDENCE, set is_sufficient=False.
 - For self-contained logic/math questions, it is acceptable to set is_sufficient=True with rigorous derivation even when web sources are weak.
 
 Best-effort policy:
 - When constraints cannot be fully met, continue with follow-up queries and produce best-effort findings, explicitly stating uncertainty.
-
+Current date:
+Today is {datetime.now().strftime("%A, %B %d, %Y")}. Consider it for time sensitive questions.
 Output requirements:
 - findings_summary must include all supporting evidence snippets grouped by tier and explicit conflict notes.
 - relevant_links should include only URLs actually used as evidence.
 - knowledge_gap must be concrete and actionable.
-- follow_ups must be SHORT keyword queries (2-5 words each).
+- follow_ups must be web search queries or exact URLs for direct fetch.
   Target ONE unresolved gap per query. Never combine multiple concepts.
-  BAD: "official documentation for X Y Z integration compatibility"
-  GOOD: "X Y compatibility", "Z integration docs"
-  Or contain exact URLs for direct fetch.
+
+Web Search Query Hard rules:
+1) Each query MUST be 2-5 keywords. Never exceed 6 words.
+2) Each query must include at least one named entity from the question.
+3) Queries must be orthogonal — each targets a DIFFERENT facet:
+   - Facet 1: core entity + primary attribute
+   - Facet 2: core entity + secondary attribute or comparison
+   - Facet 3: related entity or alternative name
+   - Facet 4: official source or documentation
+   - Facet 5: specific data point or constraint from the question
+4) Preserve source/time constraints when present:
+   - Use site: filters for specified sources
+   - Include year when version matters
+5) Never produce natural language questions or compound noun phrases.
+
+BAD (too long, compound):
+  "ChatGPT Enterprise native Microsoft Purview DLP integration support"
+  "compare Copilot Microsoft 365 vs ChatGPT Enterprise security governance"
+
+GOOD (short, orthogonal):
+  "ChatGPT Enterprise DLP integration"
+  "Microsoft Purview ChatGPT"
+  "ChatGPT Enterprise security features"
+  "Copilot 365 data governance"
+  "ChatGPT Enterprise admin controls"
 """
 
 _FINALIZE_PROMPT = """Synthesize a final answer to the user's original question based on the research findings and sources gathered.
-The answer itself should be short exact response to the user's question without any explanation or source attribution. The explanation should provide a brief rationale of how the answer was derived from the research findings, including information that supported the answer and highlighting any key sources that informed the conclusion.
-For answer explanation, include a brief rationale of how the answer was derived from the research findings, include information that supported answer, highlighting any key sources that informed the conclusion.
+Provide concise answer and detailed explanation.
+The answer itself should be short exact response to the user's question without any explanation or source attribution.
+The explanation MUST comprehensively cover EVERY facet of the user's question. Do not summarize away complex methodological, technical, or quantitative details; include them explicitly. If the user asks about specific frameworks, mechanisms, limitations, or theories, ensure your explanation provides the exact detailed rationale and nuanced context found in the research.
+If there are multiply possible solution or conroversial information, also include it into explanation
 Guidelines:
- Accuracy: Ensure the answer is technically correct and directly addresses the user's question.
+ Accuracy: Ensure the answer is technically correct and directly addresses ALL parts of the user's question.
  Clarity: Write in a clear, concise manner. Directly answer the question without unnecessary preamble.
-Source Attribution: Explicitly reference the sources that support each part of the answer.
+ Traceability: In explanation, describe how the answer was derived, with verifiable evidence and logic
+Source Attribution: Explicitly reference the sources that support each part of the answer. Mark sources that may contradict provided answer
 If the answer includes code snippets, ensure they are well-formatted and tested against the gathered research
  Finalization checklist (mandatory before writing answer):
  - Verify requested answer format exactly (units, scale, rounding, casing, phrasing constraints).
  - Verify arithmetic and unit conversions explicitly.
  - Example: if question asks for answer in "thousands of hours", convert 17000 hours to 17.
+ - Address every single sub-question and implicit requirement in the prompt comprehensively.
  - Resolve source-constraint requirements where possible; if unresolved, provide best-effort answer with explicit uncertainty in explanation.
 """
 
@@ -225,6 +276,22 @@ def _is_valid_url(url):
         return all([result.scheme, result.netloc])
     except ValueError:
         return False
+
+
+def extract_text(response_content) -> str:
+    """Extract text from model response, handling Gemini's list-of-dicts format."""
+    if isinstance(response_content, str):
+        return response_content
+    if isinstance(response_content, list):
+        return "".join(
+            [
+                chunk.get("text", "")
+                for chunk in response_content
+                if isinstance(chunk, dict)
+            ]
+        )
+    return str(response_content)
+
 
 def create_deep_research_graph(config: ResearchConfig) -> CompiledStateGraph:
     """Build and compile the deep research StateGraph.
@@ -335,21 +402,86 @@ class ResearchAgent:
             "web_results": [f"Web search query: {query}\nResult:\n{clean_result}"],
         }
 
-    async def clean_result(self, results: list[SearchResult], fetch_results: list[str], question: str, knowledge_gap: str) -> str:
-        formatted_result = (
-            f"Search Query: {question}\n"
-            f"Knowledge Gaps: {knowledge_gap}\n\n"
-            "Raw Web Search Results:\n"
-            + "\n\n".join((f"Source: {sr.url}\nSnippet: {sr.snippet}\nContent: {fr}" for sr, fr in zip(results, fetch_results)))
+    async def clean_result(
+        self,
+        results: list[SearchResult],
+        fetch_results: list[str],
+        question: str,
+        knowledge_gap: str,
+    ) -> str:
+        success_results = [
+            f"Source URL: {sr.url}\nTitle:{sr.title}\nPage Sippet: {sr.snippet}\nCONTENT: {fr}"
+            for sr, fr in zip(results, fetch_results, strict=False)
+            if not fr.startswith("ERROR")
+        ]
+        failed_fetches = [
+            sr for sr, fr in zip(results, fetch_results, strict=False) if fr.startswith("ERROR")
+        ]
+        logger.info(
+            "Extract information from %d success and %d failed results. User question %.10s, knowledge gap: %.20s",
+            len(success_results),
+            len(failed_fetches),
+            question,
+            knowledge_gap,
         )
-        clean_result = (await self.config.fast.ainvoke(
-            [
-                SystemMessage(_CLEAN_RESULT_PROMPT),
-                HumanMessage(formatted_result),
-            ]
-        )).content
+        formatted_message = (
+            f"SEARCH QUERY: {question}\n"
+            f"KNOWLEDGE GAP: {knowledge_gap}\n" if knowledge_gap else ""
+            "Web Search results:\n"
+        )
+        if success_results:
+            response = await self.config.fast.ainvoke(
+                [
+                    SystemMessage(_CLEAN_RESULT_PROMPT),
+                    HumanMessage(formatted_message + "\n\n".join(success_results)),
+                ]
+            )
+            clean_fetch_result = extract_text(response.content)
+        else:
+            clean_fetch_result = "NO_RELEVANT_EVIDENCE"
+        if failed_fetches:
+            logger.info("Try to recover %d failed fetches", len(failed_fetches))
+            try:
+                grounded_model = self.config.fast.bind_tools(
+                    [{"url_context": {}}],
+                    tool_choice="any",
+                )
+                # Do not recover more than 4 failures, gemini model got confused
+                formatted_urls_block = "\n".join(
+                    [
+                        f"<target_url id='{i+1}'>{sr.url}</target_url>"
+                        for i, sr in enumerate(failed_fetches[:4])
+                    ]
+                )
+                user_payload = (
+                    f"USER QUESTION: {question}\n"
+                    f"KNOWLEDGE GAP: {knowledge_gap}\n" if knowledge_gap else ""
+                    f"<web_sources>\n{formatted_urls_block}\n</web_sources>"
+                )
+                response = await grounded_model.ainvoke(
+                    [
+                        SystemMessage(_FAILURE_RECOVERY_PROMPT),
+                        HumanMessage(user_payload),
+                    ]
+                )
+                metadata = response.response_metadata.get("grounding_metadata", {})
+                requested_urls = [
+                    chunk["web"]["uri"]
+                    for chunk in metadata.get("grounding_chunks", [])
+                    if chunk.get("web") and chunk["web"].get("uri")
+                ]
+                logger.info("Fall back recovery requested urls: %s", requested_urls)
+                fallback_result = extract_text(response.content)
+                logger.info("Fallback result: %.100s", fallback_result)
+                if clean_fetch_result.startswith("NO_RELEVANT_EVIDENCE"):
+                    clean_fetch_result = fallback_result
+                elif not fallback_result.startswith("NO_RELEVANT_EVIDENCE"):
+                    clean_fetch_result += "\n\n" + fallback_result
+            except Exception:
+                # Model does not support web content grounded - throws exception on bind tools
+                pass
 
-        return clean_result # type: ignore
+        return clean_fetch_result
 
 
     async def reflection(self, state: OverallState) -> dict[str, Any]:
@@ -370,7 +502,7 @@ class ResearchAgent:
         )
         result = cast(
             dict[str, Any],
-            await chain.ainvoke(state.get("messages", []) + [research_msg]),
+            await chain.ainvoke([*state.get("messages", []), research_msg]),
         )
         raw_message = result["raw"]
         parsed = cast(Reflection, result["parsed"])

@@ -9,11 +9,12 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any
 
 import httpx
 from langchain_core.language_models import BaseChatModel
+from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_openai import ChatOpenAI
+from pydantic import SecretStr
 
 from mcps.config import ServerConfig
 from mcps.research.tools import (
@@ -52,22 +53,27 @@ def _create_chat_model(
     router_key: str,
     http_client: httpx.AsyncClient | None = None,
 ) -> BaseChatModel:
-    """Instantiate an OpenAI-compatible router model.
+    """Instantiate a router-backed chat model.
 
+    Gemini models are instantiated the router URL
     Args:
-        model_name: Model identifier passed to ChatOpenAI.
-        router_url: Base URL of the litellm proxy (without /v1 suffix).
+        model_name: Model identifier (e.g. "gemini-flash", "gpt-4o").
+        router_url: Base URL of the litellm proxy
         router_key: Auth token for the litellm proxy.
-        http_client: Shared async httpx client for connection pooling.
+        http_client: Shared async httpx client for connection pooling
     """
-    kwargs: dict[str, Any] = {
-        "model": model_name,
-        "base_url": f"{router_url.rstrip('/')}/v1",
-        "api_key": router_key,
-    }
-    if http_client is not None:
-        kwargs["http_async_client"] = http_client
-    return ChatOpenAI(**kwargs)
+    if "gemini" in model_name:
+        return ChatGoogleGenerativeAI(
+            model=model_name,
+            base_url=router_url,
+            google_api_key=SecretStr(router_key),
+        )
+    return ChatOpenAI(
+        model=model_name,
+        base_url=router_url,
+        api_key=SecretStr(router_key),
+        http_async_client=http_client,
+    )
 
 
 def create_search_tool(

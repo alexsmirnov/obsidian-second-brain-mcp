@@ -7,7 +7,6 @@ optionally injected ``httpx.AsyncClient`` shared from FastMCP lifespan.
 
 from __future__ import annotations
 
-import asyncio
 import re
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -322,35 +321,13 @@ def _extract_arxiv_id(url: str) -> str | None:
     path_parts = [part for part in parsed.path.split("/") if part]
     if len(path_parts) < 2:
         return None
-    if path_parts[0] not in {"abs", "pdf"}:
+    if path_parts[0] not in {"abs", "pdf", "html"}:
         return None
     paper_id = path_parts[1]
     if paper_id.endswith(".pdf"):
         paper_id = paper_id[:-4]
     return paper_id or None
 
-
-def _latex_to_markdown(latex_source: str) -> str:
-    content = latex_source
-    replacements = {
-        r"\\section\{([^{}]+)\}": r"## \1",
-        r"\\subsection\{([^{}]+)\}": r"### \1",
-        r"\\subsubsection\{([^{}]+)\}": r"#### \1",
-        r"\\paragraph\{([^{}]+)\}": r"##### \1",
-        r"\\textbf\{([^{}]+)\}": r"**\1**",
-        r"\\emph\{([^{}]+)\}": r"*\1*",
-        r"\\item": "-",
-    }
-    for pattern, replacement in replacements.items():
-        content = re.sub(pattern, replacement, content)
-    content = re.sub(r"\\begin\{itemize\}|\\end\{itemize\}", "", content)
-    content = re.sub(r"\\begin\{enumerate\}|\\end\{enumerate\}", "", content)
-    command_pattern = (
-        r"\\[a-zA-Z*]+(?:\[[^\]]*\])?(?:\{[^{}]*\})?"
-    )
-    content = re.sub(command_pattern, "", content)
-    content = re.sub(r"\n{3,}", "\n\n", content)
-    return content.strip()
 
 
 async def _request_get(
@@ -378,18 +355,6 @@ def _to_error_message(error: Exception) -> str:
             return ERROR_HTTP_4XX
     return ERROR_UNSUPPORTED_CONTENT
 
-
-def _load_arxiv_source(arxiv_id: str) -> str:
-    from arxiv_to_prompt import process_latex_source
-
-    latex_source = process_latex_source(
-        arxiv_id,
-        keep_comments=False,
-        remove_appendix_section=True,
-    )
-    if not isinstance(latex_source, str):
-        raise TypeError("arxiv latex source is not a string")
-    return latex_source
 
 
 def _convert_pdf_to_markdown(pdf_bytes: bytes) -> str:
@@ -522,21 +487,40 @@ async def _fetch_wikipedia(
 async def _fetch_arxiv(
     url: str,
     *,
+    http_client: httpx.AsyncClient | None,
     max_chars: int,
 ) -> str:
     arxiv_id = _extract_arxiv_id(url)
     if arxiv_id is None:
-        return ERROR_UNSUPPORTED_CONTENT
-    try:
-        latex_source = _load_arxiv_source(arxiv_id)
-    except Exception:
-        return ERROR_UNSUPPORTED_CONTENT
-    if not latex_source.strip():
-        return ERROR_EMPTY_RESPONSE
-    markdown = _latex_to_markdown(latex_source)
-    if not markdown:
-        return ERROR_EMPTY_RESPONSE
-    return _format_source_output(url, markdown, max_chars)
+        return await _fetch_default(url, http_client=http_client, max_chars=max_chars)
+    attempt_urls = [
+        f"https://arxiv.org/html/{arxiv_id}",
+        f"https://arxiv.org/pdf/{arxiv_id}",
+        f"https://arxiv.org/abs/{arxiv_id}",
+    ]
+    last_error = ERROR_UNSUPPORTED_CONTENT
+    for attempt_url in attempt_urls:
+        try:
+            result = await _fetch_default(
+                attempt_url,
+                http_client=http_client,
+                max_chars=max_chars,
+            )
+        except (
+            httpx.TimeoutException,
+            httpx.HTTPStatusError,
+            httpx.HTTPError,
+        ) as error:
+            last_error = _to_error_message(error)
+            continue
+        except Exception:
+            last_error = ERROR_UNSUPPORTED_CONTENT
+            continue
+        if result.startswith("ERROR:"):
+            last_error = result
+            continue
+        return result
+    return last_error
 
 async def _fetch_reddit(
     url: str,
@@ -653,7 +637,9 @@ def create_fetch(
     async def fetch(url: str) -> str:
         try:
             if _is_arxiv_url(url):
-                return await _fetch_arxiv(url, max_chars=max_chars)
+                return await _fetch_arxiv(
+                    url, http_client=http_client, max_chars=max_chars
+                )
             if _is_wikipedia_url(url):
                 return await _fetch_wikipedia(
                     url,
