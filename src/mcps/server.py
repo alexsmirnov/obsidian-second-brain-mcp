@@ -109,7 +109,12 @@ class DevAutomationServer:
         @self.mcp.tool(name="web_research", description=_WEB_RESEARCH_DESCRIPTION)
         async def web_research(query: str, ctx: Context) -> ResearchResponse:
             researcher = ctx.lifespan_context["researcher"]
-            return await researcher(query)
+
+            async def _report(message: str, progress: float, total: float | None) -> None:
+                await ctx.info(message)
+                await ctx.report_progress(progress, total)
+
+            return await researcher(query, progress=_report)
 
         if self.config.vault_dir:
             obsidian_vault.register_tools(self.mcp)

@@ -11,8 +11,8 @@ import httpx
 import pytest
 
 from mcps.config import ServerConfig, create_config
-from mcps.tools.research.agent import create_researcher
-from mcps.tools.research.config import (
+from mcps.research.agent import create_researcher
+from mcps.research.config import (
     ResearchConfig,
     build_research_config,
 )
@@ -163,6 +163,72 @@ class TestAgentContract:
         assert isinstance(result["answer"], str)
         assert isinstance(result["explanation"], str)
         assert isinstance(result["sources"], list)
+
+
+# ---------------------------------------------------------------------------
+# Progress reporter contract tests
+# ---------------------------------------------------------------------------
+
+
+class TestProgressReporterContract:
+    @pytest.fixture
+    def mock_config(self):
+        server_config = ServerConfig(
+            litellm_router="http://localhost:4000",
+            litellm_router_key="sk-test",
+        )
+        return build_research_config(
+            server_config,
+            http_client=httpx.AsyncClient(),
+        )
+
+    @pytest.mark.asyncio
+    async def test_agent_wraps_progress_in_config_for_ainvoke(self, mock_config):
+        """__call__ builds config dict from progress callback and forwards it to graph.ainvoke."""
+        from unittest.mock import patch
+
+        researcher = create_researcher(mock_config, implementation="deep_research")
+        agent_graph = researcher.graph
+
+        captured: dict[str, Any] = {}
+
+        async def mock_invoke(_input, **kwargs):
+            captured.update(kwargs)
+            return {
+                "answer": "42",
+                "explanation": "test",
+                "sources_gathered": [],
+            }
+
+        async def mock_reporter(message: str, progress: float, total: float | None) -> None:
+            pass
+
+        with patch.object(agent_graph, "ainvoke", side_effect=mock_invoke):
+            result = await researcher("query", progress=mock_reporter)
+
+        assert "config" in captured
+        assert captured["config"]["configurable"]["progress_reporter"] is mock_reporter
+        assert result["answer"] == "42"
+
+    @pytest.mark.asyncio
+    async def test_agent_call_without_config_still_works(self, mock_config):
+        """__call__ without config arg preserves original behavior."""
+        from unittest.mock import patch
+
+        researcher = create_researcher(mock_config, implementation="deep_research")
+        agent_graph = researcher.graph
+
+        async def mock_invoke(_input, **_kwargs):
+            return {
+                "answer": "ok",
+                "explanation": "",
+                "sources_gathered": [],
+            }
+
+        with patch.object(agent_graph, "ainvoke", side_effect=mock_invoke):
+            result = await researcher("bare query")
+
+        assert result["answer"] == "ok"
 
 
 # ---------------------------------------------------------------------------

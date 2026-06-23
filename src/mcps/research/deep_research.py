@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Annotated, Any, Literal, TypedDict, cast
 from urllib.parse import urlparse
 
 from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages as _add_messages
 from langgraph.types import Overwrite, Send
@@ -90,8 +91,8 @@ _FAILURE_RECOVERY_PROMPT = """You are an autonomous web research agent tasked to
 You will be given the User's core Question and Knowledge Gap, along with a list of target URLs that may contain required information.
 
 CRITICAL INSTRUCTIONS:
-1. DISCOVERY LOGIC: For each URL, read the web page and extract raw, verbatim evidence that answers or relates to the User's question and knowledge gap. Use a broad criteria for relevance. Keep verbatim excerpts. Do not summarize, but specifically extract sentences that contain exact quantitative metrics, software package names, mathematical assumptions, and specific methodological frameworks.
-2. HANDLING TRAPS/FAILURES: If the URL is behind a hard login wall, completely blank, or returns an explicit error page even through your tool, omit it from the final result. Do not invent contents for a page you cannot see.
+1. For each URL, read the web page and extract raw, verbatim evidence that answers or relates to the User's question and knowledge gap. Keep verbatim excerpts.
+2. If the URL is behind a hard login wall, completely blank, or returns an explicit error page even through your tool, omit it from the final result. Do not invent contents for a page you cannot see.
 
 OUTPUT FORMAT REQUIREMENTS:
 If relevant evidence present on web page, format your entire response into one or more blocks matching this exact schema:
@@ -350,8 +351,11 @@ class ResearchAgent:
 
         return builder.compile()
 
-    async def generate_query(self, state: Input) -> dict[str, Any]:
+    async def generate_query(self, state: Input, config: RunnableConfig) -> dict[str, Any]:
         """Generate initial search queries from the user's question."""
+        reporter = config.get("configurable", {}).get("progress_reporter")
+        if reporter:
+            await reporter("Generating search queries...", 0.0, None)
         chain = self.config.fast.with_structured_output(SearchQueryList)
         result: SearchQueryList = await chain.ainvoke(
             [
@@ -367,9 +371,12 @@ class ResearchAgent:
             "original_question": state["question"],
         }
 
-    async def web_research(self, state: WebSearchState) -> dict[str, Any]:
+    async def web_research(self, state: WebSearchState, config: RunnableConfig) -> dict[str, Any]:
         """Execute a single web search and return normalized raw results."""
         query = state["search_query"]
+        reporter = config.get("configurable", {}).get("progress_reporter")
+        if reporter:
+            await reporter("Searching", 0.0, None)
         # If query is a direct URL, fetch it directly and clean up without searching
         if _is_valid_url(query):
             logger.info("Direct URL fetch for query: %s", query)
@@ -486,9 +493,17 @@ class ResearchAgent:
         return clean_fetch_result
 
 
-    async def reflection(self, state: OverallState) -> dict[str, Any]:
+    async def reflection(self, state: OverallState, config: RunnableConfig) -> dict[str, Any]:
         """Evaluate research completeness and identify knowledge gaps."""
         loop_count = state.get("research_loop_count", 0) + 1
+        max_loops = float(state.get("max_research_loops", self.max_research_loops))
+        reporter = config.get("configurable", {}).get("progress_reporter")
+        if reporter:
+            await reporter(
+                f"Evaluating research (loop {loop_count}/{int(max_loops)})...",
+                float(loop_count),
+                max_loops,
+            )
         research_content = "\n\n".join(state.get("web_results", []))
         research_msg = HumanMessage(
             content=(
@@ -531,8 +546,11 @@ class ResearchAgent:
             "summarized_findings": Overwrite(value=[]),
         }
 
-    async def finalize_answer(self, state: OverallState) -> dict[str, Any]:
+    async def finalize_answer(self, state: OverallState, config: RunnableConfig) -> dict[str, Any]:
         """Synthesise all gathered research into a final report."""
+        reporter = config.get("configurable", {}).get("progress_reporter")
+        if reporter:
+            await reporter("Synthesizing final answer...", 0.0, None)
         response = cast(
             Result,
             await self.config.small.with_structured_output(
@@ -582,10 +600,16 @@ class ResearchAgent:
             for i, q in enumerate(follow_ups)
         ]
 
-    async def __call__(self, input: str) -> ResearchResponse:
-        """Invoke the compiled graph and return the public response payload."""
+    async def __call__(
+        self, input: str, progress: Any | None = None
+    ) -> ResearchResponse:
+        """Invoke the compiled graph; forward optional progress reporter to all nodes."""
+        config: RunnableConfig | None = (
+            {"configurable": {"progress_reporter": progress}} if progress is not None else None
+        )
         result = await self.graph.ainvoke(
-            {"question": input, "max_research_loops": self.max_research_loops}
+            {"question": input, "max_research_loops": self.max_research_loops},
+            config=config,
         )
         return {
             "answer": result["answer"],
