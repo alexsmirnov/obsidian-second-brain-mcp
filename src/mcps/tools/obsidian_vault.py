@@ -87,7 +87,7 @@ SearchQuery = Annotated[
 ]
 
 Tags = Annotated[
-    list[str] | None,
+    list[str] ,
     Field(
         default=None,
         description=(
@@ -100,7 +100,7 @@ Tags = Annotated[
 ]
 
 PathFilter = Annotated[
-    str | None,
+    str ,
     Field(
         default=None,
         description=(
@@ -113,7 +113,7 @@ PathFilter = Annotated[
 ]
 
 ReadOffset = Annotated[
-    int | None,
+    int ,
     Field(
         default=None,
         description=(
@@ -126,7 +126,7 @@ ReadOffset = Annotated[
 ]
 
 ReadLimit = Annotated[
-    int | None,
+    int ,
     Field(
         default=None,
         description=(
@@ -248,8 +248,8 @@ async def list_files(folder_path: FolderPath, ctx: Context) -> str:
 async def get_file_content(
     wikilink_name: WikilinkName,
     ctx: Context,
-    offset: ReadOffset = None,
-    limit: ReadLimit = None,
+    offset: ReadOffset = None, # type: ignore
+    limit: ReadLimit = None, # type: ignore
 ) -> str:
     """Gets note content by Obsidian wikilink name."""
     logger.info(f"Getting content of Obsidian Vault file: {wikilink_name}")
@@ -333,8 +333,8 @@ async def rename_move_note(
 async def search(
     query: SearchQuery,
     ctx: Context,
-    tags: Tags = None,
-    path: PathFilter = None,
+    tags: Tags = None, # type: ignore
+    path: PathFilter = None, # type: ignore
 ) -> list[SearchResultItem]:
     """Search for content within the Obsidian Vault using semantic search."""
     try:
