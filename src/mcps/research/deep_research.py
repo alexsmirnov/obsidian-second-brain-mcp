@@ -90,9 +90,8 @@ _FAILURE_RECOVERY_PROMPT = """You are an autonomous web research agent tasked to
 You will be given the User's core Question and Knowledge Gap, along with a list of target URLs that may contain required information.
 
 CRITICAL INSTRUCTIONS:
-1. MANDATORY FETCH: Do not rely on your internal training knowledge base to guess the website's contents.
-2. DISCOVERY LOGIC: For each URL, read the web page and extract raw, verbatim evidence that answers or relates to the User's question and knowledge gap. Use a broad criteria for relevance. Keep verbatim excerpts. Do not summarize, but specifically extract sentences that contain exact quantitative metrics, software package names, mathematical assumptions, and specific methodological frameworks.
-3. HANDLING TRAPS/FAILURES: If the URL is behind a hard login wall, completely blank, or returns an explicit error page even through your tool, omit it from the final result. Do not invent contents for a page you cannot see.
+1. DISCOVERY LOGIC: For each URL, read the web page and extract raw, verbatim evidence that answers or relates to the User's question and knowledge gap. Use a broad criteria for relevance. Keep verbatim excerpts. Do not summarize, but specifically extract sentences that contain exact quantitative metrics, software package names, mathematical assumptions, and specific methodological frameworks.
+2. HANDLING TRAPS/FAILURES: If the URL is behind a hard login wall, completely blank, or returns an explicit error page even through your tool, omit it from the final result. Do not invent contents for a page you cannot see.
 
 OUTPUT FORMAT REQUIREMENTS:
 If relevant evidence present on web page, format your entire response into one or more blocks matching this exact schema:
@@ -424,9 +423,12 @@ class ResearchAgent:
             question,
             knowledge_gap,
         )
+        knowledge_gap_section = (
+            f"KNOWLEDGE GAP: {knowledge_gap}\n" if knowledge_gap else ""
+        )
         formatted_message = (
             f"SEARCH QUERY: {question}\n"
-            f"KNOWLEDGE GAP: {knowledge_gap}\n" if knowledge_gap else ""
+            f"{knowledge_gap_section}"
             "Web Search results:\n"
         )
         if success_results:
@@ -455,7 +457,7 @@ class ResearchAgent:
                 )
                 user_payload = (
                     f"USER QUESTION: {question}\n"
-                    f"KNOWLEDGE GAP: {knowledge_gap}\n" if knowledge_gap else ""
+                    f"{knowledge_gap_section}"
                     f"<web_sources>\n{formatted_urls_block}\n</web_sources>"
                 )
                 response = await grounded_model.ainvoke(
