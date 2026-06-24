@@ -471,7 +471,8 @@ class ResearchAgent:
                     [
                         SystemMessage(_FAILURE_RECOVERY_PROMPT),
                         HumanMessage(user_payload),
-                    ]
+                    ],
+                    thinking_config= { "thinking_budget": 0 }
                 )
                 metadata = response.response_metadata.get("grounding_metadata", {})
                 requested_urls = [
