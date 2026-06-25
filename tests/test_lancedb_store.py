@@ -314,6 +314,40 @@ async def test_store_and_search_preserves_wikilink_name_offset_and_size(
 
 
 @pytest.mark.asyncio
+async def test_get_chunks_by_ids_returns_matching_chunks(lancedb_store, sample_chunks):
+    await lancedb_store.initialize()
+    await lancedb_store.store(sample_chunks)
+
+    ids = [sample_chunks[0].id, sample_chunks[2].id]
+    result = await lancedb_store.get_chunks_by_ids(ids)
+
+    assert {chunk.id for chunk in result} == {sample_chunks[0].id, sample_chunks[2].id}
+
+
+@pytest.mark.asyncio
+async def test_get_chunks_by_ids_returns_empty_list_for_empty_input(
+    lancedb_store,
+):
+    await lancedb_store.initialize()
+
+    result = await lancedb_store.get_chunks_by_ids([])
+
+    assert result == []
+
+
+@pytest.mark.asyncio
+async def test_get_chunks_by_ids_escapes_special_characters(lancedb_store, sample_chunks):
+    await lancedb_store.initialize()
+    chunk_with_quote = sample_chunks[0].model_copy(update={"id": "chunk'o'malley"})
+    await lancedb_store.store([chunk_with_quote])
+
+    result = await lancedb_store.get_chunks_by_ids(["chunk'o'malley"])
+
+    assert len(result) == 1
+    assert result[0].id == "chunk'o'malley"
+
+
+@pytest.mark.asyncio
 async def test_get_sources_by_name_returns_single_source_path_for_unique_short_name(
     lancedb_store,
     sample_chunks,

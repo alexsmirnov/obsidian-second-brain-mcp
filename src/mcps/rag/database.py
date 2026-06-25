@@ -322,6 +322,31 @@ class LanceDBStore(IVectorStore):
             logger.error(f"Failed to fetch source updates from LanceDB: {e}")
             raise
 
+    async def get_chunks_by_ids(self, ids: list[str]) -> list[Chunk]:
+        """Return chunks whose id is in the provided list.
+
+        Args:
+            ids: List of chunk ids to fetch.
+
+        Returns:
+            list[Chunk]: Matching chunks. Missing ids are silently ignored.
+        """
+        if not self._initialized:
+            raise NotInitializedError(
+                "LanceDBStore is not initialized. Call await store.initialize() first."
+            )
+        if not ids:
+            return []
+        try:
+            id_list = ",".join(
+                [f"'{self._escape_sql_string(id_)}'" for id_ in ids]
+            )
+            rows = await self.table.query().where(f"id IN ({id_list})").to_list()
+            return [Chunk.model_validate(row) for row in rows]
+        except Exception as e:
+            logger.error(f"Failed to fetch chunks by ids from LanceDB: {e}")
+            raise
+
     async def get_sources_by_name(self, wikilink_name: str) -> list[str]:
         """Return distinct source paths matching an exact wikilink note name."""
         if not self._initialized:

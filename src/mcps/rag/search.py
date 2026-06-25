@@ -57,12 +57,14 @@ class SemanticSearchEngine(ISearchEngine):
         min_score: float = 0.5,
         hypothetical_document_generator: HypotheticalDocumentGenerator | None = None,
         reranker: IRerankingService | None = None,
+        neighbor_offset: int = 1,
     ) -> None:
         self.vector_store = vector_store
         self.limit = limit
         self.min_score = min_score
         self.hypothetical_document_generator = hypothetical_document_generator
         self.reranker = reranker
+        self.neighbor_offset = neighbor_offset
 
     async def search(self, query: SearchQuery) -> list[Chunk]:
         """Perform a semantic search operation."""
@@ -90,6 +92,8 @@ class SemanticSearchEngine(ISearchEngine):
                 logger.exception(
                     "Search result reranking failed; returning vector results"
                 )
+        if self.neighbor_offset > 0:
+            relevant_chunks = await self._merge_with_neighbors(relevant_chunks)
         logger.info(
             "Search completed: found %s relevant results out of %s total",
             len(relevant_chunks),
@@ -120,6 +124,150 @@ class SemanticSearchEngine(ISearchEngine):
             for chunk in chunks
             if getattr(chunk, "_relevance_score", 1.0) >= self.min_score
         ]
+
+    async def _merge_with_neighbors(self, chunks: list[Chunk]) -> list[Chunk]:
+        """Expand each result chunk into its neighbor window and merge overlaps."""
+        windows_by_document = self._merged_windows_by_document(chunks)
+        if not windows_by_document:
+            return chunks
+        neighbor_map = await self._fetch_neighbors(windows_by_document)
+        return self._assemble_windows(chunks, windows_by_document, neighbor_map)
+
+    def _merged_windows_by_document(
+        self, chunks: list[Chunk]
+    ) -> dict[str, list[tuple[int, int]]]:
+        """Group each result's neighbor window per document, merging overlaps."""
+        raw_windows: dict[str, list[tuple[int, int]]] = {}
+        for chunk in chunks:
+            document_id = self._document_id(chunk.id)
+            start = max(0, chunk.position - self.neighbor_offset)
+            end = chunk.position + self.neighbor_offset
+            raw_windows.setdefault(document_id, []).append((start, end))
+        return {
+            document_id: self._merge_overlapping_windows(windows)
+            for document_id, windows in raw_windows.items()
+        }
+
+    async def _fetch_neighbors(
+        self, windows_by_document: dict[str, list[tuple[int, int]]]
+    ) -> dict[str, Chunk]:
+        """Fetch every chunk covered by the merged windows, keyed by id.
+        """
+        neighbor_ids = [
+            f"{document_id}_{position}"
+            for document_id in sorted(windows_by_document)
+            for start, end in windows_by_document[document_id]
+            for position in range(start, end + 1)
+        ]
+        neighbors = await self.vector_store.get_chunks_by_ids(neighbor_ids)
+        return {chunk.id: chunk for chunk in neighbors}
+
+    def _assemble_windows(
+        self,
+        chunks: list[Chunk],
+        windows_by_document: dict[str, list[tuple[int, int]]],
+        neighbor_map: dict[str, Chunk],
+    ) -> list[Chunk]:
+        """Emit one merged chunk per window, in result relevance order."""
+        merged_results: list[Chunk] = []
+        seen_windows: set[tuple[str, tuple[int, int]]] = set()
+        for chunk in chunks:
+            document_id = self._document_id(chunk.id)
+            window = self._window_for_position(
+                windows_by_document[document_id], chunk.position
+            )
+            if window is None or (document_id, window) in seen_windows:
+                continue
+            merged = self._merge_window(document_id, window, neighbor_map)
+            if merged is None:
+                continue
+            seen_windows.add((document_id, window))
+            merged_results.append(merged)
+        return merged_results
+
+    @staticmethod
+    def _document_id(chunk_id: str) -> str:
+        """Strip the trailing position from a chunk id."""
+        return chunk_id.rsplit("_", 1)[0]
+
+    @staticmethod
+    def _merge_overlapping_windows(
+        windows: list[tuple[int, int]],
+    ) -> list[tuple[int, int]]:
+        """Merge overlapping or touching windows into continuous ranges."""
+        if not windows:
+            return []
+        sorted_windows = sorted(windows, key=lambda window: window[0])
+        merged = [list(sorted_windows[0])]
+        for start, end in sorted_windows[1:]:
+            last = merged[-1]
+            if start <= last[1] + 1:
+                last[1] = max(last[1], end)
+            else:
+                merged.append([start, end])
+        return [(start, end) for start, end in merged]
+
+    @staticmethod
+    def _window_for_position(
+        windows: list[tuple[int, int]], position: int
+    ) -> tuple[int, int] | None:
+        """Return the merged window containing the position, if any."""
+        for start, end in windows:
+            if start <= position <= end:
+                return (start, end)
+        return None
+
+    @classmethod
+    def _merge_window(
+        cls,
+        document_id: str,
+        window: tuple[int, int],
+        neighbor_map: dict[str, Chunk],
+    ) -> Chunk | None:
+        """Combine every fetched chunk inside a window into a single chunk."""
+        start, end = window
+        window_chunks = [
+            neighbor_map[chunk_id]
+            for position in range(start, end + 1)
+            if (chunk_id := f"{document_id}_{position}") in neighbor_map
+        ]
+        if not window_chunks:
+            return None
+        primary = window_chunks[0]
+        min_position = window_chunks[0].position
+        max_position = window_chunks[-1].position
+        content = "\n\n".join(chunk.content for chunk in window_chunks)
+        offset = min(chunk.offset for chunk in window_chunks)
+        tags = sorted({tag for chunk in window_chunks for tag in chunk.tags})
+        outgoing_links = sorted(
+            {link for chunk in window_chunks for link in chunk.outgoing_links}
+        )
+        relevance_score = max(
+            (
+                getattr(chunk, "_relevance_score", 0.0)
+                for chunk in window_chunks
+                if hasattr(chunk, "_relevance_score")
+            ),
+            default=None,
+        )
+        merged = Chunk(
+            id=f"{document_id}_{min_position}",
+            content=content,
+            title=primary.title,
+            description=primary.description,
+            source=primary.source,
+            outgoing_links=list(outgoing_links),
+            tags=list(tags),
+            source_path=primary.source_path,
+            wikilink_name=primary.wikilink_name,
+            modified_at=primary.modified_at,
+            position=min_position,
+            offset=offset,
+            file_size=primary.file_size,
+        )
+        if relevance_score is not None:
+            object.__setattr__(merged, "_relevance_score", relevance_score)
+        return merged
 
 
 class MarkdownResultFormatter(IResultFormatter):

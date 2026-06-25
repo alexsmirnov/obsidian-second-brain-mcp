@@ -2,6 +2,7 @@
 
 import hashlib
 import logging
+import os
 import re
 from collections.abc import Generator
 from datetime import datetime
@@ -86,27 +87,6 @@ def create_chunk(
         file_size=document.file_size,
     )
 
-
-def create_summary_chunk(document: Document, summary: str) -> Chunk:
-    """Create a whole-document summary chunk."""
-    summary_content = summary.strip()
-    return Chunk(
-        id=f"{document.id}_{SUMMARY_CHUNK_POSITION}",
-        content=summary_content,
-        title=document.metadata.title,
-        description=document.metadata.description,
-        source=document.metadata.source,
-        outgoing_links=extract_wikilinks(document.content),
-        tags=list(set(document.tags + extract_content_tags(document.content))),
-        source_path=document.source_path,
-        wikilink_name=document.wikilink_name,
-        modified_at=document.modified_at,
-        position=SUMMARY_CHUNK_POSITION,
-        offset=0,
-        file_size=document.file_size,
-    )
-
-
 logger = logging.getLogger("mcps.documents")
 
 default_skip_patterns = [
@@ -147,8 +127,19 @@ class MarkdownFileTraversal(IFileTraversal):
             yield from ()
 
         yield from (
-            path for path in self.base_path.rglob("*.md") if self._is_path_allowed(path)
+            self._find_files_recursive(self.base_path,'.md')
         )
+
+    def  _find_files_recursive(self,root_path: Path, extension: str) -> Generator[Path]:
+        for entry in os.scandir(root_path):
+            file_path = Path(entry.path)
+            if self._is_path_allowed(file_path) :
+                if entry.is_dir(follow_symlinks=False):
+                    # Recursively yield results from subdirectories
+                    yield from self._find_files_recursive(file_path, extension)
+                elif entry.is_file():
+                    if entry.name.endswith(extension):
+                            yield file_path
 
 
 class MarkdownProcessor(IDocumentProcessor):
@@ -267,7 +258,7 @@ class FixedSizeChunker(IChunker):
 class SemanticChunker(IChunker):
     """Semantic chunker that splits on markdown sections."""
 
-    def __init__(self, max_chunk_size: int = 4000, min_chunk_size: int = 1000):
+    def __init__(self, max_chunk_size: int = 1000, min_chunk_size: int = 250):
         self.max_chunk_size = max_chunk_size
         self.min_chunk_size = min_chunk_size
 

@@ -70,6 +70,9 @@ class FakeVectorStore(IVectorStore):
     async def get_sources_by_name(self, wikilink_name: str) -> list[str]:
         return []
 
+    async def get_chunks_by_ids(self, ids: list[str]) -> list[Chunk]:
+        return []
+
 
 class FakeSearchEngine(ISearchEngine):
     async def search(self, query: SearchQuery) -> list[Chunk]:

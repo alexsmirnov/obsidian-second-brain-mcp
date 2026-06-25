@@ -208,6 +208,11 @@ class IVectorStore(ABC):
         pass
 
     @abstractmethod
+    async def get_chunks_by_ids(self, ids: list[str]) -> list[Chunk]:
+        """Return chunks whose id is in the provided list."""
+        pass
+
+    @abstractmethod
     async def sources(self) -> dict[str, datetime]:
         """Get last updates to source documents."""
         pass

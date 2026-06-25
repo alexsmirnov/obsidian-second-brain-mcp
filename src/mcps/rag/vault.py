@@ -24,10 +24,11 @@ from mcps.rag.proxy_reranker import LiteLLMProxyReranker
 
 from .database import LanceDBStore
 from .document_processing import (
+    SUMMARY_CHUNK_POSITION,
     MarkdownFileTraversal,
     MarkdownProcessor,
     SemanticChunker,
-    create_summary_chunk,
+    create_chunk,
 )
 from .interfaces import (
     Chunk,
@@ -383,7 +384,7 @@ class Vault(IVault):
                         "Generated summary chunk for %s",
                         document.source_path,
                     )
-                    chunks = [create_summary_chunk(document, summary), *chunks]
+                    chunks = [create_chunk(document, summary,SUMMARY_CHUNK_POSITION), *chunks]
             except Exception as e:
                 logger.warning(
                     "Failed to generate summary chunk for %s: %s",
