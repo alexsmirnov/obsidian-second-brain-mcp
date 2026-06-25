@@ -20,7 +20,7 @@ from pydantic import SecretStr
 from mcps.config import ServerConfig
 from mcps.rag.embeddings import LangChainEmbeddingService
 from mcps.rag.llm_reranker import LlmReranker
-from mcps.rag.proxy_reranker import LiteLLMProxyReranker
+from mcps.rag.proxy_reranker import ProxyReranker
 
 from .database import LanceDBStore
 from .document_processing import (
@@ -96,7 +96,7 @@ def create_reranker(
         http_client: httpx.AsyncClient
     ) -> Reranker:
     if config.rag_reranker_model:
-        return LiteLLMProxyReranker(
+        return ProxyReranker(
             model_name=config.rag_reranker_model,
             proxy_url=config.litellm_router,
             api_key=config.litellm_router_key

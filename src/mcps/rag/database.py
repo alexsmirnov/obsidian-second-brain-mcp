@@ -247,6 +247,7 @@ class LanceDBStore(IVectorStore):
 
     async def reindex(
         self,
+        replace: bool = True
     ) -> None:
         """
         Create database indexes
@@ -262,36 +263,38 @@ class LanceDBStore(IVectorStore):
             await store.create_fts_index()
 
         """
-        replace: bool = True
         wait_time = timedelta(seconds=5)
-        for column in ["content", "title", "description"]:
+        await self.table.optimize(cleanup_older_than=wait_time,delete_unverified=True) 
+        if replace:
+
+            for column in ["content", "title", "description"]:
+                try:
+                    await self.table.create_index(
+                        column,
+                        config=FTS(base_tokenizer="simple"),
+                        replace=replace,
+                        wait_timeout=wait_time,
+                    )
+
+                except Exception as e:
+                    logger.error(f"Failed to create FTS index for column {column}: {e}")
+                    raise
+            try:
+                pass
+                # await self.table.create_index(
+                #     column="embeddings",
+                #     config=IvfPq()
+                # )
+            except Exception as e:
+                logger.error(f"Failed to create IvPf index for embeddings: {e}")
+                raise
             try:
                 await self.table.create_index(
-                    column,
-                    config=FTS(base_tokenizer="simple"),
-                    replace=replace,
-                    wait_timeout=wait_time,
+                    column="tags", config=LabelList(), wait_timeout=wait_time, replace=replace
                 )
-
             except Exception as e:
-                logger.error(f"Failed to create FTS index for column {column}: {e}")
+                logger.error(f"Failed to create list index for tags: {e}")
                 raise
-        try:
-            pass
-            # await self.table.create_index(
-            #     column="embeddings",
-            #     config=IvfPq()
-            # )
-        except Exception as e:
-            logger.error(f"Failed to create IvPf index for embeddings: {e}")
-            raise
-        try:
-            await self.table.create_index(
-                column="tags", config=LabelList(), wait_timeout=wait_time
-            )
-        except Exception as e:
-            logger.error(f"Failed to create list index for tags: {e}")
-            raise
         indices = await self.table.list_indices()
         logger.info([f"index {idx}," for idx in indices])
 

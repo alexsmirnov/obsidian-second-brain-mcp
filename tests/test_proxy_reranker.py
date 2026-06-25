@@ -10,6 +10,7 @@ import pytest
 from lancedb.rerankers import Reranker
 
 from mcps.config import ServerConfig, create_config
+from mcps.rag.proxy_reranker import ProxyReranker
 from mcps.rag.vault import create_reranker
 
 logger = logging.getLogger(__name__)
@@ -139,3 +140,55 @@ class TestProxyRerankerHybrid:
         assert isinstance(result, pa.Table)
         assert "_relevance_score" in result.column_names
         assert result.num_rows == 0
+
+
+class TestProxyRerankerPayload:
+    """Unit tests for request payload construction (no live router)."""
+
+    @staticmethod
+    def _capture_post(monkeypatch: pytest.MonkeyPatch) -> dict:
+        captured: dict = {}
+
+        class _Response:
+            def raise_for_status(self) -> None:
+                return None
+
+            def json(self) -> dict:
+                return {"results": []}
+
+        def fake_post(url: str, json: dict, headers: dict) -> _Response:
+            captured["url"] = url
+            captured["payload"] = json
+            captured["headers"] = headers
+            return _Response()
+
+        monkeypatch.setattr(
+            "mcps.rag.proxy_reranker.requests.post", fake_post
+        )
+        return captured
+
+    def test_documents_are_plain_strings_when_content_has_null(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        captured = self._capture_post(monkeypatch)
+        reranker = ProxyReranker(
+            model_name="rerank", api_key="key", proxy_url="http://router"
+        )
+        vector = pa.table(
+            {
+                "content": pa.array(["alpha", None], type=pa.string()),
+                "_rowid": pa.array([1, 2], type=pa.int64()),
+            }
+        )
+        fts = pa.table(
+            {
+                "content": pa.array(["beta"], type=pa.string()),
+                "_rowid": pa.array([3], type=pa.int64()),
+            }
+        )
+
+        reranker.rerank_hybrid("query", vector, fts)
+
+        documents = captured["payload"]["documents"]
+        assert documents
+        assert all(isinstance(document, str) for document in documents)
