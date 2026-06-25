@@ -274,6 +274,7 @@ class Vault(IVault):
                 logger.debug("Vault already initialized")
                 return
 
+            await self.update_index()
             self._initialized = True
             logger.info(
                 f"Vault {self.vault_path} initialization completed successfully"
