@@ -6,6 +6,7 @@ from pathlib import Path
 
 import httpx
 from fastmcp import Context, FastMCP
+from fastmcp.server.server import Transport
 
 # from mcp import ClientCapabilities, RootsCapability
 # from mcp.server.session import ServerSession
@@ -121,8 +122,13 @@ class DevAutomationServer:
 
         # prompts_module.setup_prompts(self.mcp, self.config)
 
-    async def start(self):
-        await self.mcp.run_async()
+    async def start(self, transport: Transport | None = None, host: str | None = None, port: int | None = None):
+        kwargs = {}
+        if host is not None:
+            kwargs["host"] = host
+        if port is not None:
+            kwargs["port"] = port
+        await self.mcp.run_async(transport=transport, **kwargs)
 
 
 def create_server(config: ServerConfig) -> DevAutomationServer:
@@ -153,6 +159,25 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--reindex",
         action="store_true",
         help="Re-index the vault and exit instead of starting the server",
+    )
+    parser.add_argument(
+        "--transport",
+        type=str,
+        default=None,
+        choices=["stdio", "http", "sse", "streamable-http"],
+        help="Transport protocol (default: stdio, or http if --host/--port is set)",
+    )
+    parser.add_argument(
+        "--host",
+        type=str,
+        default=None,
+        help="Host address to bind the HTTP server",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=None,
+        help="Port number to bind the HTTP server",
     )
     return parser.parse_args(argv)
 
@@ -200,8 +225,13 @@ def main(argv: list[str] | None = None) -> int:
             return 1
 
     setup_logging()
+
+    transport = args.transport
+    if transport is None and (args.host is not None or args.port is not None):
+        transport = "http"
+
     server = create_server(config)
-    asyncio.run(server.start())
+    asyncio.run(server.start(transport=transport, host=args.host, port=args.port))
     return 0
 
 
