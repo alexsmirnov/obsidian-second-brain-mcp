@@ -1,6 +1,6 @@
 # RAG System Design and Obsidian Integration
 
-FastMCP-based RAG pipeline for semantic search over Obsidian vaults. Uses interface-based dependency injection with hybrid search (vector + full-text) via LanceDB and LiteLLM Router-backed LangChain model adapters. #rag #obsidian #search #architecture
+FastMCP-based RAG pipeline for semantic search over Obsidian vaults. Uses interface-based dependency injection with hybrid search (vector + full-text) via LanceDB and OpenAI-compatible model router-backed LangChain model adapters. #rag #obsidian #search #architecture
 
 ## Overview
 
@@ -8,7 +8,7 @@ The RAG system provides semantic search capabilities optimized for Obsidian vaul
 
 - **Hybrid search** combining vector similarity and full-text search
 - **Obsidian-native** wikilink extraction, hashtag parsing, YAML frontmatter
-- **Provider-neutral model access** through LangChain interfaces and LiteLLM Router
+- **Provider-neutral model access** through LangChain interfaces and an OpenAI-compatible model router
 - **Incremental indexing** with file change detection
 
 ## System Architecture #architecture
@@ -189,12 +189,12 @@ Implementation: [database.py:231-279](../src/mcps/rag/database.py#L231-L279)
 
 ## Embedding Model Configuration #config
 
-RAG uses `LangChainEmbeddingService` over the provider-neutral LangChain `Embeddings` interface. Provider-specific adapter construction happens outside `src/mcps/rag` in [obsidian_models.py](../src/mcps/tools/obsidian_models.py) and points to LiteLLM Router.
+RAG uses `LangChainEmbeddingService` over the provider-neutral LangChain `Embeddings` interface. Provider-specific adapter construction happens outside `src/mcps/rag` in [obsidian_models.py](../src/mcps/tools/obsidian_models.py) and points to the OpenAI-compatible model router.
 
 | Config | Purpose | Default |
 |--------|---------|---------|
-| `rag_embedding_model` | LiteLLM Router embedding model name | `text-embedding-3-small` |
-| `rag_embedding_dimensions` | LanceDB embedding vector dimension | `1536` |
+| `rag_embedding_model` | Model router embedding model name | `""` |
+| `rag_embedding_dimensions` | LanceDB embedding vector dimension | `0` |
 
 Implementation: [embeddings.py](../src/mcps/rag/embeddings.py)
 Factory boundary: [obsidian_models.py](../src/mcps/tools/obsidian_models.py)
@@ -220,7 +220,7 @@ Factory boundary: [obsidian_vault.py](../src/mcps/tools/obsidian_vault.py)
 ```
 Obsidian lifespan
     ├── shared httpx.AsyncClient
-    ├── build_obsidian_model_config → LangChain adapters via LiteLLM Router
+    ├── build_obsidian_model_config → LangChain adapters via model router
     ├── LangChainEmbeddingService → LanceDBStore
     ├── optional LangChainReranker → SemanticSearchEngine
     └── create_vault → Vault
@@ -291,9 +291,9 @@ If HyDE generation or search-level reranking fails, search logs the error and re
 | `vault_dir` | - | Path to Obsidian vault |
 | `table_name` | `"documents"` | LanceDB table name |
 | `max_chunk_size` | `4000` | Max content in results |
-| `search_limit` | `20` | Max results returned |
-| `rag_embedding_model` | `"text-embedding-3-small"` | LiteLLM Router embedding model |
-| `rag_embedding_dimensions` | `1536` | LanceDB vector dimension |
+| `search_limit` | `30` | Max results returned |
+| `rag_embedding_model` | `""` | Model router embedding model |
+| `rag_embedding_dimensions` | `0` | LanceDB vector dimension |
 | `rag_infer_model` | `""` | Optional search-level HyDE and structured reranking model |
 | `rag_reranker_model` | `""` | Optional DB-level LanceDB reranker model |
 

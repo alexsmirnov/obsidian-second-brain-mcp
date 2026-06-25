@@ -118,7 +118,7 @@ Core dependencies [pyproject.toml:10-20](../pyproject.toml#L10-L20):
 External API services required for full functionality:
 
 **Required**:
-- LiteLLM Router for model and embedding access
+- OpenAI-compatible model router for model and embedding access
 
 **Optional**:
 - Serper API (web search tool)

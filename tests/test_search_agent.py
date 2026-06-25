@@ -13,9 +13,10 @@ from mcps.rag.search_agent import SearchAgent
 
 def _make_chunk(id_: str, title: str | None = None) -> Chunk:
     """Return a minimal valid Chunk instance for tests."""
+    content = f"content-{id_}"
     return Chunk(
         id=id_,
-        content=f"content-{id_}",
+        content=content,
         title=title,
         description=None,
         outgoing_links=[],
@@ -25,7 +26,8 @@ def _make_chunk(id_: str, title: str | None = None) -> Chunk:
         modified_at=datetime.now(UTC),
         position=0,
         offset=0,
-        size=len(f"content-{id_}"),
+        size=len(content),
+        file_size=len(content),
     )
 
 

@@ -21,8 +21,8 @@ def test_create_summary_generator_without_rag_infer_model_returns_none() -> None
 def test_create_summary_generator_with_rag_infer_model_wires_chat_model() -> None:
     config = ServerConfig(
         rag_infer_model="summary-model",
-        litellm_router="http://router",
-        litellm_router_key="token",
+        router_api_base="http://router",
+        router_api_key="token",
     )
     http_client = MagicMock()
     chat_instance = MagicMock()

@@ -58,8 +58,8 @@ def _create_chat_model(
     Gemini models are instantiated the router URL
     Args:
         model_name: Model identifier (e.g. "gemini-flash", "gpt-4o").
-        router_url: Base URL of the litellm proxy
-        router_key: Auth token for the litellm proxy.
+        router_url: Base URL of the OpenAI-compatible model router.
+        router_key: Auth token for the model router.
         http_client: Shared async httpx client for connection pooling
     """
     if "gemini" in model_name:
@@ -116,14 +116,14 @@ def build_research_config(
     return ResearchConfig(
         fast=_create_chat_model(
             model_name=config.research_fast_model,
-            router_url=config.litellm_router,
-            router_key=config.litellm_router_key,
+            router_url=config.router_api_base,
+            router_key=config.router_api_key,
             http_client=http_client,
         ),
         small=_create_chat_model(
             model_name=config.research_infer_model,
-            router_url=config.litellm_router,
-            router_key=config.litellm_router_key,
+            router_url=config.router_api_base,
+            router_key=config.router_api_key,
             http_client=http_client,
         ),
         search=create_search_tool(config=config, http_client=http_client),

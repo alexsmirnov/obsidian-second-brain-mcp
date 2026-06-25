@@ -30,8 +30,8 @@ async def async_client() -> AsyncIterator[httpx.AsyncClient]:
 @pytest.fixture
 def server_config() -> ServerConfig:
     server_config = create_config()
-    if not server_config.litellm_router or not server_config.litellm_router_key:
-        pytest.skip("LITELLM router is not configured")
+    if not server_config.router_api_base or not server_config.router_api_key:
+        pytest.skip("ROUTER_API_BASE / ROUTER_API_KEY are not configured")
     return server_config
 
 

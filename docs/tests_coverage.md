@@ -83,7 +83,7 @@ Tests for provider-neutral async LangChain reranking.
 - Invalid score handling
 
 ### [tests/test_obsidian_model_config.py](../tests/test_obsidian_model_config.py)
-Tests for LiteLLM Router model adapter construction outside RAG.
+Tests for OpenAI-compatible model router adapter construction outside RAG.
 
 **Coverage**:
 - Router URL/key usage
@@ -157,7 +157,7 @@ Helper functions create test data:
 
 ### Integration Points
 - LanceDB database operations
-- LiteLLM Router model adapter construction
+- Model router adapter construction
 - Shared `httpx.AsyncClient` injection
 - RAG provider-import boundary enforcement
 

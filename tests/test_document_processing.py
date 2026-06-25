@@ -19,7 +19,6 @@ from mcps.rag.document_processing import (
     SUMMARY_CHUNK_POSITION,
     SemanticChunker,
     create_chunk,
-    create_summary_chunk,
     default_skip_patterns,
     extract_content_tags,
     extract_wikilinks,
@@ -385,10 +384,12 @@ Invalid tags: # (space after hash), #-invalid (starts with hyphen).
             metadata=Metadata(title="Note", description="Description", source="source"),
             tags=["frontmatter"],
             source_path="folder/note.md",
+            wikilink_name="folder/note",
+            file_size=len("Note content"),
             modified_at=datetime(2024, 1, 2, 3, 4, 5),
         )
 
-        chunk = create_summary_chunk(document, "Summary content")
+        chunk = create_chunk(document, "Summary content", SUMMARY_CHUNK_POSITION)
 
         assert chunk.position == SUMMARY_CHUNK_POSITION
         assert chunk.id == f"{document.id}_{SUMMARY_CHUNK_POSITION}"
@@ -405,12 +406,15 @@ Invalid tags: # (space after hash), #-invalid (starts with hyphen).
             metadata=Metadata(title="Note", description="Description", source="source"),
             tags=["frontmatter", "yaml-only"],
             source_path="folder/note.md",
+            wikilink_name="folder/note",
+            file_size=0,
             modified_at=datetime(2024, 1, 2, 3, 4, 5),
         )
 
-        chunk = create_summary_chunk(
+        chunk = create_chunk(
             document,
             "Generated summary without links or tags",
+            SUMMARY_CHUNK_POSITION,
         )
 
         assert set(chunk.outgoing_links) == {"Global Link", "Second Link"}
@@ -424,10 +428,12 @@ Invalid tags: # (space after hash), #-invalid (starts with hyphen).
             metadata=Metadata(title="Note", description="Description", source="source"),
             tags=["frontmatter"],
             source_path="folder/note.md",
+            wikilink_name="folder/note",
+            file_size=len("Note content"),
             modified_at=modified_at,
         )
 
-        chunk = create_summary_chunk(document, "\n  Summary content  \n")
+        chunk = create_chunk(document, "\n  Summary content  \n", SUMMARY_CHUNK_POSITION)
 
         assert chunk.content == "Summary content"
         assert chunk.title == "Note"
@@ -443,6 +449,8 @@ Invalid tags: # (space after hash), #-invalid (starts with hyphen).
             metadata=Metadata(title="Note", description="Description", source="source"),
             tags=[],
             source_path="folder/note.md",
+            wikilink_name="folder/note",
+            file_size=len("Note content"),
             modified_at=datetime(2024, 1, 2, 3, 4, 5),
         )
 
@@ -457,6 +465,8 @@ Invalid tags: # (space after hash), #-invalid (starts with hyphen).
             metadata=Metadata(title="Note", description="Description", source="source"),
             tags=[],
             source_path="note.md",
+            wikilink_name="note",
+            file_size=len("Intro\n\n  Stored content  "),
             modified_at=datetime(2024, 1, 2, 3, 4, 5),
         )
 
@@ -464,7 +474,7 @@ Invalid tags: # (space after hash), #-invalid (starts with hyphen).
 
         assert chunk.content == "Stored content"
         assert chunk.offset == 9
-        assert chunk.size == len("Stored content")
+        assert chunk.file_size == len("Stored content")
 
     def test_create_summary_chunk_sets_wikilink_name_zero_offset_and_summary_size(self):
         document = Document(
@@ -473,14 +483,16 @@ Invalid tags: # (space after hash), #-invalid (starts with hyphen).
             metadata=Metadata(title="Note", description="Description", source="source"),
             tags=[],
             source_path="folder/note.md",
+            wikilink_name="folder/note",
+            file_size=len("Note content"),
             modified_at=datetime(2024, 1, 2, 3, 4, 5),
         )
 
-        chunk = create_summary_chunk(document, "  Summary content  ")
+        chunk = create_chunk(document, "  Summary content  ", SUMMARY_CHUNK_POSITION)
 
         assert chunk.wikilink_name == "folder/note"
         assert chunk.offset == 0
-        assert chunk.size == len("Summary content")
+        assert chunk.file_size == len("Summary content")
 
     def test_fixed_size_chunker_preserves_character_offsets_in_chunks(self):
         document = Document(
@@ -489,6 +501,8 @@ Invalid tags: # (space after hash), #-invalid (starts with hyphen).
             metadata=Metadata(title="Note", description="Description", source="source"),
             tags=[],
             source_path="note.md",
+            wikilink_name="note",
+            file_size=len("alpha beta gamma delta"),
             modified_at=datetime(2024, 1, 2, 3, 4, 5),
         )
 
@@ -506,6 +520,8 @@ Invalid tags: # (space after hash), #-invalid (starts with hyphen).
             metadata=Metadata(title="Note", description="Description", source="source"),
             tags=[],
             source_path="note.md",
+            wikilink_name="note",
+            file_size=len("# Title\n\nIntro\n\n## Second\n\nBody"),
             modified_at=datetime(2024, 1, 2, 3, 4, 5),
         )
 

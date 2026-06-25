@@ -23,26 +23,26 @@ from mcps.research.config import (
 
 
 class TestServerConfigContract:
-    def test_config_has_litellm_router_field(self):
+    def test_config_has_router_api_base_field(self):
         config = ServerConfig()
-        assert hasattr(config, "litellm_router")
-        assert config.litellm_router == ""
+        assert hasattr(config, "router_api_base")
+        assert config.router_api_base == ""
 
-    def test_config_has_litellm_router_key_field(self):
+    def test_config_has_router_api_key_field(self):
         config = ServerConfig()
-        assert hasattr(config, "litellm_router_key")
-        assert config.litellm_router_key == ""
+        assert hasattr(config, "router_api_key")
+        assert config.router_api_key == ""
 
     def test_perplexity_api_key_removed(self):
         config = ServerConfig()
         assert not hasattr(config, "perplexity_api_key")
 
-    def test_create_config_reads_litellm_env_vars(self, monkeypatch):
-        monkeypatch.setenv("LITELLM_ROUTER", "http://localhost:4000")
-        monkeypatch.setenv("LITELLM_ROUTER_KEY", "sk-test123")
+    def test_create_config_reads_router_env_vars(self, monkeypatch):
+        monkeypatch.setenv("ROUTER_API_BASE", "http://localhost:4000")
+        monkeypatch.setenv("ROUTER_API_KEY", "sk-test123")
         config = create_config()
-        assert config.litellm_router == "http://localhost:4000"
-        assert config.litellm_router_key == "sk-test123"
+        assert config.router_api_base == "http://localhost:4000"
+        assert config.router_api_key == "sk-test123"
 
 
 # ---------------------------------------------------------------------------
@@ -53,8 +53,10 @@ class TestServerConfigContract:
 class TestResearchConfigContract:
     def test_build_research_config_returns_valid_config(self):
         server_config = ServerConfig(
-            litellm_router="http://localhost:4000",
-            litellm_router_key="sk-test",
+            router_api_base="http://localhost:4000",
+            router_api_key="sk-test",
+            research_fast_model="gemini-flash-lite",
+            research_infer_model="gemini-flash",
         )
         config = build_research_config(
             server_config,
@@ -68,8 +70,10 @@ class TestResearchConfigContract:
 
     def test_research_config_fields_are_callables(self):
         server_config = ServerConfig(
-            litellm_router="http://localhost:4000",
-            litellm_router_key="sk-test",
+            router_api_base="http://localhost:4000",
+            router_api_key="sk-test",
+            research_fast_model="gemini-flash-lite",
+            research_infer_model="gemini-flash",
         )
         config = build_research_config(
             server_config,
@@ -90,8 +94,10 @@ class TestAgentContract:
     @pytest.fixture
     def mock_config(self):
         server_config = ServerConfig(
-            litellm_router="http://localhost:4000",
-            litellm_router_key="sk-test",
+            router_api_base="http://localhost:4000",
+            router_api_key="sk-test",
+            research_fast_model="gemini-flash-lite",
+            research_infer_model="gemini-flash",
         )
         return build_research_config(
             server_config,
@@ -174,8 +180,10 @@ class TestProgressReporterContract:
     @pytest.fixture
     def mock_config(self):
         server_config = ServerConfig(
-            litellm_router="http://localhost:4000",
-            litellm_router_key="sk-test",
+            router_api_base="http://localhost:4000",
+            router_api_key="sk-test",
+            research_fast_model="gemini-flash-lite",
+            research_infer_model="gemini-flash",
         )
         return build_research_config(
             server_config,
@@ -242,8 +250,8 @@ class TestToolContract:
         """aiswe_research tool appears in server's registered tools."""
         from mcps.server import create_server
 
-        monkeypatch.setenv("LITELLM_ROUTER", "http://localhost:4000")
-        monkeypatch.setenv("LITELLM_ROUTER_KEY", "sk-test")
+        monkeypatch.setenv("ROUTER_API_BASE", "http://localhost:4000")
+        monkeypatch.setenv("ROUTER_API_KEY", "sk-test")
         config = create_config()
         server = create_server(config)
 

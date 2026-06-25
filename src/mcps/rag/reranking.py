@@ -84,7 +84,7 @@ class LangChainReranker(IRerankingService):
     @staticmethod
     def _create_user_prompt(query: str, chunks: list[Chunk]) -> str:
         documents = "\n\n".join(
-            f"ID: {chunk.id}\nContent:\n{chunk.content}"
+            f"ID: {chunk.id}\nTitle:{chunk.title or chunk.wikilink_name}\nDescription: {chunk.description}\nContent:\n{chunk.content}"
             for chunk in chunks
         )
         return f"""

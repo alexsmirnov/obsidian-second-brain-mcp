@@ -28,15 +28,15 @@ class TestLazyChunking:
                 "modified_at": datetime.now(),
                 "position": 0,
                 "offset": 0,
-                "size": 7,
+                "file_size": 7,
             }
         )
 
         assert chunk.wikilink_name == "Folder/Note"
         assert chunk.offset == 0
-        assert chunk.size == 7
+        assert chunk.file_size == 7
 
-    @pytest.mark.parametrize("missing_field", ["wikilink_name", "offset", "size"])
+    @pytest.mark.parametrize("missing_field", ["wikilink_name", "offset", "file_size"])
     def test_chunk_requires_wikilink_name_offset_and_size(self, missing_field):
         data = {
             "id": "chunk-1",
@@ -48,7 +48,7 @@ class TestLazyChunking:
             "modified_at": datetime.now(),
             "position": 0,
             "offset": 0,
-            "size": 7,
+            "file_size": 7,
         }
         data.pop(missing_field)
 
@@ -62,10 +62,12 @@ class TestLazyChunking:
             id="test_doc_123",
             content="# Test Document\n\nThis is a test document with multiple paragraphs.\n\n## Section 1\n\nFirst section content here.\n\n## Section 2\n\nSecond section with more content to test chunking behavior.",
             metadata=Metadata(title= "Test Document", description = "Test document for chunking"),
-            outgoing_links=["link1", "link2"],
             tags=["test", "document"],
             source_path="/tmp/test.md",
-            modified_at=datetime.now()
+            modified_at=datetime.now(),
+            file_size=0,
+            wikilink_name="test_doc_123",
+
         )
 
     @pytest.fixture
@@ -78,10 +80,11 @@ class TestLazyChunking:
             id="large_doc_456",
             content=content,
             metadata=Metadata(title= "Large Document", description = "A large document for testing chunking"),
-            outgoing_links=[],
             tags=["large", "test"],
             source_path="/tmp/large.md",
-            modified_at=datetime.now()
+            modified_at=datetime.now(),
+            file_size=0,
+            wikilink_name="test_doc_123",
         )
 
     @pytest.fixture
@@ -93,7 +96,9 @@ class TestLazyChunking:
             metadata=Metadata(title="Empty Document", description="An empty document for testing"),
             tags=[],
             source_path="/tmp/empty.md",
-            modified_at=datetime.now()
+            modified_at=datetime.now(),
+            file_size=0,
+            wikilink_name="test_doc_123",
         )
 
     @pytest.fixture
@@ -105,7 +110,9 @@ class TestLazyChunking:
             metadata=Metadata(title="Small Doc No Headers", description="Test small doc without headers"),
             tags=["small", "test"],
             source_path="/tmp/small.md",
-            modified_at=datetime.now()
+            modified_at=datetime.now(),
+            file_size=0,
+            wikilink_name="test_doc_123",
         )
 
     @pytest.fixture
@@ -117,7 +124,9 @@ class TestLazyChunking:
             metadata=Metadata(title="Small Doc One Header", description="Test small doc with one header"),
             tags=["small", "test"],
             source_path="/tmp/small_one.md",
-            modified_at=datetime.now()
+            modified_at=datetime.now(),
+            file_size=0,
+            wikilink_name="test_doc_123",
         )
 
     @pytest.fixture
@@ -129,7 +138,9 @@ class TestLazyChunking:
             metadata=Metadata(title="Small Doc Two Headers", description="Test small doc with two headers"),
             tags=["small", "test"],
             source_path="/tmp/small_two.md",
-            modified_at=datetime.now()
+            modified_at=datetime.now(),
+            file_size=0,
+            wikilink_name="test_doc_123",
         )
 
     def test_fixed_size_chunker_returns_generator(self, sample_document):

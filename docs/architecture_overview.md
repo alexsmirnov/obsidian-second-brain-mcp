@@ -14,9 +14,9 @@ FastMCP-based Model Context Protocol server with RAG capabilities for Obsidian v
 - **rank-bm25** - BM25 algorithm for keyword-based ranking
 
 ### AI Services
-- **LiteLLM Router** - Central model gateway for web research and Obsidian RAG models.
+- **OpenAI-compatible model router** - Central model gateway for web research and Obsidian RAG models.
 - **LangChain core interfaces** - Provider-neutral `BaseChatModel` and `Embeddings` contracts inside RAG.
-- **langchain-openai adapters** - OpenAI-compatible adapters outside RAG, configured against LiteLLM Router.
+- **langchain-openai adapters** - OpenAI-compatible adapters outside RAG, configured against the model router.
 
 ### Document Processing
 - **markdown v3.4.0** - Markdown parsing

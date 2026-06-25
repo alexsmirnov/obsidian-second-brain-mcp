@@ -76,8 +76,8 @@ def create_embeddings(
         config: ServerConfig,
         http_client: httpx.AsyncClient
     ) -> IEmbeddingService:
-    base_url = config.litellm_router
-    api_key = SecretStr(config.litellm_router_key)
+    base_url = config.router_api_base
+    api_key = SecretStr(config.router_api_key)
     embeddings = OpenAIEmbeddings(
         model=config.rag_embedding_model,
         dimensions=config.rag_embedding_dimensions,
@@ -86,6 +86,9 @@ def create_embeddings(
         http_async_client=http_client,
         check_embedding_ctx_length=False
     )
+    logger.info("Use embeddings with model %s and dimensions %d",
+                config.rag_embedding_model, 
+                config.rag_embedding_dimensions)
     return LangChainEmbeddingService(
                 embeddings=embeddings,
                 dimensions=config.rag_embedding_dimensions,
@@ -96,16 +99,18 @@ def create_reranker(
         http_client: httpx.AsyncClient
     ) -> Reranker:
     if config.rag_reranker_model:
+        logger.info("Use reranker API with model %s",config.rag_reranker_model)
         return ProxyReranker(
             model_name=config.rag_reranker_model,
-            proxy_url=config.litellm_router,
-            api_key=config.litellm_router_key
+            proxy_url=config.router_api_base,
+            api_key=config.router_api_key
         )
     if not (config.rag_embedding_model and config.rag_embedding_dimensions):
+        logger.info("Use RRF reranker")
         return RRFReranker(return_score="relevance")
 
-    base_url = config.litellm_router
-    api_key = SecretStr(config.litellm_router_key)
+    base_url = config.router_api_base
+    api_key = SecretStr(config.router_api_key)
     embed = OpenAIEmbeddings(
         model=config.rag_embedding_model,
         dimensions=config.rag_embedding_dimensions,
@@ -115,6 +120,7 @@ def create_reranker(
         check_embedding_ctx_length=False
     )
     if not config.rag_reranker_infer_model:
+        logger.info("Use Embeddings reranker with model %s",config.rag_embedding_model)
         return LlmReranker(chat_model=None, embeddings=embed)
 
     infer_model = ChatOpenAI(
@@ -123,6 +129,7 @@ def create_reranker(
         api_key=api_key,
         http_async_client=http_client
     )
+    logger.info("Use LLM reranker with embeddings model %s and chat model",config.rag_embedding_model, config.rag_reranker_infer_model)
     return LlmReranker(infer_model, embed)
 
 @asynccontextmanager
@@ -152,6 +159,7 @@ def _create_search_engine(
 ) -> ISearchEngine:
     """Create and configure search engine service."""
     if not config.rag_infer_model:
+        logger.info("Use plain search engine")
         return SemanticSearchEngine(
             vector_store,
             limit=config.search_limit,
@@ -159,10 +167,11 @@ def _create_search_engine(
 
     search_model = ChatOpenAI(
         model=config.rag_infer_model,
-        base_url=config.litellm_router,
-        api_key=SecretStr(config.litellm_router_key),
+        base_url=config.router_api_base,
+        api_key=SecretStr(config.router_api_key),
         http_async_client=http_client,
     )
+    logger.info("Use semantic search engine with model %s",config.rag_infer_model)
     return SemanticSearchEngine(
         vector_store,
         limit=config.search_limit,
@@ -180,17 +189,13 @@ def _create_document_summary_generator(
 
     summary_model = ChatOpenAI(
         model=config.rag_infer_model,
-        base_url=config.litellm_router,
-        api_key=SecretStr(config.litellm_router_key),
+        base_url=config.router_api_base,
+        api_key=SecretStr(config.router_api_key),
         http_async_client=http_client,
         max_retries=2,
     )
     return LangChainDocumentSummaryGenerator(summary_model)
 
-
-def _create_result_formatter(config: ServerConfig) -> IResultFormatter:
-    """Create and configure result formatter service."""
-    return MarkdownResultFormatter(max_content_length=config.max_chunk_size)
 
 
 class Vault(IVault):
@@ -274,7 +279,6 @@ class Vault(IVault):
                 logger.debug("Vault already initialized")
                 return
 
-            await self.update_index()
             self._initialized = True
             logger.info(
                 f"Vault {self.vault_path} initialization completed successfully"

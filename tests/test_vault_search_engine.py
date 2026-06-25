@@ -27,8 +27,8 @@ def test_create_search_engine_without_rag_infer_model_uses_vector_only() -> None
 def test_create_search_engine_with_rag_infer_model_wires_hyde_and_reranker() -> None:
     config = ServerConfig(
         rag_infer_model="search-model",
-        litellm_router="http://router",
-        litellm_router_key="token",
+        router_api_base="http://router",
+        router_api_key="token",
         search_limit=3,
     )
     vector_store = MagicMock()

@@ -10,21 +10,17 @@ Environment variables, configuration options, and server settings for the MCPS M
 
 ### Router Configuration
 
-#### `LITELLM_ROUTER` (required for AI tools) #env
-LiteLLM Router base URL used by web research and Obsidian RAG model adapters.
+#### `ROUTER_API_BASE` (required for AI tools) #env
+OpenAI-compatible model router base URL used by web research and Obsidian RAG model adapters.
 **Format**: `http://host:port`
-**Used by**: [src/mcps/tools/research/config.py](../src/mcps/tools/research/config.py), [src/mcps/tools/obsidian_models.py](../src/mcps/tools/obsidian_models.py)
+**Used by**: [src/mcps/research/config.py](../src/mcps/research/config.py), [src/mcps/rag/vault.py](../src/mcps/rag/vault.py)
 
-#### `LITELLM_ROUTER_KEY` (required for AI tools) #env
-Authentication token for the LiteLLM Router.
+#### `ROUTER_API_KEY` (required for AI tools) #env
+Authentication token for the model router.
 **Format**: Router token string
-**Used by**: [src/mcps/tools/research/config.py](../src/mcps/tools/research/config.py), [src/mcps/tools/obsidian_models.py](../src/mcps/tools/obsidian_models.py)
+**Used by**: [src/mcps/research/config.py](../src/mcps/research/config.py), [src/mcps/rag/vault.py](../src/mcps/rag/vault.py)
 
 ### API Keys
-
-#### `OPENAI_API_KEY` (optional) #env
-OpenAI API key retained in server configuration for non-RAG integrations.
-RAG model access goes through `LITELLM_ROUTER`.
 
 #### `ANTHROPIC_API_KEY` (optional) #env
 Anthropic API key for Claude models.
@@ -100,28 +96,28 @@ Maximum size of text chunks in characters.
 ### Model Configuration
 
 #### `rag_embedding_model` #config
-LiteLLM Router model name for Obsidian RAG embeddings.
+OpenAI-compatible model name for Obsidian RAG embeddings.
 **Type**: str
-**Default**: `"text-embedding-3-small"`
+**Default**: `""`
 **Environment**: `RAG_EMBEDDING_MODEL`
-**Used by**: [src/mcps/tools/obsidian_models.py](../src/mcps/tools/obsidian_models.py)
+**Used by**: [src/mcps/rag/embeddings.py](../src/mcps/rag/embeddings.py)
 
 #### `rag_embedding_dimensions` #config
 Embedding vector dimension used for LanceDB schema.
 **Type**: int
-**Default**: `1536`
+**Default**: `0`
 **Environment**: `RAG_EMBEDDING_DIMENSIONS`
 **Used by**: [src/mcps/rag/embeddings.py](../src/mcps/rag/embeddings.py), [src/mcps/rag/database.py](../src/mcps/rag/database.py)
 
 #### `rag_reranker_model` #config
-LiteLLM Router model name for DB-level LanceDB reranking. Empty uses the local LanceDB reranking path.
+OpenAI-compatible model name for DB-level LanceDB reranking. Empty uses the local reranking path.
 **Type**: str
 **Default**: `""`
 **Environment**: `RAG_RERANKER_MODEL`
 **Used by**: [src/mcps/rag/proxy_reranker.py](../src/mcps/rag/proxy_reranker.py), [src/mcps/rag/vault.py](../src/mcps/rag/vault.py)
 
 #### `rag_infer_model` #config
-LiteLLM Router chat model name for search-level HyDE generation and one-call structured reranking. Empty disables search-level LLM inference and preserves vector-only search behavior.
+OpenAI-compatible chat model name for search-level HyDE generation and one-call structured reranking. Empty disables search-level LLM inference and preserves vector-only search behavior.
 **Type**: str
 **Default**: `""`
 **Environment**: `RAG_INFER_MODEL`
@@ -132,8 +128,57 @@ LiteLLM Router chat model name for search-level HyDE generation and one-call str
 #### `search_limit` #config
 Default maximum number of search results.
 **Type**: int
-**Default**: `20`
+**Default**: `30`
 **Used by**: [src/mcps/rag/search.py](../src/mcps/rag/search.py)
+
+#### `rag_reranker_embedding_model` #config
+OpenAI-compatible embedding model name used by the local LLM reranker.
+**Type**: str
+**Default**: `""`
+**Environment**: `RAG_RERANKER_EMBEDDING_MODEL`
+**Used by**: [src/mcps/rag/llm_reranker.py](../src/mcps/rag/llm_reranker.py)
+
+#### `rag_reranker_embedding_dimensions` #config
+Vector dimension for `rag_reranker_embedding_model`.
+**Type**: int
+**Default**: `0`
+**Environment**: `RAG_RERANKER_EMBEDDING_DIMENSIONS`
+**Used by**: [src/mcps/rag/llm_reranker.py](../src/mcps/rag/llm_reranker.py)
+
+#### `rag_reranker_infer_model` #config
+OpenAI-compatible chat model used by the local LLM reranker when no proxy reranker is configured.
+**Type**: str
+**Default**: `""`
+**Environment**: `RAG_RERANKER_INFER_MODEL`
+**Used by**: [src/mcps/rag/llm_reranker.py](../src/mcps/rag/llm_reranker.py)
+
+#### `research_fast_model` #config
+Fast/cheap chat model for web research query generation and result cleanup.
+**Type**: str
+**Default**: `""`
+**Environment**: `RESEARCH_FAST_MODEL`
+**Used by**: [src/mcps/research/config.py](../src/mcps/research/config.py)
+
+#### `research_infer_model` #config
+Stronger chat model for web research reflection and final answer synthesis.
+**Type**: str
+**Default**: `""`
+**Environment**: `RESEARCH_INFER_MODEL`
+**Used by**: [src/mcps/research/config.py](../src/mcps/research/config.py)
+
+#### `google_api_key` #config
+Google Custom Search API key. Required only when using Google instead of DuckDuckGo for web research.
+**Type**: str
+**Default**: `""`
+**Environment**: `GOOGLE_API_KEY`
+**Used by**: [src/mcps/research/search.py](../src/mcps/research/search.py)
+
+#### `google_search_id` #config
+Google Custom Search Engine ID. Required only when `GOOGLE_API_KEY` is set.
+**Type**: str
+**Default**: `""`
+**Environment**: `GOOGLE_SEARCH_ID`
+**Used by**: [src/mcps/research/search.py](../src/mcps/research/search.py)
 
 ## Environment File Loading
 
@@ -210,18 +255,16 @@ Asyncio fixture loop scope.
 
 ## Example .env File
 
-```bash
-# LiteLLM Router
-LITELLM_ROUTER=http://localhost:4000
-LITELLM_ROUTER_KEY=sk-router-token
+See [`env.example`](../env.example) for a complete, commented environment file. A minimal version is shown below:
 
-# Optional API Keys
-ANTHROPIC_API_KEY=sk-ant-...
+```bash
+# OpenAI-compatible model router
+ROUTER_API_BASE=http://localhost:4000
+ROUTER_API_KEY=sk-router-token
 
 # RAG Models
 RAG_EMBEDDING_MODEL=text-embedding-3-small
 RAG_EMBEDDING_DIMENSIONS=1536
-RAG_RERANKER_MODEL=gpt-4o-mini
 
 # Vault Configuration
 VAULT=/Users/username/Documents/ObsidianVault
@@ -229,8 +272,7 @@ VAULT=/Users/username/Documents/ObsidianVault
 
 ## Configuration Validation
 
-Configuration validation performed in [src/mcps/config.py:38-75](../src/mcps/config.py#L38-L75):
-- Directory existence checks
-- Environment variable presence validation
-- Path resolution and normalization
-- Default value assignment
+Configuration validation is performed in [src/mcps/config.py](../src/mcps/config.py) by `validate_config()`:
+- Missing `ROUTER_API_BASE` produces warnings when AI models are configured.
+- Missing `RAG_EMBEDDING_DIMENSIONS` produces a warning when `RAG_EMBEDDING_MODEL` is set.
+- Validation is non-fatal so the server can start with a subset of features enabled.

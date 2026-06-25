@@ -350,7 +350,7 @@ async def vault_evaluator(
     Fixture to create and set up a VaultEvaluationTest instance.
 
     Uses the production config and vault factories with real embeddings.
-    Skips the test when the LiteLLM router is not configured.
+    Skips the test when the model router is not configured.
 
     Args:
         test_content_path: Path to the test content directory
@@ -361,8 +361,8 @@ async def vault_evaluator(
     config = create_config(vault_dir=test_content_path)
     config.table_name = "evaluation_test"
 
-    if not config.litellm_router or not config.litellm_router_key:
-        pytest.skip("LITELLM router is not configured")
+    if not config.router_api_base or not config.router_api_key:
+        pytest.skip("ROUTER_API_BASE / ROUTER_API_KEY are not configured")
 
     evaluator = VaultEvaluationTest(test_content_path, config)
 
@@ -469,9 +469,9 @@ if __name__ == "__main__":
         config = create_config(vault_dir=test_content_path)
         config.table_name = "evaluation_test"
 
-        if not config.litellm_router or not config.litellm_router_key:
+        if not config.router_api_base or not config.router_api_key:
             print(
-                "Error: LITELLM router is not configured; "
+                "Error: ROUTER_API_BASE / ROUTER_API_KEY are not configured; "
                 "real embeddings are required for evaluation."
             )
             return
