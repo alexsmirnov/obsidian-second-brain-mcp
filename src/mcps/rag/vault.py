@@ -9,7 +9,7 @@ import asyncio
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 
 import httpx
@@ -244,8 +244,6 @@ class Vault(IVault):
         self.db_path = self.vault_path / '.vault_db'
         self._initialized = False
         self._lock = asyncio.Lock()
-        self._last_update_check: datetime | None = None
-        self._update_interval = timedelta(minutes=1)
         self.batch_size = batch_size
         
         # Inject services
@@ -351,8 +349,8 @@ class Vault(IVault):
                     logger.info("Rebuilding indexes")
                     await self.vector_store.reindex()
                 
-                self._last_update_check = datetime.now()
-                duration = (self._last_update_check - start_time).total_seconds()
+                end_time = datetime.now()
+                duration = (end_time - start_time).total_seconds()
                 logger.info(
                     f"Index update completed in {duration:.2f} seconds, "
                     f"processed {file_count} files"
@@ -420,11 +418,6 @@ class Vault(IVault):
 
         try:
             logger.info(f"Searching for: {query}")
-            if (self._last_update_check is None or
-                datetime.now() - self._last_update_check > self._update_interval):
-                logger.info("Index update needed before search")
-                await self.update_index()
-
             search_query = SearchQuery(
                 text=query,
                 tags=tags or [],

@@ -1,6 +1,8 @@
+import asyncio
 from collections.abc import Generator
 from datetime import datetime
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -27,6 +29,8 @@ class FakeDocumentProcessor(IDocumentProcessor):
             metadata=Metadata(),
             source_path=file_path.name,
             modified_at=datetime.now(),
+            wikilink_name="doc",
+            file_size=10
         )
 
 
@@ -180,3 +184,27 @@ async def test_get_file_raises_value_error_for_ambiguous_short_name(
 
     with pytest.raises(ValueError, match=r"Archive/Note\.md, Projects/Note\.md"):
         await vault.get_file("Note")
+
+
+async def test_search_does_not_call_update_index(tmp_path: Path) -> None:
+    vault, _ = make_vault(tmp_path)
+    vault.update_index = AsyncMock(side_effect=RuntimeError("update_index called"))  # type: ignore[method-assign]
+
+    results = await vault.search("query")
+
+    assert results == []
+
+
+async def test_search_returns_immediately_when_index_update_is_slow(
+    tmp_path: Path,
+) -> None:
+    vault, _ = make_vault(tmp_path)
+
+    async def slow_update() -> None:
+        await asyncio.sleep(60)
+
+    vault.update_index = AsyncMock(side_effect=slow_update)  # type: ignore[method-assign]
+
+    results = await asyncio.wait_for(vault.search("query"), timeout=0.1)
+
+    assert results == []

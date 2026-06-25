@@ -263,13 +263,13 @@ class IVault(ABC):
 
     @abstractmethod
     async def update_index(self) -> None:
-        """Update the index of the vault.
-        
+        """Synchronize the vault file system with the vector store.
+
         The method gets the list of files in the vault and saved in the storage.
         It deletes all chunks for source_paths that are not in the vault anymore
-        or were modified, and adds new chunks for files that were added or modified.
-        This should be called before any search operation, if there were more than
-        1 minute after the last search.
+        or were modified, adds new chunks for files that were added or modified,
+        and rebuilds the vector-store indexes. It is invoked periodically by the
+        Obsidian lifespan so that search operations never block on indexing.
         """
         pass
 

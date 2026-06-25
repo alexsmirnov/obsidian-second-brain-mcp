@@ -2,6 +2,7 @@ import asyncio
 import logging
 import re
 from collections.abc import AsyncIterator
+from datetime import timedelta
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -151,6 +152,19 @@ class SearchResultItem(BaseModel):
     file_size: int
 
 
+UPDATE_INTERVAL = timedelta(minutes=1)
+
+
+async def _periodic_update_index(vault: IVault, interval: timedelta) -> None:
+    """Periodically synchronize the vault file system with the vector store."""
+    while True:
+        try:
+            await vault.update_index()
+        except Exception:
+            logger.exception("Periodic vault index update failed")
+        await asyncio.sleep(interval.total_seconds())
+
+
 def build_obsidian_lifespan(config: ServerConfig) -> Lifespan:
     assert config.vault_dir is not None
 
@@ -173,7 +187,9 @@ def build_obsidian_lifespan(config: ServerConfig) -> Lifespan:
                 config,
                 http_client
             ) as vault:
-                index_task = asyncio.create_task(vault.update_index())
+                index_task = asyncio.create_task(
+                    _periodic_update_index(vault, UPDATE_INTERVAL)
+                )
                 try:
                     logger.info("Obsidian vault initialized and indexing started")
                     yield {"obsidian_vault": vault, "obsidian_config": config}
