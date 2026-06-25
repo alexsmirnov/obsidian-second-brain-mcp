@@ -1,0 +1,397 @@
+"""Document processing, traversal, and chunking."""
+
+import hashlib
+import logging
+import os
+import re
+from collections.abc import Generator
+from datetime import datetime
+from pathlib import Path
+from typing import override
+
+import frontmatter
+from yaml.parser import ParserError
+
+from .interfaces import (
+    Chunk,
+    Document,
+    IChunker,
+    IDocumentProcessor,
+    IFileTraversal,
+    Metadata,
+)
+
+SUMMARY_CHUNK_POSITION = -1
+
+
+def extract_wikilinks(content: str) -> list[str]:
+    """Extract wikilinks from markdown content.
+    
+    Handles the following wikilink formats:
+    - Basic wikilinks: [[Note Name]]
+    - Wikilinks with display text: [[Note Name|Display Text]]
+    - Wikilinks with headers: [[Note Name#Header]]
+    - Wikilinks with both: [[Note Name#Header|Display Text]]
+    - Image wikilinks: ![[Note Name]]
+    - Wikilinks with spaces and special characters
+    - Wikilinks with nested brackets: [[Note [with] brackets]]
+    
+    Returns only the note name portion, without the header or display text.
+    """
+    wikilink_pattern = r'!?\[\[((?:[^\[\]]|\[[^\[\]]*\])*?)(?:[#|][^\]]*?)?\]\]'
+    matches = re.findall(wikilink_pattern, content)
+    # Filter out empty matches but preserve trailing spaces for compatibility
+    filtered_matches = [match for match in matches if match.strip()]
+    return list(set(filtered_matches))  # Remove duplicates
+
+
+def extract_content_tags(text: str) -> list[str]:
+    """Extract hashtags from markdown content."""
+    # Pattern for #tag (hashtags)
+    tag_pattern = r'#([a-zA-Z][a-zA-Z0-9_-]*)'
+    matches = re.findall(tag_pattern, text)
+    return list(set(matches))  # Remove duplicates
+
+
+def create_chunk(
+    document: Document,
+    content: str,
+    position: int,
+    offset: int = 0,
+) -> Chunk:
+    """Create a chunk from document and content."""
+    chunk_id = f"{document.id}_{position}"
+    chunk_content = content.strip()
+    content_offset = offset + len(content) - len(content.lstrip())
+    
+    # Extract wikilinks from chunk content
+    outgoing_links = extract_wikilinks(content)
+    
+    # Extract tags from chunk content and combine with document tags
+    content_tags = extract_content_tags(content)
+    combined_tags = list(set(document.tags + content_tags))
+
+    return Chunk(
+        id=chunk_id,
+        content=chunk_content,
+        title=document.metadata.title,
+        description=document.metadata.description,
+        source=document.metadata.source,
+        outgoing_links=outgoing_links,
+        tags=combined_tags,
+        source_path=document.source_path,
+        wikilink_name=document.wikilink_name,
+        modified_at=document.modified_at,
+        position=position,
+        offset=content_offset,
+        file_size=document.file_size,
+    )
+
+logger = logging.getLogger("mcps.documents")
+
+default_skip_patterns = [
+    r'^\..*',
+    r'node_modules/',
+    r'__pycache__/',
+    r'/worktrees/',
+    r'^scripts/',
+    r'^templates/',
+    r'^prompts/',
+]
+
+
+class MarkdownFileTraversal(IFileTraversal):
+    """File traversal implementation for markdown files."""
+
+    def __init__(
+        self,
+        base_path: Path,
+        skip_patterns: list[str] = default_skip_patterns,
+    ):
+        self.base_path = base_path
+        self.skip_patterns = skip_patterns
+
+    def _is_path_allowed(self, path: Path) -> bool:
+        """Check if the path is allowed based on skip patterns."""
+        relative_path = str(path.relative_to(self.base_path))
+        return not any(
+            re.search(pattern, relative_path) for pattern in self.skip_patterns
+        )
+
+    @override
+    def find_files(self) -> Generator[Path]:
+        """Find markdown files to process."""
+
+        if not self.base_path.exists():
+            logger.warning(f"Search path does not exist: {self.base_path}")
+            yield from ()
+
+        yield from (
+            self._find_files_recursive(self.base_path,'.md')
+        )
+
+    def  _find_files_recursive(self,root_path: Path, extension: str) -> Generator[Path]:
+        for entry in os.scandir(root_path):
+            file_path = Path(entry.path)
+            if self._is_path_allowed(file_path) :
+                if entry.is_dir(follow_symlinks=False):
+                    # Recursively yield results from subdirectories
+                    yield from self._find_files_recursive(file_path, extension)
+                elif entry.is_file():
+                    if entry.name.endswith(extension):
+                            yield file_path
+
+
+class MarkdownProcessor(IDocumentProcessor):
+    """Markdown document processor."""
+
+    def __init__(self, base_path: Path):
+        self.base_path = base_path
+
+    @override
+    async def process(self, file_path: Path) -> Document:
+        """Process a single markdown document file."""
+        try:
+            with open(file_path, encoding='utf-8') as f:
+                post = frontmatter.load(f)
+        except ParserError:
+            post = frontmatter.Post(
+                content=file_path.read_text(encoding='utf-8', errors='replace')
+            )
+        if not post.content:
+            logger.warning("File %s is empty",file_path)
+        # Extract metadata
+        metadata = Metadata(
+            source=self._metadata_as_str(post.metadata, 'source'),
+            title=self._metadata_as_str(post.metadata, 'title'),
+            description=self._metadata_as_str(post.metadata, 'description'),
+        )
+
+        # Extract tags from frontmatter only
+        tags = self._extract_frontmatter_tags(post)
+
+        # Get file modification time
+        stat = file_path.stat()
+        modified_at = datetime.fromtimestamp(stat.st_mtime)
+        size = stat.st_size
+        # Generate document ID
+        doc_id = self._generate_document_id(file_path)
+
+        return Document(
+            id=doc_id,
+            content=post.content,
+            metadata=metadata,
+            tags=tags,
+            source_path=file_path.relative_to(self.base_path).as_posix(),
+            file_size=size,
+            wikilink_name=file_path.stem,
+            modified_at=modified_at,
+        )
+
+    def _metadata_as_str(self, metadata: dict[str, object], field) -> str | None:
+        """Convert metadata dictionary value to a string representation."""
+        return str(metadata.get(field, '')) if field in metadata else None
+
+    def _extract_frontmatter_tags(self, content: frontmatter.Post) -> list[str]:
+        """Extract tags from frontmatter only."""
+        fm_tags = content.metadata.get('tags', [])
+        # convert string or list of tags to a set to avoid duplicates
+        if isinstance(fm_tags, str):
+            fm_tags = [fm_tags]
+        elif not isinstance(fm_tags, list):
+            fm_tags = []
+        return list(set(fm_tags))  # Remove duplicates
+
+    def _generate_document_id(self, file_path: Path) -> str:
+        """Generate a unique document ID."""
+        # Use file path hash for consistent ID
+        path_str = str(file_path.absolute())
+        return hashlib.md5(path_str.encode()).hexdigest()
+
+
+class FixedSizeChunker(IChunker):
+    """Fixed size text chunker with overlap."""
+
+    def __init__(self, chunk_size: int = 1000, overlap: int = 200):
+        self.chunk_size = chunk_size
+        self.overlap = overlap
+
+    def chunk(self, document: Document) -> Generator[Chunk]:
+        """Split a document into fixed-size chunks with overlap."""
+        content = document.content
+
+        # Simple character-based chunking
+        start = 0
+        position = 0
+        chunk_count = 0
+
+        while start < len(content):
+            end = min(start + self.chunk_size, len(content))
+            broke_at_word_boundary = False
+
+            # Try to break at word boundaries
+            if end < len(content):
+                # Look for the last space within the chunk
+                last_space = content.rfind(' ', start, end)
+                if last_space > start:
+                    end = last_space
+                    broke_at_word_boundary = True
+
+            chunk_content = content[start:end]
+
+            if chunk_content.strip():  # Only create non-empty chunks
+                chunk = create_chunk(document, chunk_content, position, start)
+
+                yield chunk
+                position += 1
+                chunk_count += 1
+
+            # Move start position with overlap
+            start = end if broke_at_word_boundary else max(
+                start + self.chunk_size - self.overlap,
+                end,
+            )
+
+        logger.debug(f"Created {chunk_count} chunks from document {document.id}")
+
+
+class SemanticChunker(IChunker):
+    """Semantic chunker that splits on markdown sections."""
+
+    def __init__(self, max_chunk_size: int = 1000, min_chunk_size: int = 250):
+        self.max_chunk_size = max_chunk_size
+        self.min_chunk_size = min_chunk_size
+
+    def chunk(self, document: Document) -> Generator[Chunk]:
+        """Split document into semantic chunks based on markdown structure."""
+        content = document.content
+        chunk_count = 0
+        if not content.strip():
+            yield from ()
+        else:
+            # Split by headers (# ## ### etc.)
+            sections = self._split_by_headers(content)
+
+            position = 0
+            i = 0
+
+            while i < len(sections):
+                current_section, current_offset = sections[i]
+
+                if len(current_section.strip()) < self.min_chunk_size:
+                    merged_content = current_section
+                    j = i + 1
+
+                    while (
+                        j < len(sections)
+                        and len(merged_content.strip()) < self.min_chunk_size
+                        and len(merged_content.strip()) + len(sections[j][0])
+                        < self.max_chunk_size
+                    ):
+                        merged_content += "\n\n" + sections[j][0]
+                        j += 1
+
+                    merged_content_is_large_enough = (
+                        len(merged_content.strip()) >= self.min_chunk_size
+                    )
+                    if merged_content_is_large_enough or (
+                        i == 0 and j == len(sections)
+                    ):
+                        chunk = create_chunk(
+                            document,
+                            merged_content,
+                            position,
+                            current_offset,
+                        )
+                        yield chunk
+                        position += 1
+                        chunk_count += 1
+
+                    # Move to the next unprocessed section
+                    i = j
+                else:
+                    # Section is large enough on its own
+                    # If section is too large, split it further
+                    if len(current_section) > self.max_chunk_size:
+                        sub_chunks = self._split_large_section(current_section)
+                        for sub_chunk, sub_offset in sub_chunks:
+                            chunk = create_chunk(
+                                document,
+                                sub_chunk,
+                                position,
+                                current_offset + sub_offset,
+                            )
+                            yield chunk
+                            position += 1
+                            chunk_count += 1
+                    else:
+                        chunk = create_chunk(
+                            document,
+                            current_section,
+                            position,
+                            current_offset,
+                        )
+                        yield chunk
+                        position += 1
+                        chunk_count += 1
+
+                    i += 1
+
+        logger.info(
+            "Created %s semantic chunks from document %s",
+            chunk_count,
+            document.source_path,
+        )
+
+    def _split_by_headers(self, content: str) -> list[tuple[str, int]]:
+        """Split content by markdown headers."""
+        # Split by headers while keeping the header with the content
+        header_pattern = r'^(#{1,2}\s+.+)$'
+        lines = content.splitlines(keepends=True)
+        sections = []
+        current_section = []
+        current_offset = 0
+        offset = 0
+
+        for line in lines:
+            if re.match(header_pattern, line) and current_section:
+                # Start new section
+                sections.append((''.join(current_section), current_offset))
+                current_section = [line]
+                current_offset = offset
+            else:
+                current_section.append(line)
+            offset += len(line)
+
+        if current_section:
+            sections.append((''.join(current_section), current_offset))
+
+        return sections
+
+    def _split_large_section(self, section: str) -> list[tuple[str, int]]:
+        """Split large sections into smaller chunks."""
+        # Simple paragraph-based splitting for large sections
+        paragraphs = section.split('\n\n')
+        chunks = []
+        current_chunk = []
+        current_size = 0
+        current_offset = 0
+        paragraph_offset = 0
+
+        for paragraph in paragraphs:
+            paragraph_size = len(paragraph)
+
+            if current_size + paragraph_size > self.max_chunk_size and current_chunk:
+                chunks.append(('\n\n'.join(current_chunk), current_offset))
+                current_chunk = [paragraph]
+                current_size = paragraph_size
+                current_offset = paragraph_offset
+            else:
+                current_chunk.append(paragraph)
+                current_size += paragraph_size
+            paragraph_offset += paragraph_size + 2
+
+        if current_chunk:
+            chunks.append(('\n\n'.join(current_chunk), current_offset))
+
+        return chunks

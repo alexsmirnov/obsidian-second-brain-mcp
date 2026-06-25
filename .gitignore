@@ -6,6 +6,20 @@ dist/
 wheels/
 *.egg-info
 .pytest_cache
-
+.env
 # Virtual environments
 .venv
+# test data
+test_content
+.aider*
+.roo*
+.mcp.json
+.claude
+.serena
+.ruff*
+.vault*
+.vscode
+/rules/
+/tasks/
+/.claude-data/
+.roo
