@@ -156,15 +156,12 @@ class TestProxyRerankerPayload:
             def json(self) -> dict:
                 return {"results": []}
 
-        def fake_post(url: str, json: dict, headers: dict) -> _Response:
+        def fake_post(_self: httpx.Client, url: str, *, json: dict) -> _Response:
             captured["url"] = url
             captured["payload"] = json
-            captured["headers"] = headers
             return _Response()
 
-        monkeypatch.setattr(
-            "mcps.rag.proxy_reranker.requests.post", fake_post
-        )
+        monkeypatch.setattr("httpx.Client.post", fake_post)
         return captured
 
     def test_documents_are_plain_strings_when_content_has_null(
