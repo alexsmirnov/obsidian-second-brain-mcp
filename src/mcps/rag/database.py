@@ -271,7 +271,10 @@ class LanceDBStore(IVectorStore):
                 try:
                     await self.table.create_index(
                         column,
-                        config=FTS(base_tokenizer="simple"),
+                        config=FTS(
+                            base_tokenizer="simple",
+                            max_token_length=30, # Drops huge base64 strings or logs from masking true chunk size
+                            ),
                         replace=replace,
                         wait_timeout=wait_time,
                     )

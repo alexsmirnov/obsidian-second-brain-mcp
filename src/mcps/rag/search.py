@@ -3,6 +3,7 @@ Search engine and result formatting implementations for the RAG search system.
 """
 
 import logging
+import re
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -19,9 +20,13 @@ from .reranking import IRerankingService
 
 logger = logging.getLogger("mcps.search")
 
-QUERY_SYSTEM_PROMPT = """ Write a concise hypothetical text that would answer
-the search query below. Include likely terminology, entities, and concepts, but
-do not answer conversationally. Generate one paragraph with 5 sentences"""
+QUERY_SYSTEM_PROMPT = """Act as a technical knowledge base. Generate a short,
+3-to-5 line mock document chunk that directly resolves the following search query.
+
+- If the query implies code or implementation: Write a raw markdown code block showing function definitions, key libraries, and syntax architecture.
+- If the query is scientific or theoretical: Use precise equations, variables, and data dense technical notation.
+- If query is finacial or legal, use professional language
+- Do not explain the code/math. Do not write a conversational intro. Keep it under 120 tokens total."""
 
 
 class HypotheticalDocumentGenerator:
@@ -35,17 +40,56 @@ class HypotheticalDocumentGenerator:
         response = await self.model.ainvoke(
             [SystemMessage(content=QUERY_SYSTEM_PROMPT), HumanMessage(content=prompt)]
         )
-        content = response.content
-        if isinstance(content, str):
-            return content.strip()
-        return str(content).strip()
+        content = response.text
+        return self._clean_hyde_output(content)
 
     @staticmethod
     def _create_prompt(query: str) -> str:
         return f""" Query: {query}
 
-Hypothetical document:"""
+Hypothetical Chunk:"""
 
+
+    @staticmethod
+    def _clean_hyde_output(raw_text: str) -> str:
+        """
+        Cleans and standardizes the hypothetical text from LLM
+        before sending it to the BGE-M3 embedding engine.
+        """
+        if not raw_text:
+            return ""
+            
+        # 1. Standard text cleanup (strip leading/trailing whitespace & newlines)
+        cleaned = raw_text.strip()
+        
+        # 2. Defensive check: Remove conversational opening phrases if the LLM slips up
+        conversational_prefixes = [
+            r"^(here is|here's|this is|a hypothetical|mock snippet|sure, here|snippet:)\b.*?\n",
+            r"^(certainly|absolutely|hope this helps)[.,!:\s]*"
+        ]
+        for pattern in conversational_prefixes:
+            cleaned = re.sub(pattern, "", cleaned, flags=re.IGNORECASE | re.MULTILINE)
+        
+        cleaned = cleaned.strip()
+        
+        # 3. Code Block Normalization (Crucial for BGE-M3 code chunk matching)
+        # If the LLM wrapped the entire output in triple backticks, extract JUST the contents.
+        # We want BGE-M3 to match raw syntax, not the backtick strings themselves.
+        code_block_match = re.search(r"```(?:[a-zA-Z0-9+#-]+)?\n(.*?)```", cleaned, re.DOTALL)
+        if code_block_match:
+            cleaned = code_block_match.group(1).strip()
+        else:
+            # If it's a mixed snippet, just clean up stray, unclosed backticks
+            cleaned = cleaned.replace("```", "")
+            
+        # 4. Final Truncation Guard
+        # Ensure any unexpected runaway output doesn't dilute our 256-token target size.
+        # Split by whitespace to approximate word limits, or feed into your model's tokenizer.
+        words = cleaned.split()
+        if len(words) > 120:
+            cleaned = " ".join(words[:120])
+            
+        return cleaned.strip()
 
 class SemanticSearchEngine(ISearchEngine):
     """Semantic search engine using embeddings and vector similarity."""
@@ -119,10 +163,19 @@ class SemanticSearchEngine(ISearchEngine):
         return hypothetical_document
 
     def _filter_by_min_score(self, chunks: list[Chunk]) -> list[Chunk]:
+        """Filter all chunks with score less than min_score and removes duplicates"""
+        seen = set()
+        def _has_seen(id: str) -> bool:
+            if id in seen:
+                return True
+            else:
+                seen.add(id)
+                return False
         return [
             chunk
             for chunk in chunks
             if getattr(chunk, "_relevance_score", 1.0) >= self.min_score
+            and not _has_seen(chunk.id)
         ]
 
     async def _merge_with_neighbors(self, chunks: list[Chunk]) -> list[Chunk]:

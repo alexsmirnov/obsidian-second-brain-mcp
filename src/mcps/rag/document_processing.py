@@ -62,13 +62,18 @@ def create_chunk(
     """Create a chunk from document and content."""
     chunk_id = f"{document.id}_{position}"
     chunk_content = content.strip()
-    content_offset = offset + len(content) - len(content.lstrip())
-    
+    is_summary_chunk = position == SUMMARY_CHUNK_POSITION
+    content_offset = (
+        0 if is_summary_chunk else offset + len(content) - len(content.lstrip())
+    )
+
+    metadata_source_text = document.content if is_summary_chunk else content
+
     # Extract wikilinks from chunk content
-    outgoing_links = extract_wikilinks(content)
-    
+    outgoing_links = extract_wikilinks(metadata_source_text)
+
     # Extract tags from chunk content and combine with document tags
-    content_tags = extract_content_tags(content)
+    content_tags = extract_content_tags(metadata_source_text)
     combined_tags = list(set(document.tags + content_tags))
 
     return Chunk(
@@ -125,6 +130,7 @@ class MarkdownFileTraversal(IFileTraversal):
         if not self.base_path.exists():
             logger.warning(f"Search path does not exist: {self.base_path}")
             yield from ()
+            return
 
         yield from (
             self._find_files_recursive(self.base_path,'.md')
@@ -258,7 +264,7 @@ class FixedSizeChunker(IChunker):
 class SemanticChunker(IChunker):
     """Semantic chunker that splits on markdown sections."""
 
-    def __init__(self, max_chunk_size: int = 1000, min_chunk_size: int = 250):
+    def __init__(self, max_chunk_size: int = 1000, min_chunk_size: int = 500):
         self.max_chunk_size = max_chunk_size
         self.min_chunk_size = min_chunk_size
 
@@ -269,34 +275,47 @@ class SemanticChunker(IChunker):
         if not content.strip():
             yield from ()
         else:
-            # Split by headers (# ## ### etc.)
             sections = self._split_by_headers(content)
-
             position = 0
             i = 0
 
             while i < len(sections):
                 current_section, current_offset = sections[i]
 
+                if len(current_section) > self.max_chunk_size:
+                    for sub_chunk, sub_offset in self._split_large_section(
+                        current_section
+                    ):
+                        if not sub_chunk.strip():
+                            continue
+                        chunk = create_chunk(
+                            document,
+                            sub_chunk,
+                            position,
+                            current_offset + sub_offset,
+                        )
+                        yield chunk
+                        position += 1
+                        chunk_count += 1
+                    i += 1
+                    continue
+
                 if len(current_section.strip()) < self.min_chunk_size:
-                    merged_content = current_section
+                    merged_sections = [current_section]
                     j = i + 1
 
-                    while (
-                        j < len(sections)
-                        and len(merged_content.strip()) < self.min_chunk_size
-                        and len(merged_content.strip()) + len(sections[j][0])
-                        < self.max_chunk_size
-                    ):
-                        merged_content += "\n\n" + sections[j][0]
+                    while j < len(sections):
+                        next_section = sections[j][0]
+                        if (
+                            self._joined_length([*merged_sections, next_section])
+                            > self.max_chunk_size
+                        ):
+                            break
+                        merged_sections.append(next_section)
                         j += 1
 
-                    merged_content_is_large_enough = (
-                        len(merged_content.strip()) >= self.min_chunk_size
-                    )
-                    if merged_content_is_large_enough or (
-                        i == 0 and j == len(sections)
-                    ):
+                    merged_content = "\n\n".join(merged_sections)
+                    if merged_content.strip():
                         chunk = create_chunk(
                             document,
                             merged_content,
@@ -306,36 +325,19 @@ class SemanticChunker(IChunker):
                         yield chunk
                         position += 1
                         chunk_count += 1
-
-                    # Move to the next unprocessed section
                     i = j
-                else:
-                    # Section is large enough on its own
-                    # If section is too large, split it further
-                    if len(current_section) > self.max_chunk_size:
-                        sub_chunks = self._split_large_section(current_section)
-                        for sub_chunk, sub_offset in sub_chunks:
-                            chunk = create_chunk(
-                                document,
-                                sub_chunk,
-                                position,
-                                current_offset + sub_offset,
-                            )
-                            yield chunk
-                            position += 1
-                            chunk_count += 1
-                    else:
-                        chunk = create_chunk(
-                            document,
-                            current_section,
-                            position,
-                            current_offset,
-                        )
-                        yield chunk
-                        position += 1
-                        chunk_count += 1
+                    continue
 
-                    i += 1
+                chunk = create_chunk(
+                    document,
+                    current_section,
+                    position,
+                    current_offset,
+                )
+                yield chunk
+                position += 1
+                chunk_count += 1
+                i += 1
 
         logger.info(
             "Created %s semantic chunks from document %s",
@@ -346,7 +348,7 @@ class SemanticChunker(IChunker):
     def _split_by_headers(self, content: str) -> list[tuple[str, int]]:
         """Split content by markdown headers."""
         # Split by headers while keeping the header with the content
-        header_pattern = r'^(#{1,2}\s+.+)$'
+        header_pattern = r'^(#{1,3}\s+.+)$'
         lines = content.splitlines(keepends=True)
         sections = []
         current_section = []
@@ -370,28 +372,89 @@ class SemanticChunker(IChunker):
 
     def _split_large_section(self, section: str) -> list[tuple[str, int]]:
         """Split large sections into smaller chunks."""
-        # Simple paragraph-based splitting for large sections
-        paragraphs = section.split('\n\n')
-        chunks = []
-        current_chunk = []
-        current_size = 0
-        current_offset = 0
-        paragraph_offset = 0
+        paragraphs = self._split_with_offsets(section)
+        chunks: list[tuple[str, int]] = []
+        current_chunk: list[str] = []
+        current_chunk_start_offset = 0
 
-        for paragraph in paragraphs:
-            paragraph_size = len(paragraph)
+        for paragraph, paragraph_offset in paragraphs:
+            if len(paragraph) > self.max_chunk_size:
+                if current_chunk:
+                    chunks.append(
+                        ("\n\n".join(current_chunk), current_chunk_start_offset)
+                    )
+                    current_chunk = []
 
-            if current_size + paragraph_size > self.max_chunk_size and current_chunk:
-                chunks.append(('\n\n'.join(current_chunk), current_offset))
-                current_chunk = [paragraph]
-                current_size = paragraph_size
-                current_offset = paragraph_offset
-            else:
-                current_chunk.append(paragraph)
-                current_size += paragraph_size
-            paragraph_offset += paragraph_size + 2
+                for part, part_offset in self._split_hard_cap(paragraph):
+                    chunks.append((part, paragraph_offset + part_offset))
+                continue
+
+            candidate_chunk = (
+                [*current_chunk, paragraph]
+                if current_chunk
+                else [paragraph]
+            )
+
+            if self._joined_length(candidate_chunk) <= self.max_chunk_size:
+                if not current_chunk:
+                    current_chunk_start_offset = paragraph_offset
+                current_chunk = candidate_chunk
+                continue
+
+            chunks.append(("\n\n".join(current_chunk), current_chunk_start_offset))
+            current_chunk = [paragraph]
+            current_chunk_start_offset = paragraph_offset
 
         if current_chunk:
-            chunks.append(('\n\n'.join(current_chunk), current_offset))
+            chunks.append(("\n\n".join(current_chunk), current_chunk_start_offset))
 
         return chunks
+
+    @staticmethod
+    def _joined_length(parts: list[str], separator: str = "\n\n") -> int:
+        if not parts:
+            return 0
+        return sum(len(part) for part in parts) + len(separator) * (len(parts) - 1)
+
+    @staticmethod
+    def _split_with_offsets(
+        content: str,
+        separator: str = "\n\n",
+    ) -> list[tuple[str, int]]:
+        parts: list[tuple[str, int]] = []
+        start = 0
+        separator_length = len(separator)
+
+        while start < len(content):
+            separator_index = content.find(separator, start)
+            if separator_index == -1:
+                parts.append((content[start:], start))
+                break
+
+            parts.append((content[start:separator_index], start))
+            start = separator_index + separator_length
+
+        return parts
+
+    def _split_hard_cap(self, text: str) -> list[tuple[str, int]]:
+        if not text:
+            return []
+
+        pieces: list[tuple[str, int]] = []
+        start = 0
+
+        while start < len(text):
+            end = min(start + self.max_chunk_size, len(text))
+
+            if end < len(text):
+                last_space = text.rfind(" ", start, end)
+                if last_space > start:
+                    end = last_space
+
+            if end == start:
+                end = min(start + self.max_chunk_size, len(text))
+
+            pieces.append((text[start:end], start))
+            start = end
+
+        return pieces

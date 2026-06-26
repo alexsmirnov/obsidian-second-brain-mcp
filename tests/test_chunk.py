@@ -474,3 +474,62 @@ class TestLazyChunking:
             chunks = list(chunker.chunk(small_document_two_headers))
             # Should always produce at least one chunk
             assert len(chunks) > 0, f"Failed with min_chunk_size={min_size}"
+
+    def test_semantic_chunker_splits_oversized_level2_section_with_hard_cap(self):
+        """Oversized level-2 section must be split and never exceed max_chunk_size."""
+        large_section = "## Big\n\n" + ("X" * 250)
+        document = Document(
+            id="oversized_level2",
+            content=large_section,
+            metadata=Metadata(
+                title="Oversized level 2",
+                description="Semantic chunking hard-cap test",
+            ),
+            tags=["test"],
+            source_path="/tmp/oversized_level2.md",
+            modified_at=datetime.now(),
+            file_size=0,
+            wikilink_name="oversized_level2",
+        )
+
+        max_chunk_size = 100
+        chunker = SemanticChunker(max_chunk_size=max_chunk_size, min_chunk_size=20)
+        chunks = list(chunker.chunk(document))
+
+        assert len(chunks) > 1
+        assert all(len(chunk.content) <= max_chunk_size for chunk in chunks)
+        assert all(chunk.content for chunk in chunks)
+        assert chunks[0].content.startswith("## Big")
+        assert "".join(chunk.content.replace("\n", "") for chunk in chunks).find("X" * 50) >= 0
+
+    def test_semantic_chunker_greedily_combines_small_sections_up_to_limit(self):
+        """Small sections should be merged greedily up to max without exceeding it."""
+        content = (
+            "## S1\n\nAAAAAAAAAA\n\n"
+            "## S2\n\nBBBBBBBBBB\n\n"
+            "## S3\n\nCCCCCCCCCC"
+        )
+        document = Document(
+            id="greedy_small_sections",
+            content=content,
+            metadata=Metadata(
+                title="Greedy merge",
+                description="Semantic merge up to max",
+            ),
+            tags=["test"],
+            source_path="/tmp/greedy_small_sections.md",
+            modified_at=datetime.now(),
+            file_size=0,
+            wikilink_name="greedy_small_sections",
+        )
+
+        max_chunk_size = 40
+        chunker = SemanticChunker(max_chunk_size=max_chunk_size, min_chunk_size=100)
+        chunks = list(chunker.chunk(document))
+
+        assert len(chunks) == 2
+        assert all(len(chunk.content) <= max_chunk_size for chunk in chunks)
+        assert "## S1" in chunks[0].content
+        assert "## S2" in chunks[0].content
+        assert "## S3" not in chunks[0].content
+        assert chunks[1].content.startswith("## S3")

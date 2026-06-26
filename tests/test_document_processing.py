@@ -474,7 +474,7 @@ Invalid tags: # (space after hash), #-invalid (starts with hyphen).
 
         assert chunk.content == "Stored content"
         assert chunk.offset == 9
-        assert chunk.file_size == len("Stored content")
+        assert chunk.file_size == len("Intro\n\n  Stored content  ")
 
     def test_create_summary_chunk_sets_wikilink_name_zero_offset_and_summary_size(self):
         document = Document(
@@ -492,7 +492,7 @@ Invalid tags: # (space after hash), #-invalid (starts with hyphen).
 
         assert chunk.wikilink_name == "folder/note"
         assert chunk.offset == 0
-        assert chunk.file_size == len("Summary content")
+        assert chunk.file_size == len("Note content")
 
     def test_fixed_size_chunker_preserves_character_offsets_in_chunks(self):
         document = Document(
@@ -533,12 +533,15 @@ Invalid tags: # (space after hash), #-invalid (starts with hyphen).
         ]
 
     def test_semantic_chunker_offsets_with_repeated_section_text_are_monotonic(self):
+        content = "## Repeat\n\nSame text\n\n## Repeat\n\nSame text"
         document = Document(
             id="note-123",
-            content="## Repeat\n\nSame text\n\n## Repeat\n\nSame text",
+            content=content,
             metadata=Metadata(title="Note", description="Description", source="source"),
             tags=[],
             source_path="note.md",
+            wikilink_name="note",
+            file_size=len(content),
             modified_at=datetime(2024, 1, 2, 3, 4, 5),
         )
 
@@ -546,13 +549,65 @@ Invalid tags: # (space after hash), #-invalid (starts with hyphen).
 
         assert [chunk.offset for chunk in chunks] == [0, document.content.rindex("## Repeat")]
 
-    def test_chunk_offsets_count_unicode_characters(self):
+    def test_semantic_chunker_large_level2_section_offsets_are_monotonic_and_capped(self):
+        section_content = "## Big\n\n" + ("A" * 260)
         document = Document(
             id="note-123",
-            content="a🙂bc def",
+            content=section_content,
             metadata=Metadata(title="Note", description="Description", source="source"),
             tags=[],
             source_path="note.md",
+            wikilink_name="note",
+            modified_at=datetime(2024, 1, 2, 3, 4, 5),
+            file_size=len(section_content),
+        )
+
+        max_chunk_size = 100
+        chunks = list(
+            SemanticChunker(max_chunk_size=max_chunk_size, min_chunk_size=10).chunk(document)
+        )
+
+        assert len(chunks) > 1
+        assert all(len(chunk.content) <= max_chunk_size for chunk in chunks)
+        assert [chunk.offset for chunk in chunks] == sorted(chunk.offset for chunk in chunks)
+
+    def test_semantic_chunker_greedy_merge_offsets_follow_section_boundaries(self):
+        content = (
+            "## S1\n\nAAAAAAAAAA\n\n"
+            "## S2\n\nBBBBBBBBBB\n\n"
+            "## S3\n\nCCCCCCCCCC"
+        )
+        document = Document(
+            id="note-123",
+            content=content,
+            metadata=Metadata(title="Note", description="Description", source="source"),
+            tags=[],
+            source_path="note.md",
+            wikilink_name="note",
+            modified_at=datetime(2024, 1, 2, 3, 4, 5),
+            file_size=len(content),
+        )
+
+        max_chunk_size = 40
+        chunks = list(
+            SemanticChunker(max_chunk_size=max_chunk_size, min_chunk_size=100).chunk(document)
+        )
+
+        assert len(chunks) == 2
+        assert all(len(chunk.content) <= max_chunk_size for chunk in chunks)
+        assert chunks[0].offset == 0
+        assert chunks[1].offset == document.content.index("## S3")
+
+    def test_chunk_offsets_count_unicode_characters(self):
+        content = "a🙂bc def"
+        document = Document(
+            id="note-123",
+            content=content,
+            metadata=Metadata(title="Note", description="Description", source="source"),
+            tags=[],
+            source_path="note.md",
+            wikilink_name="note",
+            file_size=len(content),
             modified_at=datetime(2024, 1, 2, 3, 4, 5),
         )
 

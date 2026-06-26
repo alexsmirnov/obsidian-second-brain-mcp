@@ -103,12 +103,15 @@ class FakeSummaryGenerator(IDocumentSummaryGenerator):
 
 @pytest.fixture
 def document() -> Document:
+    content = "# Note\n\nBody with [[Whole Link]] and #whole-tag."
     return Document(
         id="note-123",
-        content="# Note\n\nBody with [[Whole Link]] and #whole-tag.",
+        content=content,
         metadata=Metadata(title="Note", description="Description", source="source"),
         tags=["frontmatter"],
         source_path="folder/note.md",
+        wikilink_name="folder/note",
+        file_size=len(content),
         modified_at=datetime(2024, 1, 2, 3, 4, 5),
     )
 
@@ -129,7 +132,7 @@ def normal_chunks(document: Document) -> list[Chunk]:
             modified_at=document.modified_at,
             position=0,
             offset=0,
-            size=len("Normal chunk"),
+            file_size=len("Normal chunk"),
         )
     ]
 

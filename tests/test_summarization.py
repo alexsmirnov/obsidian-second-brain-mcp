@@ -19,12 +19,15 @@ class FakeChatModel:
 
 @pytest.fixture
 def document() -> Document:
+    content = "# Note\n\nWhole note body with [[Link]] and #tag."
     return Document(
         id="note-123",
-        content="# Note\n\nWhole note body with [[Link]] and #tag.",
+        content=content,
         metadata=Metadata(title="Note Title", description="Note description"),
         tags=["frontmatter"],
         source_path="folder/note.md",
+        wikilink_name="folder/note",
+        file_size=len(content),
         modified_at=datetime(2024, 1, 2, 3, 4, 5),
     )
 
