@@ -146,6 +146,7 @@ class SearchResultItem(BaseModel):
     description: str | None
     content: str
     tags: list[str]
+    outgoing_links: list[str] = Field(default_factory=list)  # Wikilinks
     source_path: str
     wikilink_name: str
     offset: int
@@ -233,7 +234,8 @@ def register_tools(mcp: FastMCP) -> None:
             "to recall something they wrote, asks to find or look up their notes "
             "on a subject, refers to their knowledge base or vault, or asks "
             "'do I have anything on...' / 'what did I write about...'. Returns "
-            "relevant note excerpts ranked by relevance. Does NOT list files or "
+            "relevant note excerpts ranked by relevance. outgoing_links are Wikiling names "
+            "of related notes. Does NOT list files or "
             "read a specific file by path — use obsidian_list_files or "
             "obsidian_get_content for those."
         ),
@@ -365,6 +367,7 @@ async def search(
                 description=c.description,
                 content=c.content,
                 tags=c.tags,
+                outgoing_links=c.outgoing_links,
                 source_path=c.source_path,
                 wikilink_name=c.wikilink_name,
                 offset=c.offset,

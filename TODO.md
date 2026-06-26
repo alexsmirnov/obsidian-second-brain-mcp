@@ -11,10 +11,10 @@
     - after a first search, follow links and incoming links to refine results - graph RAG
     - reqrite answer to keep relevant information only. Keep links to documents where it came from
     - follow web references
-- [ ] refine obsidian tools and parameters descriptions. Do some evaluations with real models
+- [x] refine obsidian tools and parameters descriptions. Do some evaluations with real models
 - [ ] add create_note, delete_note, edit_note obsidian tools 
 - [ ] add READ_ONLY config option. Disable valult manipulation tools if it is true
-- [ ] implement web search and summarize tools
-- [ ] read vault description notes for agentic research, to aware about file structure and tags
-- [ ] convert OllamaReranker to OpenAIReranker to use any openai compatible endpoints. Make it as chain of wrappers ( embeddings, llm, basic ). Do rerank in Search instead of lancedb
+- [x] implement web search and summarize tools
+- [x] read vault description notes for agentic research, to aware about file structure and tags
+- [x] convert OllamaReranker to OpenAIReranker to use any openai compatible endpoints. Make it as chain of wrappers ( embeddings, llm, basic ). Do rerank in Search instead of lancedb
 - [ ] 

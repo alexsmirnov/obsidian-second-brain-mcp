@@ -1,6 +1,4 @@
 """
-Production-ready Vault implementation for managing RAG operations.
-
 This module provides a comprehensive Vault class that implements the IVault interface,
 managing all aspects of document indexing, searching, and retrieval in a RAG system.
 """
@@ -105,22 +103,22 @@ def create_reranker(
             proxy_url=config.router_api_base,
             api_key=config.router_api_key
         )
-    if not (config.rag_embedding_model and config.rag_embedding_dimensions):
+    if not (config.rag_reranker_embedding_model and config.rag_reranker_embedding_dimensions):
         logger.info("Use RRF reranker")
         return RRFReranker(return_score="relevance")
 
     base_url = config.router_api_base
     api_key = SecretStr(config.router_api_key)
     embed = OpenAIEmbeddings(
-        model=config.rag_embedding_model,
-        dimensions=config.rag_embedding_dimensions,
+        model=config.rag_reranker_embedding_model,
+        dimensions=config.rag_reranker_embedding_dimensions,
         base_url=base_url,
         api_key=api_key,
         http_async_client=http_client,
         check_embedding_ctx_length=False
     )
     if not config.rag_reranker_infer_model:
-        logger.info("Use Embeddings reranker with model %s",config.rag_embedding_model)
+        logger.info("Use Embeddings reranker with model %s",config.rag_reranker_embedding_model)
         return LlmReranker(chat_model=None, embeddings=embed)
 
     infer_model = ChatOpenAI(
@@ -129,7 +127,7 @@ def create_reranker(
         api_key=api_key,
         http_async_client=http_client
     )
-    logger.info("Use LLM reranker with embeddings model %s and chat model",config.rag_embedding_model, config.rag_reranker_infer_model)
+    logger.info("Use LLM reranker with embeddings model %s and chat model",config.rag_reranker_embedding_model, config.rag_reranker_infer_model)
     return LlmReranker(infer_model, embed)
 
 @asynccontextmanager

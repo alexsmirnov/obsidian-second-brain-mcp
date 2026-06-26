@@ -24,5 +24,4 @@ The RAG system is optimized for Obsidian structure:
 
 ## Documentation
 
-- Team code style and best practices: `rules/` folder
 - Comprehensive project documentation: [docs/index.md](docs/index.md)

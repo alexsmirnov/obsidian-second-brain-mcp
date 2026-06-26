@@ -1,7 +1,14 @@
+import logging
+
+from requests import HTTPError
 import pyarrow as pa
 import requests
-from lancedb.rerankers import Reranker
+from lancedb.rerankers import RRFReranker, Reranker
 
+
+logger = logging.getLogger(__file__)
+
+FALLBACK = RRFReranker(return_score="relevance")
 
 class ProxyReranker(Reranker):
     def __init__(
@@ -47,36 +54,42 @@ class ProxyReranker(Reranker):
                 pa.array([], type=pa.float32()),
             )
 
-        documents = self._table_to_documents(combined_table)
-        payload = {
-            "model": self.model_name,
-            "query": query,
-            "documents": documents,
-        }
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-        }
+        try:
+            documents = self._table_to_documents(combined_table)
+            payload = {
+                "model": self.model_name,
+                "query": query,
+                "documents": documents,
+            }
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+            }
 
-        # 3. Request rescoring from LiteLLM proxy
-        response = requests.post(
-            f"{self.proxy_url}/v1/rerank",
-            json=payload,
-            headers=headers,
-        )
-        response.raise_for_status()
-        rerank_results = response.json().get("results", [])
+            # 3. Request rescoring from LiteLLM proxy
+            response = requests.post(
+                f"{self.proxy_url}/v1/rerank",
+                json=payload,
+                headers=headers,
+            )
+            response.raise_for_status()
+            rerank_results = response.json().get("results", [])
 
-        # 4. Map the newly computed relevance scores back to LanceDB rows
-        df = combined_table.to_pandas()
-        scores = [0.0] * len(df)
-        for item in rerank_results:
-            scores[item["index"]] = item["relevance_score"]
+            # 4. Map the newly computed relevance scores back to LanceDB rows
+            df = combined_table.to_pandas()
+            scores = [0.0] * len(df)
+            for item in rerank_results:
+                scores[item["index"]] = item["relevance_score"]
 
-        df["_relevance_score"] = scores
-        df = df.sort_values(by="_relevance_score", ascending=False)
+            df["_relevance_score"] = scores
+            df = df.sort_values(by="_relevance_score", ascending=False)
 
-        return pa.Table.from_pandas(df)
+            return pa.Table.from_pandas(df)
+        except HTTPError as he:
+            logger.warning("Http request error in rerank call: %s ,%s :%s",he.errno,
+                           he.strerror, he.response.text if he.response else "no response")
+            pass
+        return FALLBACK.rerank_fts(query,combined_table)
 
     def _table_to_documents(self, results: pa.Table) -> list[str]:
         """Extract the text column as a list of plain Python strings."""
