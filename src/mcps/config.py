@@ -38,6 +38,7 @@ class ServerConfig:
     rag_reranker_embedding_dimensions: int = 0
     rag_reranker_infer_model: str = ""
     rag_infer_model: str = ""
+    rag_summary_model: str = ""
 
     search_limit: int = 30
     # Web deep research config
@@ -90,6 +91,7 @@ def create_config(
         ),
         rag_reranker_infer_model=os.getenv("RAG_RERANKER_INFER_MODEL", ""),
         rag_infer_model=os.getenv("RAG_INFER_MODEL", ""),
+        rag_summary_model=os.getenv("RAG_SUMMARY_MODEL", ""),
         research_fast_model=os.getenv("RESEARCH_FAST_MODEL", ""),
         research_infer_model=os.getenv("RESEARCH_INFER_MODEL", ""),
         vault_dir=(

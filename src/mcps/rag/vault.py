@@ -182,11 +182,11 @@ def _create_document_summary_generator(
     config: ServerConfig,
     http_client: httpx.AsyncClient,
 ) -> IDocumentSummaryGenerator | None:
-    if not config.rag_infer_model:
+    if not config.rag_summary_model:
         return None
 
     summary_model = ChatOpenAI(
-        model=config.rag_infer_model,
+        model=config.rag_summary_model,
         base_url=config.router_api_base,
         api_key=SecretStr(config.router_api_key),
         http_async_client=http_client,
