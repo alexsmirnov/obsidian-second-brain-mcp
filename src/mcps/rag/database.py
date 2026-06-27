@@ -124,7 +124,9 @@ class LanceDBStore(IVectorStore):
         try:
             # Process chunks and generate embeddings if needed
             texts = [
-                f"{c.title}\ndescription: {c.description}\n\n{c.content}"
+                # c.content
+                # f"Description: {c.wikilink_name} Content:{c.content}"
+                f"Doc: {c.wikilink_name} Content:{c.content}"
                 for c in chunks
             ]
             embeddings = await self.embedding_service.documents_embeddings(texts)
