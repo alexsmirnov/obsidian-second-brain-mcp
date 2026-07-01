@@ -8,7 +8,7 @@ The project is packaged and distributed as a **Python package** installable via 
 
 ### Build System
 
-**Hatchling** [pyproject.toml:27-33](../pyproject.toml#L27-L33):
+**Hatchling** [pyproject.toml:33-39](../pyproject.toml#L33-L39):
 ```toml
 [build-system]
 requires = ["hatchling"]
@@ -16,23 +16,24 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/mcps"]
+sources = ["src", "tests"]
 ```
 
 ### Console Script Entry Point
 
-**Entry Point** [pyproject.toml:24-25](../pyproject.toml#L24-L25):
+**Entry Point** [pyproject.toml:30-31](../pyproject.toml#L30-L31):
 ```toml
 [project.scripts]
 mcps = "mcps:main"
 ```
 
-After installation, the `mcps` command executes [src/mcps/__init__.py:15-30](../src/mcps/__init__.py#L15-L30).
+After installation, the `mcps` command executes [src/mcps/__init__.py](../src/mcps/__init__.py), which delegates to [src/mcps/server.py:192-235](../src/mcps/server.py#L192-L235).
 
 ## Package Management
 
 ### UV Tool
 
-**UV Configuration** [pyproject.toml:21-22](../pyproject.toml#L21-L22):
+**UV Configuration** [pyproject.toml:27-28](../pyproject.toml#L27-L28):
 ```toml
 [tool.uv]
 package = true
@@ -48,52 +49,62 @@ UV manages dependencies and provides faster package installation than pip.
 
 ### Python Version
 
-**Python 3.12+** required [pyproject.toml:9](../pyproject.toml#L9):
+**Python 3.13+** required [pyproject.toml:9](../pyproject.toml#L9):
 ```toml
-requires-python = ">=3.12"
+requires-python = ">=3.13"
 ```
 
 ### Runtime Dependencies
 
-Core dependencies [pyproject.toml:10-20](../pyproject.toml#L10-L20):
-- fastmcp >= 2.8.1
-- lancedb > 0.23.0
-- markdown >= 3.4.0
+Core dependencies [pyproject.toml:10-26](../pyproject.toml#L10-L26):
+- fastmcp==3.4.2
+- lancedb==0.25.3
+- markdown>=3.10.0
 - rank_bm25
-- python-dotenv >= 1.0.0
-- python-frontmatter >= 1.1.0
-- langchain-core / langchain-openai
-- httpx
+- python-dotenv>=1.2.2
+- python-frontmatter>=1.3.0
+- html2text>=2025.4.15
+- langgraph>=1.1.6
+- langchain-openai>=1.1.11
+- langchain-community>=0.4.1
+- langchain-aws>=1.4.0
+- lxml>=5.0.0
+- arxiv-to-prompt>=0.13.3
+- pymupdf>=1.25.0
+- langchain-google-genai>=4.2.5
 
 ## Development Environment
 
 ### Development Dependencies
 
-**Dependency Groups** [pyproject.toml:35-43](../pyproject.toml#L35-L43):
+**Dependency Groups** [pyproject.toml:41-52](../pyproject.toml#L41-L52):
 
 **dev group**:
-- pytest == 8.3.4
-- pytest-asyncio == 0.25.3
+- pytest==8.3.4
+- pytest-asyncio==0.25.3
+- pytest-httpx>=0.35.0
+- datasets>=4.5.0
 
 **lint group**:
-- pyrefly >= 0.15.2
-- ruff >= 0.11.10
+- pyright>=1.1.407
+- pyrefly>=0.15.2
+- ruff>=0.11.10
 
 ### Code Quality Tools
 
-**Pyright** [pyproject.toml:59-70](../pyproject.toml#L59-L70):
+**Pyright** [pyproject.toml:68-79](../pyproject.toml#L68-L79):
 - Type checker with basic type checking mode
 - Configured for src directory
 - Virtual environment: .venv
 
-**Ruff** [pyproject.toml:72-103](../pyproject.toml#L72-L103):
+**Ruff** [pyproject.toml:81-112](../pyproject.toml#L81-L112):
 - Linter and formatter
 - Target: Python 3.13
 - Line length: 88 characters
 - Enabled rules: E, F, B, I, N, UP, RUF
 - Double quotes for strings, 4-space indentation
 
-**Pyrefly** [pyproject.toml:104-112](../pyproject.toml#L104-L112):
+**Pyrefly** [pyproject.toml:113-121](../pyproject.toml#L113-L121):
 - Project analysis tool
 - Includes: src directory
 - Excludes: node_modules, __pycache__
@@ -118,11 +129,10 @@ Core dependencies [pyproject.toml:10-20](../pyproject.toml#L10-L20):
 External API services required for full functionality:
 
 **Required**:
-- OpenAI-compatible model router for model and embedding access
+- OpenAI-compatible model router for chat/embedding access (used by RAG and web research)
 
 **Optional**:
-- Serper API (web search tool)
-- Tavily API (web search tool)
+- Google Custom Search API key and search engine ID (web research alternative to DuckDuckGo)
 
 API keys configured via environment variables (see [config_environment.md](config_environment.md)).
 
@@ -130,20 +140,22 @@ API keys configured via environment variables (see [config_environment.md](confi
 
 ### Server Initialization
 
-**Main Entry** [src/mcps/__init__.py:15-30](../src/mcps/__init__.py#L15-L30):
-1. Create configuration via `mcps.config.create_config()`
-2. Create server via `mcps.server.create_server(config)`
-3. Setup logging via `setup_logging()`
-4. Run server asynchronously via `asyncio.run(server.start())`
+**Main Entry** [src/mcps/server.py:192-235](../src/mcps/server.py#L192-L235):
+1. Parse CLI arguments via `parse_args()`
+2. Create configuration via `mcps.config.create_config()`
+3. If `--reindex`: validate vault and run one-shot indexing
+4. Otherwise create server via `mcps.server.create_server(config)`
+5. Setup logging via `setup_logging()`
+6. Run server asynchronously via `asyncio.run(server.start(...))`
 
-**Server Factory** [src/mcps/server.py:75-87](../src/mcps/server.py#L75-L87):
-1. Instantiate DevAutomationServer
-2. Register all tools and resources
+**Server Factory** [src/mcps/server.py:134-146](../src/mcps/server.py#L134-L146):
+1. Instantiate DevAutomationServer with composed lifespan
+2. Register tools (`web_research` and Obsidian tools when vault is configured)
 3. Return configured server instance
 
-**Server Start** [src/mcps/server.py:70-72](../src/mcps/server.py#L70-L72):
-- Uses async context manager for vault lifecycle
-- Vault initialized and updated on startup
+**Server Start** [src/mcps/server.py:125-131](../src/mcps/server.py#L125-L131):
+- Forwards to FastMCP `run_async()`
+- Lifespan context managers handle vault and HTTP client lifecycle
 - Clean shutdown on exit
 
 ## Build and Package

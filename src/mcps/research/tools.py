@@ -7,6 +7,7 @@ optionally injected ``httpx.AsyncClient`` shared from FastMCP lifespan.
 
 from __future__ import annotations
 
+import logging
 import re
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -23,6 +24,7 @@ __all__ = [
     "create_google_search",
 ]
 
+logger = logging.getLogger(__file__)
 
 class SearchResult(BaseModel):
     """Single search result item returned by search callables."""
@@ -91,6 +93,7 @@ def create_google_search(
                     response.raise_for_status()
                     data = response.json()
         except httpx.HTTPError:
+            logger.warning("Google search failed for query: %s", query)
             return []
         return _parse_google_results(data)
 
@@ -225,20 +228,18 @@ def create_duckduckgo_search(
                     )
             response.raise_for_status()
         except httpx.HTTPError:
+            logger.warning("DuckDuckGo search failed for query: %s", query)
             return []
         return _parse_duckduckgo_results(response.text)
 
     return search
 
 
-def _truncate_content(content: str, max_chars: int) -> str:
+def _format_source_output(url: str, content: str, max_chars: int) -> str:
+    logger.info("Fetch %d chars from url %s",len(content),url)
     if len(content) <= max_chars:
         return content
     return content[:max_chars] + "\n\n[Content truncated]"
-
-
-def _format_source_output(url: str, content: str, max_chars: int) -> str:
-    return _truncate_content(content, max_chars)
 
 
 def _convert_html_to_markdown(html: str) -> str:
@@ -477,9 +478,11 @@ async def _fetch_wikipedia(
     )
     raw_text = response.text.strip()
     if not raw_text:
+        logger.warning("Wikipedia fetch failed for %s: %s", url, ERROR_EMPTY_RESPONSE)
         return ERROR_EMPTY_RESPONSE
     markdown = _mediawiki_to_markdown(raw_text)
     if not markdown:
+        logger.warning("Wikipedia fetch failed for %s: %s", url, ERROR_EMPTY_RESPONSE)
         return ERROR_EMPTY_RESPONSE
     return _format_source_output(url, markdown, max_chars)
 
@@ -520,6 +523,7 @@ async def _fetch_arxiv(
             last_error = result
             continue
         return result
+    logger.warning("arXiv fetch failed for %s: %s", url, last_error)
     return last_error
 
 async def _fetch_reddit(
@@ -537,11 +541,13 @@ async def _fetch_reddit(
     payload = response.json()
     children = payload[0]["data"]["children"]
     if not children:
+        logger.warning("Reddit fetch failed for %s: %s", url, ERROR_EMPTY_RESPONSE)
         return ERROR_EMPTY_RESPONSE
     post_data = children[0]["data"]
     title = str(post_data.get("title", "")).strip()
     selftext = str(post_data.get("selftext", "")).strip()
     if not title and not selftext:
+        logger.warning("Reddit fetch failed for %s: %s", url, ERROR_EMPTY_RESPONSE)
         return ERROR_EMPTY_RESPONSE
     markdown = f"# {title}\n\n{selftext}".strip()
     return _format_source_output(url, markdown, max_chars)
@@ -555,6 +561,9 @@ async def _fetch_github_blob(
 ) -> str:
     raw_url = _github_blob_to_raw_url(url)
     if raw_url is None:
+        logger.warning(
+            "GitHub blob fetch failed for %s: %s", url, ERROR_UNSUPPORTED_CONTENT
+        )
         return ERROR_UNSUPPORTED_CONTENT
     response = await _request_get(
         raw_url,
@@ -563,6 +572,7 @@ async def _fetch_github_blob(
     )
     content = response.text.strip()
     if not content:
+        logger.warning("GitHub blob fetch failed for %s: %s", url, ERROR_EMPTY_RESPONSE)
         return ERROR_EMPTY_RESPONSE
     return _format_source_output(url, content, max_chars)
 
@@ -575,6 +585,9 @@ async def _fetch_github_repo(
 ) -> str:
     readme_urls = _github_repo_readme_urls(url)
     if not readme_urls:
+        logger.warning(
+            "GitHub repo fetch failed for %s: %s", url, ERROR_UNSUPPORTED_CONTENT
+        )
         return ERROR_UNSUPPORTED_CONTENT
     for readme_url in readme_urls:
         try:
@@ -590,6 +603,7 @@ async def _fetch_github_repo(
         content = response.text.strip()
         if content:
             return _format_source_output(url, content, max_chars)
+    logger.warning("GitHub repo fetch failed for %s: %s", url, ERROR_EMPTY_RESPONSE)
     return ERROR_EMPTY_RESPONSE
 
 
@@ -613,16 +627,31 @@ async def _fetch_default(
             try:
                 extracted = _extract_without_content_type( response)
             except Exception:
+                logger.warning(
+                    "Web fetch failed for %s: %s", url, ERROR_UNSUPPORTED_CONTENT
+                )
                 return ERROR_UNSUPPORTED_CONTENT
             if extracted is None:
+                logger.warning(
+                    "Web fetch failed for %s: %s", url, ERROR_EMPTY_RESPONSE
+                )
                 return ERROR_EMPTY_RESPONSE
             return _format_source_output(url, extracted, max_chars)
+        logger.warning(
+            "Web fetch failed for %s: %s", url, ERROR_UNSUPPORTED_CONTENT
+        )
         return ERROR_UNSUPPORTED_CONTENT
     try:
         extracted = extractor(response)
     except Exception:
+        logger.warning(
+            "Web fetch failed for %s: %s", url, ERROR_UNSUPPORTED_CONTENT
+        )
         return ERROR_UNSUPPORTED_CONTENT
     if extracted is None:
+        logger.warning(
+            "Web fetch failed for %s: %s", url, ERROR_EMPTY_RESPONSE
+        )
         return ERROR_EMPTY_RESPONSE
     return _format_source_output(url, extracted, max_chars)
 
@@ -630,7 +659,7 @@ async def _fetch_default(
 def create_fetch(
     *,
     http_client: httpx.AsyncClient | None = None,
-    max_chars: int = 8000,
+    max_chars: int = 15000,
 ) -> Callable[[str], Awaitable[str]]:
     """Create an async webpage fetch callable with markdown extraction."""
 
@@ -674,8 +703,14 @@ def create_fetch(
             httpx.HTTPStatusError,
             httpx.HTTPError,
         ) as error:
+            logger.warning(
+                "Web fetch failed for %s: %s", url, _to_error_message(error)
+            )
             return _to_error_message(error)
         except Exception:
+            logger.warning(
+                "Web fetch failed for %s: %s", url, ERROR_UNSUPPORTED_CONTENT
+            )
             return ERROR_UNSUPPORTED_CONTENT
 
     return fetch

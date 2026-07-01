@@ -4,11 +4,11 @@ Test files and coverage areas for the MCPS Model Context Protocol server. #tests
 
 ## Test Organization
 
-Tests located in `/work/test/` directory using pytest framework.
+Tests located in `/work/tests/` directory using pytest framework.
 
 ## Unit Tests
 
-### [test/test_search_agent.py](../test/test_search_agent.py)
+### [tests/test_search_agent.py](../tests/test_search_agent.py)
 Tests for agentic search functionality including query rewriting and search parameter estimation.
 
 **Coverage**:
@@ -34,7 +34,7 @@ Tests for LangChain-backed embedding service.
 - Query vs document embedding modes
 - Configured dimension reporting
 
-### [test/test_document_processing.py](../test/test_document_processing.py)
+### [tests/test_document_processing.py](../tests/test_document_processing.py)
 Tests for document processing, file traversal, markdown parsing, and chunking.
 
 **Coverage**:
@@ -52,7 +52,7 @@ Tests for document processing, file traversal, markdown parsing, and chunking.
 - `TestMarkdownProcessor` - Document parsing and metadata extraction
 - `TestSemanticChunker` - Text chunking strategies
 
-### [test/test_lancedb_store.py](../test/test_lancedb_store.py)
+### [tests/test_lancedb_store.py](../tests/test_lancedb_store.py)
 Tests for LanceDB vector store implementation.
 
 **Coverage**:
@@ -64,7 +64,7 @@ Tests for LanceDB vector store implementation.
 - Index creation and management
 - Chunk retrieval and deletion
 
-### [test/test_chunk.py](../test/test_chunk.py)
+### [tests/test_chunk.py](../tests/test_chunk.py)
 Tests for chunk data models and validation.
 
 **Coverage**:
@@ -82,21 +82,45 @@ Tests for provider-neutral async LangChain reranking.
 - Empty result handling
 - Invalid score handling
 
-### [tests/test_obsidian_model_config.py](../tests/test_obsidian_model_config.py)
-Tests for OpenAI-compatible model router adapter construction outside RAG.
+### [tests/test_config.py](../tests/test_config.py)
+Tests for `ServerConfig` creation, environment variable precedence, CLI overrides, and validation warnings.
 
-**Coverage**:
-- Router URL/key usage
-- Shared `httpx.AsyncClient` injection
-- Embedding model and dimension config
-- Optional reranker model config
+### [tests/test_deep_research.py](../tests/test_deep_research.py)
+Contract tests for the LangGraph deep research agent with mocked models and HTTP calls.
 
-### [tests/test_rag_provider_boundaries.py](../tests/test_rag_provider_boundaries.py)
-Architectural boundary test ensuring `src/mcps/rag` does not import provider-specific model libraries.
+### [tests/test_llm_reranker.py](../tests/test_llm_reranker.py)
+Integration tests for `LlmReranker` with different model pairs and embedding fusion.
+
+### [tests/test_obsidian_vault_lifespan.py](../tests/test_obsidian_vault_lifespan.py)
+Tests for periodic vault indexing updates and error boundaries in the Obsidian lifespan.
+
+### [tests/test_obsidian_vault_tools.py](../tests/test_obsidian_vault_tools.py)
+Tests verifying registrations, execution, and error handling of Obsidian tool definitions.
+
+### [tests/test_proxy_reranker.py](../tests/test_proxy_reranker.py)
+Integration tests for `ProxyReranker` with OpenAI-compatible rerank endpoints.
+
+### [tests/test_search.py](../tests/test_search.py)
+Tests for `SemanticSearchEngine` querying, filtering, and field restrictions.
+
+### [tests/test_summarization.py](../tests/test_summarization.py)
+Tests for the LangChain-based document summary generator.
+
+### [tests/test_vault.py](../tests/test_vault.py)
+Tests for high-level `Vault` initialization, indexing, updates, and searching.
+
+### [tests/test_vault_search_engine.py](../tests/test_vault_search_engine.py)
+Tests for search engine instantiation logic and semantic search model selection.
+
+### [tests/test_vault_summary_chunks.py](../tests/test_vault_summary_chunks.py)
+Tests verifying document summary chunk injection during document processing.
+
+### [tests/test_vault_summary_wiring.py](../tests/test_vault_summary_wiring.py)
+Tests ensuring proper wiring and optional fallback of document summary generation in the vault.
 
 ## Evaluation Scripts
 
-### [test/vault_evaluation.py](../test/vault_evaluation.py)
+### [tests/vault_evaluation.py](../tests/vault_evaluation.py)
 Comprehensive evaluation test for vault search functionality measuring precision, recall, and F-score.
 
 **Coverage**:
@@ -119,11 +143,11 @@ Comprehensive evaluation test for vault search functionality measuring precision
 
 ## Test Configuration
 
-**pytest Configuration** [pyproject.toml:45-54](../pyproject.toml#L45-L54):
+**pytest Configuration** [pyproject.toml:54-63](../pyproject.toml#L54-L63):
 - Log CLI enabled at INFO level
-- Import mode: importlib
-- Test paths: test directory
-- Python path: src directory
+- Import mode: importlib with durations
+- Test paths: `tests` directory
+- Python path: `src` directory
 - Asyncio mode: auto
 - Asyncio fixture scope: function
 
@@ -142,9 +166,11 @@ Helper functions create test data:
 
 ## Test Dependencies
 
-**Development Dependencies** [pyproject.toml:36-39](../pyproject.toml#L36-L39):
+**Development Dependencies** [pyproject.toml:41-47](../pyproject.toml#L41-L47):
 - pytest == 8.3.4
 - pytest-asyncio == 0.25.3
+- pytest-httpx >= 0.35.0
+- datasets >= 4.5.0
 
 ## Coverage Areas
 
@@ -157,9 +183,9 @@ Helper functions create test data:
 
 ### Integration Points
 - LanceDB database operations
-- Model router adapter construction
 - Shared `httpx.AsyncClient` injection
-- RAG provider-import boundary enforcement
+- LangGraph deep research agent workflow
+- Vault lifespan and periodic indexing
 
 ### Error Handling
 - API failure scenarios
@@ -181,7 +207,7 @@ Tests run using pytest with asyncio support for async function testing.
 pytest
 
 # Run specific test file
-pytest test/test_search_agent.py
+pytest tests/test_search_agent.py
 
 # Run with verbose output
 pytest -v

@@ -1,6 +1,6 @@
 # MCPS
 
-Model Context Protocol (MCP) server providing AI assistants with RAG-based Obsidian vault search, customizable prompts, resources, and tools. Built with Python and FastMCP, deployed as a Python package. #index #overview #python #mcp #rag
+Model Context Protocol (MCP) server providing AI assistants with RAG-based Obsidian vault search and a LangGraph-powered web research agent. Built with Python 3.13 and FastMCP, deployed as a Python package. #index #overview #python #mcp #rag
 
 ## Documentation
 
@@ -10,13 +10,8 @@ Model Context Protocol (MCP) server providing AI assistants with RAG-based Obsid
 - [Deployment](deployment_infrastructure.md) - Python package deployment and build system
 - [Configuration](config_environment.md) - Environment variables and configuration options
 - [Tests](tests_coverage.md) - Test files and coverage areas
+- [Dependencies and Libraries](dependencies_libraries.md) - External libraries, tools, and version constraints
 
 ## Dependencies
 
-- **fastmcp** - Model Context Protocol server implementation, [docs](https://github.com/jlowin/fastmcp)
-- **lancedb** - Vector database with full-text search and hybrid search capabilities, [docs](https://lancedb.github.io/lancedb/)
-- **markdown** - Markdown parsing for document processing, [docs](https://python-markdown.github.io/)
-- **rank_bm25** - BM25 algorithm implementation for keyword search ranking
-- **python-frontmatter** - YAML frontmatter parser for markdown files, [docs](https://python-frontmatter.readthedocs.io/)
-- **langchain-core/langchain-openai** - Provider-neutral model interfaces and OpenAI-compatible model router adapters
-- **httpx** - Shared async HTTP client for model and web requests
+See [Dependencies and Libraries](dependencies_libraries.md) for detailed information on external libraries, tools, and version constraints.
