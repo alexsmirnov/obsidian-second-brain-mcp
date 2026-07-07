@@ -1,0 +1,30 @@
+# VCS metadata
+.git
+.gitignore
+
+# Local virtualenvs
+.venv
+
+# Python caches
+__pycache__/
+*.py[oc]
+.pytest_cache
+*.egg-info
+
+# Local tool caches
+.ruff*
+.cache
+
+# Local data and secrets
+.env
+test_content
+.vault*
+
+# IDE / editor / local agent config
+.vscode
+.aider*
+.roo*
+.mcp.json
+.claude
+.claude-data
+.serena

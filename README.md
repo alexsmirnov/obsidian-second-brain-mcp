@@ -75,3 +75,17 @@ uv run --project <local copy> mcps --vault <Vault Folder> --reindex
 uv run --project <local copy> mcps --vault <Vault Folder> --port 1234
 ```
 With http protocol, a single server available to all AI tools. I do use it as shared Knowledge Base and memory across all projects.
+
+## Docker
+
+Build and run the server as a standalone container with streamable HTTP transport:
+
+```sh
+# Build image
+docker build -t mcps:local .
+
+# Run container (vault and secrets are mounted/injected explicitly)
+docker run --rm --env-file .env -e VAULT=/vault -v <host-vault-path>:/vault -p 8000:8000 mcps:local
+```
+
+The server is reachable at `http://localhost:8000/mcp`.

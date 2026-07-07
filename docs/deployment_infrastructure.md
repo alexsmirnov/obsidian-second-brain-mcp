@@ -193,7 +193,24 @@ The project uses Python virtual environments for isolation:
 
 ### Container Support
 
-No containerization currently implemented. Deployment as Python package in host environment or virtual environment.
+**Multi-stage Dockerfile** [Dockerfile:1](../Dockerfile):
+- Builder stage: `python:3.13-slim` with `uv`, installs locked dependencies via `uv sync --locked` into `/app/.venv`.
+- Runtime stage: `python:3.13-slim`, non-root `mcps` user, copies app source and builder `.venv`, sets `PATH=/app/.venv/bin:$PATH` and `PYTHONUNBUFFERED=1`.
+- Default command runs the server with streamable HTTP transport: `mcps --transport streamable-http --host 0.0.0.0 --port 8000`.
+- `EXPOSE 8000` documents the container network port.
+
+**Runtime contract**:
+- Vault must be mounted explicitly: `-v <host-vault-path>:/vault -e VAULT=/vault`.
+- Secrets/config supplied via `--env-file .env` (see [config_environment.md](config_environment.md)).
+- MCP clients connect over streamable HTTP at `http://<host>:8000/mcp`.
+
+**Build and run**:
+```bash
+docker build -t mcps:local .
+docker run --rm --env-file .env -e VAULT=/vault -v <host-vault-path>:/vault -p 8000:8000 mcps:local
+```
+
+**`.dockerignore`** [.dockerignore:1](../.dockerignore) excludes VCS metadata, `.venv`, Python/test caches, and local tool/agent config directories from the build context.
 
 ## Logging Configuration
 
