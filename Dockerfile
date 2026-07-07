@@ -32,7 +32,9 @@ WORKDIR /app
 COPY --from=builder --chown=mcps:mcps /app /app
 
 ENV PATH="/app/.venv/bin:$PATH" \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    VAULT=/vault \
+    CONTAINER=true
 
 USER mcps
 

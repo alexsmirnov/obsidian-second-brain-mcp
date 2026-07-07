@@ -27,34 +27,23 @@ def setup_logging():
     macOS: ~/Library/Logs/Mcps/mcps.log
     Linux: /var/log/mcps.log (fallback: ~/.local/state/mcps/mcps.log)
     """
-    log_file = _resolve_log_path()
-
-
-    file_handler = logging.handlers.RotatingFileHandler(
-        log_file, maxBytes=10 * 1024 * 1024, backupCount=5
-    )
-    file_handler.setLevel(logging.DEBUG)
+    os.environ["FASTMCP_ENABLE_RICH_LOGGING"] = "False"
+    if os.path.exists('/.dockerenv') or os.environ.get('CONTAINER') == 'true':
+        log_handler = logging.StreamHandler(sys.stdout)
+    else:
+        log_file = _resolve_log_path()
+        log_handler = logging.handlers.RotatingFileHandler(
+            log_file, maxBytes=10 * 1024 * 1024, backupCount=5
+        )
+    log_handler.setLevel(logging.DEBUG)
 
     formatter = logging.Formatter(
         "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
     )
-    file_handler.setFormatter(formatter)
-    # configure output to file and remove console handlers
-    # Disable console output by removing default handlers
-    try:
-        from rich.logging import RichHandler
-        # Mcp tries to use rich for logging, if available
-        for handler in logging.root.handlers[:]:
-            if isinstance(handler, RichHandler):
-                logging.root.removeHandler(handler)# Configure logging to write to file
-    except ImportError:
-        pass
-    for handler in logging.root.handlers[:]:
-        if isinstance(handler, logging.StreamHandler) :
-            logging.root.removeHandler(handler)
+    log_handler.setFormatter(formatter)
     # Configure logging to write to file
     logging.basicConfig(
-        handlers=[file_handler],
+        handlers=[log_handler],
         level=logging.INFO,  # Capture all log levels
         force=True  # Override any existing logging configuration
     )
