@@ -63,8 +63,9 @@ def create_chunk(
     chunk_id = f"{document.id}_{position}"
     chunk_content = content.strip()
     is_summary_chunk = position == SUMMARY_CHUNK_POSITION
+    char_offset = offset + len(content) - len(content.lstrip())
     content_offset = (
-        0 if is_summary_chunk else offset + len(content) - len(content.lstrip())
+        0 if is_summary_chunk else document.content.count("\n", 0, char_offset)
     )
 
     metadata_source_text = document.content if is_summary_chunk else content

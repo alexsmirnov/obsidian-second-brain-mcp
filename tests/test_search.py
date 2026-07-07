@@ -25,7 +25,7 @@ def make_chunk(
         description=None,
         source_path=source_path or f"{doc_id}.md",
         wikilink_name=doc_id,
-        modified_at=datetime.now(UTC),
+        modified_at=1234.567,
         position=position,
         offset=offset,
         file_size=len(content),

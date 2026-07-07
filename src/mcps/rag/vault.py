@@ -445,8 +445,8 @@ class Vault(IVault):
         
         Args:
             wikilink_name: Full relative wikilink name without extension.
-            offset: Start character offset in decoded text.
-            limit: Maximum character count in decoded text.
+            offset: Zero-based line index to start reading from.
+            limit: Maximum number of lines to return.
             
         Returns:
             Content of the matched file
@@ -489,10 +489,10 @@ class Vault(IVault):
         offset: int | None,
         limit: int | None,
     ) -> str:
+        lines = content.splitlines(keepends=True)
         start = offset or 0
-        if limit is None:
-            return content[start:]
-        return content[start:start + limit]
+        selected = lines[start:] if limit is None else lines[start:start + limit]
+        return "".join(selected)
 
     async def list_files(self, directory: str) -> list[str]:
         """

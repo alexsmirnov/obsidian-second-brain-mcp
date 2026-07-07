@@ -159,7 +159,7 @@ The RAG pipeline in [src/mcps/rag/vault.py:252-556](../src/mcps/rag/vault.py#L25
 
 **ObsidianTools** [src/mcps/tools/obsidian_vault.py:208-244](../src/mcps/tools/obsidian_vault.py#L208-L244) - Registered only when `config.vault_dir` is set:
 - `obsidian_list_files` - List files and subfolders in a vault folder
-- `obsidian_get_content` - Retrieve note content by wikilink name with optional offset/limit
+- `obsidian_read_note` - Retrieve note content by wikilink name with optional line-based offset/limit
 - `obsidian_rename_move` - Rename/move notes and rewrite outgoing wikilinks
 - `obsidian_search` - Semantic search in vault with tag/path filtering
 

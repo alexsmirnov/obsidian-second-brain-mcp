@@ -118,7 +118,7 @@ ReadOffset = Annotated[
     Field(
         default=None,
         description=(
-            "Optional decoded character offset to start reading from. Use offsets "
+            "Optional zero-based line index to start reading from. Use offsets "
             "returned by obsidian_search chunk results when reading a specific "
             "section. Must be greater than or equal to 0."
         ),
@@ -131,7 +131,7 @@ ReadLimit = Annotated[
     Field(
         default=None,
         description=(
-            "Optional maximum number of decoded characters to return from the "
+            "Optional maximum number of lines to return from the "
             "requested note. Must be greater than or equal to 0."
         ),
         ge=0,
@@ -216,8 +216,12 @@ def register_tools(mcp: FastMCP) -> None:
     )
     mcp.tool(
         get_file_content,
-        name="obsidian_get_content",
-        description="Get file content from Obsidian Vault",
+        name="obsidian_read_note",
+        description=(
+            "Read the content of an Obsidian note by its wikilink name, with "
+            "optional line-based offset and limit for reading large notes in "
+            "parts."
+        ),
     )
     mcp.tool(
         rename_move_note,
@@ -237,7 +241,7 @@ def register_tools(mcp: FastMCP) -> None:
             "relevant note excerpts ranked by relevance. outgoing_links are Wikiling names "
             "of related notes. Does NOT list files or "
             "read a specific file by path — use obsidian_list_files or "
-            "obsidian_get_content for those."
+            "obsidian_read_note for those."
         ),
     )
 

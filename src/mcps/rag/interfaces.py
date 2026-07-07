@@ -55,7 +55,7 @@ class Chunk(BaseModel):
     wikilink_name: str  # source path without .md, as used in Obsidian wikilinks
     modified_at: float
     position: int
-    offset: int
+    offset: int  # zero-based line index of the chunk start within the document
     file_size: int
     embeddings: list[float] | None = None
 
@@ -289,7 +289,10 @@ class IVault(ABC):
         offset: int | None = None,
         limit: int | None = None,
     ) -> str:
-        """Get content by full relative wikilink name without .md extension."""
+        """Get content by full relative wikilink name without .md extension.
+
+        offset is a zero-based line index; limit is a maximum number of lines.
+        """
         pass
 
     @abstractmethod

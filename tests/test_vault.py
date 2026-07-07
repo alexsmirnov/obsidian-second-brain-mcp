@@ -28,7 +28,7 @@ class FakeDocumentProcessor(IDocumentProcessor):
             content="",
             metadata=Metadata(),
             source_path=file_path.name,
-            modified_at=datetime.now(),
+            modified_at=1234.567,
             wikilink_name="doc",
             file_size=10
         )
@@ -111,16 +111,18 @@ async def test_get_file_reads_exact_wikilink_markdown_file(tmp_path: Path) -> No
     assert result == "content"
 
 
-async def test_get_file_applies_offset_and_limit_as_string_characters(
+async def test_get_file_applies_offset_and_limit_as_lines(
     tmp_path: Path,
 ) -> None:
-    (tmp_path / "Note.md").write_text("a🙂bcdef", encoding="utf-8")
+    (tmp_path / "Note.md").write_text(
+        "line0\nline1\nline2\nline3\n", encoding="utf-8"
+    )
     vault, vector_store = make_vault(tmp_path)
     vector_store.sources_by_name = {"Note": ["Note.md"]}
 
-    result = await vault.get_file("Note", offset=2, limit=3)
+    result = await vault.get_file("Note", offset=1, limit=2)
 
-    assert result == "bcd"
+    assert result == "line1\nline2\n"
 
 
 async def test_get_file_returns_empty_string_for_zero_limit(tmp_path: Path) -> None:

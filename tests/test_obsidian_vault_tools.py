@@ -16,7 +16,7 @@ from mcps.tools import obsidian_vault
 
 OBSIDIAN_TOOL_NAMES = {
     "obsidian_list_files",
-    "obsidian_get_content",
+    "obsidian_read_note",
     "obsidian_rename_move",
     "obsidian_search",
 }
@@ -61,10 +61,10 @@ class FakeVault:
         if file_name not in self.files:
             raise FileNotFoundError(file_name)
         content = self.files[file_name]
+        lines = content.splitlines(keepends=True)
         start = offset or 0
-        if limit is None:
-            return content[start:]
-        return content[start:start + limit]
+        selected = lines[start:] if limit is None else lines[start:start + limit]
+        return "".join(selected)
 
     async def search(
         self,
@@ -163,13 +163,13 @@ async def test_get_file_content_rejects_relative_traversal_wikilink():
 @pytest.mark.asyncio
 async def test_get_file_content_applies_offset_and_limit():
     fake_vault = FakeVault()
-    fake_vault.files = {"Note": "a🙂bcdef"}
+    fake_vault.files = {"Note": "line0\nline1\nline2\nline3\n"}
     ctx = cast(Context, FakeContext({"obsidian_vault": fake_vault}))
 
-    result = await obsidian_vault.get_file_content("Note", ctx, offset=2, limit=3)
+    result = await obsidian_vault.get_file_content("Note", ctx, offset=1, limit=2)
 
-    assert result == "bcd"
-    assert fake_vault.get_file_calls == [("Note", 2, 3)]
+    assert result == "line1\nline2\n"
+    assert fake_vault.get_file_calls == [("Note", 1, 2)]
 
 
 @pytest.mark.asyncio
@@ -210,7 +210,7 @@ async def test_search_returns_wikilink_name_offset_and_size_in_results():
             description="Description",
             source_path="Folder/Note.md",
             wikilink_name="Folder/Note",
-            modified_at=datetime.now(UTC),
+            modified_at=1234.566,
             position=0,
             offset=12,
             file_size=7,

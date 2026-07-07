@@ -26,6 +26,8 @@ from mcps.rag.document_processing import (
 from mcps.rag.interfaces import Document, Metadata
 
 
+NOW: float= 4444435.454
+
 class TestMarkdownFileTraversal:
     """Test cases for MarkdownFileTraversal class."""
 
@@ -386,7 +388,7 @@ Invalid tags: # (space after hash), #-invalid (starts with hyphen).
             source_path="folder/note.md",
             wikilink_name="folder/note",
             file_size=len("Note content"),
-            modified_at=datetime(2024, 1, 2, 3, 4, 5),
+            modified_at=NOW,
         )
 
         chunk = create_chunk(document, "Summary content", SUMMARY_CHUNK_POSITION)
@@ -408,7 +410,7 @@ Invalid tags: # (space after hash), #-invalid (starts with hyphen).
             source_path="folder/note.md",
             wikilink_name="folder/note",
             file_size=0,
-            modified_at=datetime(2024, 1, 2, 3, 4, 5),
+            modified_at=NOW,
         )
 
         chunk = create_chunk(
@@ -421,7 +423,7 @@ Invalid tags: # (space after hash), #-invalid (starts with hyphen).
         assert set(chunk.tags) == {"frontmatter", "yaml-only", "inline-tag"}
 
     def test_create_summary_chunk_preserves_document_metadata(self):
-        modified_at = datetime(2024, 1, 2, 3, 4, 5)
+        modified_at = NOW
         document = Document(
             id="note-123",
             content="Note content",
@@ -451,7 +453,7 @@ Invalid tags: # (space after hash), #-invalid (starts with hyphen).
             source_path="folder/note.md",
             wikilink_name="folder/note",
             file_size=len("Note content"),
-            modified_at=datetime(2024, 1, 2, 3, 4, 5),
+            modified_at=NOW,
         )
 
         chunk = create_chunk(document, "Note content", 0, offset=0)
@@ -467,13 +469,13 @@ Invalid tags: # (space after hash), #-invalid (starts with hyphen).
             source_path="note.md",
             wikilink_name="note",
             file_size=len("Intro\n\n  Stored content  "),
-            modified_at=datetime(2024, 1, 2, 3, 4, 5),
+            modified_at=NOW,
         )
 
         chunk = create_chunk(document, "  Stored content  ", 0, offset=7)
 
         assert chunk.content == "Stored content"
-        assert chunk.offset == 9
+        assert chunk.offset == 2
         assert chunk.file_size == len("Intro\n\n  Stored content  ")
 
     def test_create_summary_chunk_sets_wikilink_name_zero_offset_and_summary_size(self):
@@ -485,7 +487,7 @@ Invalid tags: # (space after hash), #-invalid (starts with hyphen).
             source_path="folder/note.md",
             wikilink_name="folder/note",
             file_size=len("Note content"),
-            modified_at=datetime(2024, 1, 2, 3, 4, 5),
+            modified_at=NOW,
         )
 
         chunk = create_chunk(document, "  Summary content  ", SUMMARY_CHUNK_POSITION)
@@ -494,7 +496,7 @@ Invalid tags: # (space after hash), #-invalid (starts with hyphen).
         assert chunk.offset == 0
         assert chunk.file_size == len("Note content")
 
-    def test_fixed_size_chunker_preserves_character_offsets_in_chunks(self):
+    def test_fixed_size_chunker_preserves_line_offsets_in_chunks(self):
         document = Document(
             id="note-123",
             content="alpha beta gamma delta",
@@ -503,17 +505,17 @@ Invalid tags: # (space after hash), #-invalid (starts with hyphen).
             source_path="note.md",
             wikilink_name="note",
             file_size=len("alpha beta gamma delta"),
-            modified_at=datetime(2024, 1, 2, 3, 4, 5),
+            modified_at=NOW,
         )
 
         chunks = list(FixedSizeChunker(chunk_size=12, overlap=0).chunk(document))
 
         assert [(chunk.content, chunk.offset) for chunk in chunks] == [
             ("alpha beta", 0),
-            ("gamma delta", 11),
+            ("gamma delta", 0),
         ]
 
-    def test_semantic_chunker_preserves_character_offsets_in_chunks(self):
+    def test_semantic_chunker_preserves_line_offsets_in_chunks(self):
         document = Document(
             id="note-123",
             content="# Title\n\nIntro\n\n## Second\n\nBody",
@@ -522,14 +524,17 @@ Invalid tags: # (space after hash), #-invalid (starts with hyphen).
             source_path="note.md",
             wikilink_name="note",
             file_size=len("# Title\n\nIntro\n\n## Second\n\nBody"),
-            modified_at=datetime(2024, 1, 2, 3, 4, 5),
+            modified_at=NOW,
         )
 
         chunks = list(SemanticChunker(max_chunk_size=100, min_chunk_size=1).chunk(document))
 
         assert [(chunk.content, chunk.offset) for chunk in chunks] == [
             ("# Title\n\nIntro", 0),
-            ("## Second\n\nBody", document.content.index("## Second")),
+            (
+                "## Second\n\nBody",
+                document.content[:document.content.index("## Second")].count("\n"),
+            ),
         ]
 
     def test_semantic_chunker_offsets_with_repeated_section_text_are_monotonic(self):
@@ -542,12 +547,15 @@ Invalid tags: # (space after hash), #-invalid (starts with hyphen).
             source_path="note.md",
             wikilink_name="note",
             file_size=len(content),
-            modified_at=datetime(2024, 1, 2, 3, 4, 5),
+            modified_at=NOW,
         )
 
         chunks = list(SemanticChunker(max_chunk_size=100, min_chunk_size=1).chunk(document))
 
-        assert [chunk.offset for chunk in chunks] == [0, document.content.rindex("## Repeat")]
+        assert [chunk.offset for chunk in chunks] == [
+            0,
+            document.content[:document.content.rindex("## Repeat")].count("\n"),
+        ]
 
     def test_semantic_chunker_large_level2_section_offsets_are_monotonic_and_capped(self):
         section_content = "## Big\n\n" + ("A" * 260)
@@ -558,7 +566,7 @@ Invalid tags: # (space after hash), #-invalid (starts with hyphen).
             tags=[],
             source_path="note.md",
             wikilink_name="note",
-            modified_at=datetime(2024, 1, 2, 3, 4, 5),
+            modified_at=NOW,
             file_size=len(section_content),
         )
 
@@ -584,7 +592,7 @@ Invalid tags: # (space after hash), #-invalid (starts with hyphen).
             tags=[],
             source_path="note.md",
             wikilink_name="note",
-            modified_at=datetime(2024, 1, 2, 3, 4, 5),
+            modified_at=NOW,
             file_size=len(content),
         )
 
@@ -596,10 +604,12 @@ Invalid tags: # (space after hash), #-invalid (starts with hyphen).
         assert len(chunks) == 2
         assert all(len(chunk.content) <= max_chunk_size for chunk in chunks)
         assert chunks[0].offset == 0
-        assert chunks[1].offset == document.content.index("## S3")
+        assert chunks[1].offset == document.content[
+            :document.content.index("## S3")
+        ].count("\n")
 
-    def test_chunk_offsets_count_unicode_characters(self):
-        content = "a🙂bc def"
+    def test_chunk_offsets_count_lines(self):
+        content = "aaaa\nbbbb"
         document = Document(
             id="note-123",
             content=content,
@@ -608,13 +618,13 @@ Invalid tags: # (space after hash), #-invalid (starts with hyphen).
             source_path="note.md",
             wikilink_name="note",
             file_size=len(content),
-            modified_at=datetime(2024, 1, 2, 3, 4, 5),
+            modified_at=NOW,
         )
 
         chunks = list(FixedSizeChunker(chunk_size=5, overlap=0).chunk(document))
 
-        assert chunks[1].content == "def"
-        assert chunks[1].offset == 5
+        assert chunks[1].content == "bbbb"
+        assert chunks[1].offset == 1
 
     async def test_process_basic_markdown_file(self, processor, temp_file, sample_markdown_content):
         """Test processing a basic markdown file with frontmatter."""
@@ -636,14 +646,11 @@ Invalid tags: # (space after hash), #-invalid (starts with hyphen).
         
         # Verify metadata
         assert document.metadata.title == 'Test Document'
-        assert isinstance(document.modified_at, datetime)
         
         # Verify tags (frontmatter)
         expected_tags = {'python', 'testing'}
         assert set(document.tags) == expected_tags
         
-        # Verify timestamps
-        assert isinstance(document.modified_at, datetime)
 
     async def test_process_simple_markdown_without_frontmatter(self, processor, temp_file, simple_markdown_content):
         """Test processing markdown file without frontmatter."""
@@ -656,7 +663,6 @@ Invalid tags: # (space after hash), #-invalid (starts with hyphen).
         assert document.content.strip() == simple_markdown_content.strip()
         
         # Verify metadata (should only have timestamps)
-        assert isinstance(document.modified_at, datetime)
         assert document.metadata.title is None
         
         
@@ -672,7 +678,6 @@ Invalid tags: # (space after hash), #-invalid (starts with hyphen).
         assert isinstance(document, Document)
         assert document.content == ""
         assert document.tags == []
-        assert isinstance(document.modified_at, datetime)
 
     async def test_extract_wikilinks_various_patterns(self, markdown_with_complex_wikilinks):
         """Test wikilink extraction with various patterns."""
@@ -896,12 +901,12 @@ title: Large Document
         
         # Get original timestamps
         stat = temp_file.stat()
-        original_mtime = datetime.fromtimestamp(stat.st_mtime,tz=UTC)
+        original_mtime = stat.st_mtime
         
         document = await processor.process(temp_file)
         
         # Timestamps should match (within a small tolerance for precision)
-        assert abs((document.modified_at - original_mtime).total_seconds()) < 1
+        assert abs(document.modified_at - original_mtime) < 1
 
     async def test_process_excludes_tags_from_metadata(self, processor, temp_file):
         """Test that 'tags' key is excluded from metadata when present in frontmatter."""

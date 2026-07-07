@@ -112,7 +112,7 @@ def document() -> Document:
         source_path="folder/note.md",
         wikilink_name="folder/note",
         file_size=len(content),
-        modified_at=datetime(2024, 1, 2, 3, 4, 5),
+        modified_at=1234.567,
     )
 
 

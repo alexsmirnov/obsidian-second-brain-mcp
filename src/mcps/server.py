@@ -40,9 +40,9 @@ _SERVER_INSTRUCTIONS = (
     "Knowledge base conventions:\n"
     "- It uses Wikipedia markdown with [[Wikilinks]] to connect notes"
     "- Tag taxonomy is documented in the `Tags` note — read it with "
-    "`obsidian_get_content` to understand available tags before filtering.\n"
+    "`obsidian_read_note` to understand available tags before filtering.\n"
     "- Folder structure is documented in the `Folders` note — read it "
-    "with `obsidian_get_content` to understand how notes are organized."
+    "with `obsidian_read_note` to understand how notes are organized."
 )
 
 _WEB_RESEARCH_DESCRIPTION = (

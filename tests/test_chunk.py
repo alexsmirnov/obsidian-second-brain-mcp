@@ -12,7 +12,7 @@ import pytest
 from mcps.rag.document_processing import FixedSizeChunker, SemanticChunker
 from mcps.rag.interfaces import Document, Chunk, Metadata
 
-
+NOW: float= 4444435.454
 class TestLazyChunking:
     """Test cases for lazy chunking with generators."""
 
@@ -25,7 +25,7 @@ class TestLazyChunking:
                 "description": None,
                 "source_path": "Folder/Note.md",
                 "wikilink_name": "Folder/Note",
-                "modified_at": datetime.now(),
+                "modified_at": NOW,
                 "position": 0,
                 "offset": 0,
                 "file_size": 7,
@@ -45,7 +45,7 @@ class TestLazyChunking:
             "description": None,
             "source_path": "Folder/Note.md",
             "wikilink_name": "Folder/Note",
-            "modified_at": datetime.now(),
+            "modified_at": NOW,
             "position": 0,
             "offset": 0,
             "file_size": 7,
@@ -64,7 +64,7 @@ class TestLazyChunking:
             metadata=Metadata(title= "Test Document", description = "Test document for chunking"),
             tags=["test", "document"],
             source_path="/tmp/test.md",
-            modified_at=datetime.now(),
+            modified_at=NOW,
             file_size=0,
             wikilink_name="test_doc_123",
 
@@ -82,7 +82,7 @@ class TestLazyChunking:
             metadata=Metadata(title= "Large Document", description = "A large document for testing chunking"),
             tags=["large", "test"],
             source_path="/tmp/large.md",
-            modified_at=datetime.now(),
+            modified_at=NOW,
             file_size=0,
             wikilink_name="test_doc_123",
         )
@@ -96,7 +96,7 @@ class TestLazyChunking:
             metadata=Metadata(title="Empty Document", description="An empty document for testing"),
             tags=[],
             source_path="/tmp/empty.md",
-            modified_at=datetime.now(),
+            modified_at=NOW,
             file_size=0,
             wikilink_name="test_doc_123",
         )
@@ -110,7 +110,7 @@ class TestLazyChunking:
             metadata=Metadata(title="Small Doc No Headers", description="Test small doc without headers"),
             tags=["small", "test"],
             source_path="/tmp/small.md",
-            modified_at=datetime.now(),
+            modified_at=NOW,
             file_size=0,
             wikilink_name="test_doc_123",
         )
@@ -124,7 +124,7 @@ class TestLazyChunking:
             metadata=Metadata(title="Small Doc One Header", description="Test small doc with one header"),
             tags=["small", "test"],
             source_path="/tmp/small_one.md",
-            modified_at=datetime.now(),
+            modified_at=NOW,
             file_size=0,
             wikilink_name="test_doc_123",
         )
@@ -138,7 +138,7 @@ class TestLazyChunking:
             metadata=Metadata(title="Small Doc Two Headers", description="Test small doc with two headers"),
             tags=["small", "test"],
             source_path="/tmp/small_two.md",
-            modified_at=datetime.now(),
+            modified_at=NOW,
             file_size=0,
             wikilink_name="test_doc_123",
         )
@@ -487,7 +487,7 @@ class TestLazyChunking:
             ),
             tags=["test"],
             source_path="/tmp/oversized_level2.md",
-            modified_at=datetime.now(),
+            modified_at=NOW,
             file_size=0,
             wikilink_name="oversized_level2",
         )
@@ -518,7 +518,7 @@ class TestLazyChunking:
             ),
             tags=["test"],
             source_path="/tmp/greedy_small_sections.md",
-            modified_at=datetime.now(),
+            modified_at=NOW,
             file_size=0,
             wikilink_name="greedy_small_sections",
         )

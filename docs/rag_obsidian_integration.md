@@ -19,7 +19,7 @@ The RAG system provides semantic search capabilities optimized for Obsidian vaul
 │    └── FastMCP DevAutomationServer                               │
 ├──────────────────────────────────────────────────────────────────┤
 │  Tools Layer                                                     │
-│    └── obsidian_search, obsidian_get_content, obsidian_list_files│
+│    └── obsidian_search, obsidian_read_note, obsidian_list_files  │
 ├──────────────────────────────────────────────────────────────────┤
 │  Vault Orchestrator                                              │
 │    └── Vault class: initialize(), update_index(), search()       │
@@ -71,7 +71,7 @@ All components implement abstract interfaces enabling flexible dependency inject
 - `tags`: Frontmatter + inline `#tags`
 - `position`: Order in document
 - `wikilink_name`: Vault-relative wikilink target without `.md`
-- `offset`: Character offset relative to the start of document content
+- `offset`: Zero-based line index of the chunk start within document content
 - `file_size`: Source file size in characters
 - `embeddings`: Optional vector embedding
 

@@ -34,7 +34,7 @@ def temp_db_path() -> Generator[Path]:
 @pytest.fixture
 def sample_chunks():
     """Create sample chunks for testing."""
-    base_time = datetime.now()
+    base_time = datetime.now().timestamp()
 
     chunks = [
         Chunk(
