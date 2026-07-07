@@ -38,9 +38,10 @@ _SERVER_INSTRUCTIONS = (
     "rather than relying solely on training data.\n"
     "\n"
     "Knowledge base conventions:\n"
-    "- Tag taxonomy is documented in the `Tags.md` note — read it with "
+    "- It uses Wikipedia markdown with [[Wikilinks]] to connect notes"
+    "- Tag taxonomy is documented in the `Tags` note — read it with "
     "`obsidian_get_content` to understand available tags before filtering.\n"
-    "- Folder structure is documented in the `Folders.md` note — read it "
+    "- Folder structure is documented in the `Folders` note — read it "
     "with `obsidian_get_content` to understand how notes are organized."
 )
 

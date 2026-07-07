@@ -4,7 +4,7 @@ Tests for the document processing module, including MarkdownFileTraversal and Ma
 
 import shutil
 import tempfile
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Generator
 from unittest.mock import patch
@@ -896,7 +896,7 @@ title: Large Document
         
         # Get original timestamps
         stat = temp_file.stat()
-        original_mtime = datetime.fromtimestamp(stat.st_mtime)
+        original_mtime = datetime.fromtimestamp(stat.st_mtime,tz=UTC)
         
         document = await processor.process(temp_file)
         

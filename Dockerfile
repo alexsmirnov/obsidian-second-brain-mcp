@@ -34,10 +34,11 @@ COPY --from=builder --chown=mcps:mcps /app /app
 ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
     VAULT=/vault \
-    CONTAINER=true
+    CONTAINER=true \
+    FASTMCP_CLIENT_LOG_LEVEL=warning
 
 USER mcps
 
 EXPOSE 8000
 
-CMD ["mcps", "--transport", "streamable-http", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["mcps", "--transport", "http", "--host", "0.0.0.0", "--port", "8000"]

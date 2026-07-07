@@ -303,7 +303,7 @@ class LanceDBStore(IVectorStore):
         indices = await self.table.list_indices()
         logger.info([f"index {idx}," for idx in indices])
 
-    async def sources(self) -> dict[str, datetime]:
+    async def sources(self) -> dict[str, float]:
         """Get last updates to source documents."""
         if not self._initialized:
             raise NotInitializedError(

@@ -7,7 +7,7 @@ import asyncio
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 import httpx
@@ -312,14 +312,14 @@ class Vault(IVault):
                     try:
                         file_count += 1
                         stat = file_path.stat()
-                        modified_at = datetime.fromtimestamp(stat.st_mtime)
+                        modified_at = stat.st_mtime
                         relative_path = file_path.relative_to(
                             self.vault_path
                         ).as_posix()
                         if relative_path not in stored_files:
                             files_to_add.append(file_path)
                         elif modified_at > stored_files.get(
-                            relative_path, datetime.min
+                            relative_path, 0
                         ):
                             files_to_add.append(file_path)
                             files_to_delete.append(relative_path)

@@ -356,9 +356,6 @@ class MarkdownResultFormatter(IResultFormatter):
                 links = ", ".join(f"[[{link}]]" for link in chunk.outgoing_links)
                 formatted_parts.append(f"**Links:** {links}")
 
-            modified_at = chunk.modified_at.strftime("%Y-%m-%d %H:%M")
-            formatted_parts.append(f"**Modified:** {modified_at}")
-
             formatted_parts.append("")  # Empty line between results
 
         return "\n".join(formatted_parts)

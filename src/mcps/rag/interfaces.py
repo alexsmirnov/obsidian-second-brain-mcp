@@ -5,7 +5,6 @@ Abstract interfaces for the RAG search system components.
 from abc import ABC, abstractmethod
 from collections.abc import Generator
 from dataclasses import dataclass
-from datetime import datetime
 from enum import Enum, auto
 from pathlib import Path
 
@@ -38,7 +37,7 @@ class Document(BaseModel):
     source_path: str  # file path relative to vault root
     wikilink_name: str # file name without extension
     file_size: int # file size in characters
-    modified_at: datetime
+    modified_at: float
 
 
 class Chunk(BaseModel):
@@ -54,7 +53,7 @@ class Chunk(BaseModel):
     tags: list[str] = Field(default_factory=list)
     source_path: str  # file path relative to vault root
     wikilink_name: str  # source path without .md, as used in Obsidian wikilinks
-    modified_at: datetime
+    modified_at: float
     position: int
     offset: int
     file_size: int
@@ -71,7 +70,7 @@ class Chunk(BaseModel):
 class SourceUpdates(BaseModel):
     """Represents last  updates to a source document."""
     source_path: str
-    modified_at: datetime
+    modified_at: float
 
 @dataclass
 class SearchQuery:
@@ -213,7 +212,7 @@ class IVectorStore(ABC):
         pass
 
     @abstractmethod
-    async def sources(self) -> dict[str, datetime]:
+    async def sources(self) -> dict[str, float]:
         """Get last updates to source documents."""
         pass
 

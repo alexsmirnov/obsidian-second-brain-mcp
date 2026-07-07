@@ -5,7 +5,7 @@ import logging
 import os
 import re
 from collections.abc import Generator
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import override
 
@@ -178,7 +178,7 @@ class MarkdownProcessor(IDocumentProcessor):
 
         # Get file modification time
         stat = file_path.stat()
-        modified_at = datetime.fromtimestamp(stat.st_mtime)
+        modified_at = stat.st_mtime
         size = stat.st_size
         # Generate document ID
         doc_id = self._generate_document_id(file_path)
