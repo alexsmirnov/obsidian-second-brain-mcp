@@ -94,7 +94,7 @@ class LanceDBStore(IVectorStore):
                 self.table = await self.db.create_table(self.table_name, schema=schema)
                 logger.info(f"Created new table: {self.table_name}")
                 # Create indexes
-                await self.reindex()
+                await self.reindex(True)
 
             self._initialized = True
             logger.info("LanceDB initialized successfully")
@@ -235,7 +235,7 @@ class LanceDBStore(IVectorStore):
                 [f"'{self._escape_sql_string(p)}'" for p in source_paths]
             )
             delete_clause = f"source_path IN ({in_list})"
-            logger.debug(
+            logger.info(
                 f"Deleting chunks with source paths: {source_paths} using "
                 f"clause: {delete_clause}"
             )

@@ -317,10 +317,16 @@ class Vault(IVault):
                             self.vault_path
                         ).as_posix()
                         if relative_path not in stored_files:
+                            logger.info("File %s not found in database",relative_path)
                             files_to_add.append(file_path)
                         elif modified_at > stored_files.get(
                             relative_path, 0
                         ):
+                            logger.info("File %s has updated at %s, stored time %s",
+                                        relative_path,
+                                        datetime.fromtimestamp(modified_at).isoformat(),
+                                        datetime.fromtimestamp(stored_files.get(relative_path,0)).isoformat()
+                                        )
                             files_to_add.append(file_path)
                             files_to_delete.append(relative_path)
                             del stored_files[relative_path]
@@ -341,16 +347,19 @@ class Vault(IVault):
                 
                 
                 if stored_files:
+                    logger.info("Delete %d removed files: %s",len(stored_files),list(stored_files.keys())[:4])
                     await self.vector_store.delete(list(stored_files.keys()))
                     modified = True
                 
+                if files_to_delete:
+                    await self.vector_store.delete(files_to_delete)
                 if files_to_add:
                     await self._batch_process_files(files_to_add)
                     modified = True
                 # Rebuild indexes if any changes were made
                 if modified:
                     logger.info("Rebuilding indexes")
-                    await self.vector_store.reindex()
+                    await self.vector_store.reindex(False)
                 
                 end_time = datetime.now()
                 duration = (end_time - start_time).total_seconds()

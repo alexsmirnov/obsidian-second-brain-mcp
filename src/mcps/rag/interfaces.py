@@ -198,7 +198,7 @@ class IVectorStore(ABC):
         pass
     
     @abstractmethod
-    async def reindex(self) -> None:
+    async def reindex(self,replace: bool = True) -> None:
         """Recreate indexes for the vector store.
         
         Due to LanceDB implementation, indexes have to be recreated after any
