@@ -223,11 +223,11 @@ def register_tools(mcp: FastMCP) -> None:
             "parts."
         ),
     )
-    mcp.tool(
-        rename_move_note,
-        name="obsidian_rename_move",
-        description="Rename or move Obsidian note and update Wikilinks",
-    )
+#    mcp.tool(
+#        rename_move_note,
+#        name="obsidian_rename_move",
+#        description="Rename or move Obsidian note and update Wikilinks",
+#    )
     mcp.tool(
         search,
         name="obsidian_search",
