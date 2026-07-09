@@ -3,7 +3,7 @@ Vector database implementations for the RAG search system.
 """
 
 import logging
-from datetime import datetime, timedelta
+from datetime import timedelta
 from pathlib import Path
 
 import lancedb

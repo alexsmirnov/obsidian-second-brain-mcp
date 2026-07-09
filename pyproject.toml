@@ -23,6 +23,7 @@ dependencies = [
     "arxiv-to-prompt>=0.13.3",
     "pymupdf>=1.25.0",
     "langchain-google-genai>=4.2.5",
+    "pandas>=3.0.3",
 ]
 [tool.uv]
 package = true
