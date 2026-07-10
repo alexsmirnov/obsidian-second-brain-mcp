@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _GENERATE_QUERY_PROMPT = """You are a search query optimizer.
-Generate exactly 5 short web search queries for the user question.
+Generate exactly up to 5 short web search queries for the user question.
 
 Hard rules:
 1) Each query MUST be 2-5 keywords. Never exceed 6 words.
@@ -65,6 +65,9 @@ GOOD (short, orthogonal):
   "ChatGPT Enterprise security features"
   "Copilot 365 data governance"
   "ChatGPT Enterprise admin controls"
+
+GOOD: ( user asks about concrete page )
+  "https://example.com/openai/enterprise"
 
 Output: Return only 5 query strings.
 """
@@ -138,6 +141,7 @@ Your response must strictly conform to this schema:
 
 ### 4. WEB SEARCH QUERY RULES (HARD MANIFESTO)
 If `is_sufficient = False`, generate exactly 3 follow-up queries. Each query must target ONE unresolved gap. Never combine multiple concepts.
+If you know exact URL that may contain some answers, put it directly instead of search query
 
 1) Length: 2-5 keywords. Hard maximum of 6 words per query.
 2) Named Entities: Every query MUST contain at least one primary named entity or technical keyword from the original user question.
@@ -154,6 +158,7 @@ GOOD (Short, Orthogonal, Machine-Ready):
 - "ChatGPT Enterprise DLP integration"
 - "Microsoft Purview ChatGPT"
 - "ChatGPT Enterprise security features"
+- "https://example.com/page_with_related_content.html"
 
 BAD (Conversational, Long, Compound):
 - "How do I integrate ChatGPT Enterprise natively with Microsoft Purview DLP?"
@@ -161,41 +166,24 @@ BAD (Conversational, Long, Compound):
 """
 
 
-_FINALIZE_PROMPT = """You are the synthesis engine of a frontier research agent. 
-Review the entire corpus of gathered research, reflection loops, and source materials to construct your final output. 
-
-Your response must strictly follow a dual-component format, separated by a structural delimiter.
-
----
-
-### COMPONENT 1: THE DIRECT RESOLUTION
-[Provide ONLY the exact, naked, short response to the user's question. This component must contain zero preamble, zero introductory text, zero explanation, and zero source citations. It must strictly match the user's requested units, scale, rounding, casing, or phrasing format. Example: If the user asks for hours in thousands and the answer is 17,000, write exactly: 17]
-
---- STRUCTURAL BREAK: BEGIN DETAILED TECHNICAL APPENDIX ---
-
-### COMPONENT 2: THE TECHNICAL APPENDIX & METHODOLOGICAL EVIDENCE
-[Provide an exhaustive, unrestricted, hyper-detailed technical breakdown. This section must systematically address every explicit and implicit sub-question within the prompt. Do not summarize away complex technical, quantitative, or methodological details. You will be penalized for brevity.]
-
-Execute your analysis according to these four mandatory pillars:
-
-1. COMPREHENSIVE FACET ANALYSIS
-Deconstruct and explain every architectural layer, mechanism, limitation, framework, or theory mentioned in the research. If multiple technical solutions exist, map them out in full detail alongside their trade-offs.
-
-2. LOGICAL TRACEABILITY & SYSTEMATIC DERIVATION
-Provide a step-by-step narrative showing exactly how Component 1 was derived from the data. Explicitly include any mathematical formulas, unit conversions, or arithmetic calculations used during evaluation.
-
-3. RESOLUTION OF CONTRADICTIONS
-If the search history revealed conflicting data or divergent view points between sources, do not choose one arbitrarily. Dedicate a section to detailing the friction, identifying the source tiers involved, and stating why a particular source was favored or outlining the remaining uncertainty.
-
-4. INLINE EXPLICIT SOURCE ATTRIBUTION
-Every factual claim, metric, or code sample in this Appendix must be immediately followed by an inline citation to its source URL from your gathered research (e.g., [Source URL]). Mark potential source reliability issues transparently.
-
-### FINALIZATION SANITY CHECKLIST
-Before generating your output, execute this verification step internally:
-- Did I fulfill the precise format constraints of Component 1?
-- Did I double-check all arithmetic operations using raw numbers before applying unit transformations?
-- Did I include the granular, low-level technical specifics instead of high-level generalizations?
-- If data was missing or uncertain, did I explicitly quantify that uncertainty in the appendix rather than omitting the facet entirely?
+_FINALIZE_PROMPT = """Synthesize a final answer to the user's original question based on the research findings and sources gathered.
+Provide concise answer and detailed explanation.
+The answer itself should be short exact response to the user's question without any explanation or source attribution.
+The explanation MUST comprehensively cover EVERY facet of the user's question. Do not summarize away complex methodological, technical, or quantitative details; include them explicitly. If the user asks about specific frame
+works, mechanisms, limitations, or theories, ensure your explanation provides the exact detailed rationale and nuanced context found in the research.
+If there are multiply possible solution or conroversial information, also include it into explanation
+Guidelines:
+ Accuracy: Ensure the answer is technically correct and directly addresses ALL parts of the user's question.
+ Clarity: Write in a clear, concise manner. Directly answer the question without unnecessary preamble.
+ Traceability: In explanation, describe how the answer was derived, with verifiable evidence and logic
+Source Attribution: Explicitly reference the sources that support each part of the answer. Mark sources that may contradict provided answer
+If the answer includes code snippets, ensure they are well-formatted and tested against the gathered research
+ Finalization checklist (mandatory before writing answer):
+ - Verify requested answer format exactly (units, scale, rounding, casing, phrasing constraints).
+ - Verify arithmetic and unit conversions explicitly.
+ - Example: if question asks for answer in "thousands of hours", convert 17000 hours to 17.
+ - Address every single sub-question and implicit requirement in the prompt comprehensively.
+ - Resolve source-constraint requirements where possible; if unresolved, provide best-effort answer with explicit uncertainty in explanation.
 """
 
 
