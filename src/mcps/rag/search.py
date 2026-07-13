@@ -21,7 +21,7 @@ from .reranking import IRerankingService
 logger = logging.getLogger("mcps.search")
 
 QUERY_SYSTEM_PROMPT = """Act as a technical knowledge base. Generate a short,
-3-to-5 line mock document chunk that directly resolves the following search query.
+3-to-5 sentances mock document chunk that directly resolves the following search query.
 
 - If the query implies code or implementation: Write a raw markdown code block showing function definitions, key libraries, and syntax architecture.
 - If the query is scientific or theoretical: Use precise equations, variables, and data dense technical notation.

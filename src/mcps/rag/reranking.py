@@ -41,45 +41,29 @@ class LangChainReranker(IRerankingService):
 
     def __init__(self, model: BaseChatModel) -> None:
         self.model = model
-        self.structured_model = model.with_structured_output(RelevantChunks)
+        self.structured_model = model.with_structured_output(RelevantChunks, strict=True)
 
     async def rerank(self, query: str, chunks: list[Chunk]) -> list[Chunk]:
         if not chunks:
             return []
 
         try:
-            response = await self.structured_model.ainvoke(
+            response: RelevantChunks = await self.structured_model.ainvoke(
                 [
                     SystemMessage(content=RERANK_SYSTEM_PROMPT),
                     HumanMessage(content=self._create_user_prompt(query, chunks)),
                 ]
-            )
+            ) # type: ignore
         except Exception:
             logger.exception("Failed to rerank documents with LangChain chat model")
             raise
 
-        relevant_chunk_ids = self._extract_relevant_chunk_ids(response)
+        relevant_chunk_ids = list(dict.fromkeys(response.relevant_chunk_ids))
         chunks_by_id = {chunk.id: chunk for chunk in chunks}
-        selected_chunks = []
-        selected_ids = set()
-        for chunk_id in relevant_chunk_ids:
-            if chunk_id in selected_ids or chunk_id not in chunks_by_id:
-                continue
-            selected_chunks.append(chunks_by_id[chunk_id])
-            selected_ids.add(chunk_id)
+        selected_chunks = [chunks_by_id[chunk_id] for chunk_id in relevant_chunk_ids if chunk_id in chunks_by_id]
         logger.info("Rerank filtered %s chunks from %s",len(selected_chunks),len(chunks))
         return selected_chunks
 
-    @staticmethod
-    def _extract_relevant_chunk_ids(response: Any) -> list[str]:
-        if isinstance(response, RelevantChunks):
-            return response.relevant_chunk_ids
-        if isinstance(response, BaseModel):
-            response = response.model_dump()
-        if not isinstance(response, dict):
-            return []
-        relevant_chunk_ids = response.get("relevant_chunk_ids", [])
-        return [str(chunk_id) for chunk_id in relevant_chunk_ids]
 
     @staticmethod
     def _create_user_prompt(query: str, chunks: list[Chunk]) -> str:

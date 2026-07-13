@@ -456,7 +456,7 @@ Invalid tags: # (space after hash), #-invalid (starts with hyphen).
             modified_at=NOW,
         )
 
-        chunk = create_chunk(document, "Note content", 0, offset=0)
+        chunk = create_chunk(document, "Note content", 0, line_offset=0)
 
         assert chunk.wikilink_name == "folder/note"
 
@@ -472,7 +472,7 @@ Invalid tags: # (space after hash), #-invalid (starts with hyphen).
             modified_at=NOW,
         )
 
-        chunk = create_chunk(document, "  Stored content  ", 0, offset=7)
+        chunk = create_chunk(document, "  Stored content  ", 0, line_offset=2)
 
         assert chunk.content == "Stored content"
         assert chunk.offset == 2

@@ -23,6 +23,14 @@ from .interfaces import (
 SUMMARY_CHUNK_POSITION = -1
 
 
+def _leading_line_delta(text: str) -> int:
+    stripped = text.lstrip()
+    if not stripped:
+        return 0
+    leading_chars = len(text) - len(stripped)
+    return text[:leading_chars].count("\n")
+
+
 def extract_wikilinks(content: str) -> list[str]:
     """Extract wikilinks from markdown content.
     
@@ -56,15 +64,14 @@ def create_chunk(
     document: Document,
     content: str,
     position: int,
-    offset: int = 0,
+    line_offset: int = 0,
 ) -> Chunk:
     """Create a chunk from document and content."""
     chunk_id = f"{document.id}_{position}"
     chunk_content = content.strip()
     is_summary_chunk = position == SUMMARY_CHUNK_POSITION
-    char_offset = offset + len(content) - len(content.lstrip())
     content_offset = (
-        0 if is_summary_chunk else document.content.count("\n", 0, char_offset)
+        0 if is_summary_chunk else line_offset + _leading_line_delta(content)
     )
 
     metadata_source_text = document.content if is_summary_chunk else content
@@ -228,6 +235,7 @@ class FixedSizeChunker(IChunker):
 
         # Simple character-based chunking
         start = 0
+        start_line = 0
         position = 0
         chunk_count = 0
 
@@ -246,17 +254,24 @@ class FixedSizeChunker(IChunker):
             chunk_content = content[start:end]
 
             if chunk_content.strip():  # Only create non-empty chunks
-                chunk = create_chunk(document, chunk_content, position, start)
+                chunk = create_chunk(
+                    document,
+                    chunk_content,
+                    position,
+                    start_line,
+                )
 
                 yield chunk
                 position += 1
                 chunk_count += 1
 
             # Move start position with overlap
-            start = end if broke_at_word_boundary else max(
+            next_start = end if broke_at_word_boundary else max(
                 start + self.chunk_size - self.overlap,
                 end,
             )
+            start_line += content[start:next_start].count("\n")
+            start = next_start
 
         logger.debug(f"Created {chunk_count} chunks from document {document.id}")
 
@@ -278,8 +293,8 @@ class SemanticChunker(IChunker):
             sections = self._split_by_headers(content)
             pieces = [
                 piece
-                for section, offset in sections
-                for piece in self._split_section(section, offset)
+                for section, line_offset in sections
+                for piece in self._split_section(section, line_offset)
             ]
             position = 0
             i = 0
@@ -339,38 +354,41 @@ class SemanticChunker(IChunker):
         lines = content.splitlines(keepends=True)
         sections = []
         current_section = []
-        current_offset = 0
-        offset = 0
+        current_line_offset = 0
+        line_offset = 0
 
         for line in lines:
             if re.match(header_pattern, line) and current_section:
                 # Start new section
-                sections.append((''.join(current_section), current_offset))
+                sections.append((''.join(current_section), current_line_offset))
                 current_section = [line]
-                current_offset = offset
+                current_line_offset = line_offset
             else:
                 current_section.append(line)
-            offset += len(line)
+            line_offset += 1
 
         if current_section:
-            sections.append((''.join(current_section), current_offset))
+            sections.append((''.join(current_section), current_line_offset))
 
         return sections
 
-    def _split_section(self, section: str, offset: int) -> list[tuple[str, int]]:
+    def _split_section(self, section: str, line_offset: int) -> list[tuple[str, int]]:
         if len(section) <= self.max_chunk_size:
-            return [(section, offset)]
+            return [(section, line_offset)]
 
-        chunks = self._split_large_section(section)
-        return [(chunk, offset + chunk_offset) for chunk, chunk_offset in chunks]
+        return self._split_large_section(section, line_offset)
 
-    def _split_large_section(self, section: str) -> list[tuple[str, int]]:
+    def _split_large_section(
+        self,
+        section: str,
+        line_offset: int,
+    ) -> list[tuple[str, int]]:
         """Split large sections into smaller chunks."""
-        paragraphs = self._split_with_offsets(section)
+        paragraphs = self._split_with_line_offsets(section, line_offset)
         units = [
             unit
-            for paragraph, paragraph_offset in paragraphs
-            for unit in self._split_large_paragraph(paragraph, paragraph_offset)
+            for paragraph, paragraph_line_offset in paragraphs
+            for unit in self._split_large_paragraph(paragraph, paragraph_line_offset)
         ]
         chunks: list[tuple[str, int]] = []
         current_chunk: list[str] = []
@@ -401,38 +419,38 @@ class SemanticChunker(IChunker):
     def _split_large_paragraph(
         self,
         paragraph: str,
-        paragraph_offset: int,
+        paragraph_line_offset: int,
     ) -> list[tuple[str, int]]:
         if len(paragraph) <= self.max_chunk_size:
-            return [(paragraph, paragraph_offset)]
+            return [(paragraph, paragraph_line_offset)]
 
         lines = paragraph.splitlines(keepends=True)
         chunks: list[tuple[str, int]] = []
         current_lines: list[str] = []
-        current_offset = paragraph_offset
-        offset = paragraph_offset
+        current_line_offset = paragraph_line_offset
+        line_offset = paragraph_line_offset
 
         for line in lines:
             if len(line) > self.max_chunk_size:
                 if current_lines:
-                    chunks.append(("".join(current_lines), current_offset))
+                    chunks.append(("".join(current_lines), current_line_offset))
                     current_lines = []
                 chunks.extend(
-                    (part, offset + part_offset)
-                    for part, part_offset in self._split_hard_cap(line)
+                    (part, line_offset + part_line_offset)
+                    for part, part_line_offset in self._split_hard_cap(line)
                 )
-                current_offset = offset + len(line)
+                current_line_offset = line_offset + line.count("\n")
             elif len("".join([*current_lines, line])) <= self.max_chunk_size:
                 current_lines.append(line)
             else:
-                chunks.append(("".join(current_lines), current_offset))
+                chunks.append(("".join(current_lines), current_line_offset))
                 current_lines = [line]
-                current_offset = offset
+                current_line_offset = line_offset
 
-            offset += len(line)
+            line_offset += line.count("\n")
 
         if current_lines:
-            chunks.append(("".join(current_lines), current_offset))
+            chunks.append(("".join(current_lines), current_line_offset))
 
         return chunks
 
@@ -443,21 +461,25 @@ class SemanticChunker(IChunker):
         return sum(len(part) for part in parts) + len(separator) * (len(parts) - 1)
 
     @staticmethod
-    def _split_with_offsets(
+    def _split_with_line_offsets(
         content: str,
+        line_offset: int,
         separator: str = "\n\n",
     ) -> list[tuple[str, int]]:
         parts: list[tuple[str, int]] = []
         start = 0
+        current_line_offset = line_offset
         separator_length = len(separator)
 
         while start < len(content):
             separator_index = content.find(separator, start)
             if separator_index == -1:
-                parts.append((content[start:], start))
+                parts.append((content[start:], current_line_offset))
                 break
 
-            parts.append((content[start:separator_index], start))
+            part = content[start:separator_index]
+            parts.append((part, current_line_offset))
+            current_line_offset += part.count("\n") + separator.count("\n")
             start = separator_index + separator_length
 
         return parts
@@ -468,6 +490,7 @@ class SemanticChunker(IChunker):
 
         pieces: list[tuple[str, int]] = []
         start = 0
+        current_line_offset = 0
 
         while start < len(text):
             end = min(start + self.max_chunk_size, len(text))
@@ -480,9 +503,13 @@ class SemanticChunker(IChunker):
             if end == start:
                 end = min(start + self.max_chunk_size, len(text))
 
-            pieces.append((text[start:end], start))
+            piece = text[start:end]
+            pieces.append((piece, current_line_offset))
+            current_line_offset += piece.count("\n")
             start = end
             while start < len(text) and text[start].isspace():
+                if text[start] == "\n":
+                    current_line_offset += 1
                 start += 1
 
         return pieces

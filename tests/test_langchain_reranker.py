@@ -42,7 +42,7 @@ class ChatModel:
         self.structured_model = StructuredModel(response)
         self.schema = None
 
-    def with_structured_output(self, schema):
+    def with_structured_output(self, schema, strict: bool = False):
         self.schema = schema
         return self.structured_model
 
