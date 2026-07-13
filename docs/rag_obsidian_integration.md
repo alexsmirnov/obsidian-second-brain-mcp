@@ -98,8 +98,8 @@ Implementation: [document_processing.py:151-215](../src/mcps/rag/document_proces
 
 **SemanticChunker** (default):
 - Splits by H1-H3 headers (pattern: `^(#{1,3}\s+.+)$`)
-- Merges small sections (<500 chars) with subsequent until `max_chunk_size`
-- Splits large sections (>1000 chars) by paragraphs with a hard cap
+- Merges small sections (<500 chars) with subsequent content until `max_chunk_size`
+- Enforces the character-count `max_chunk_size`: splits large sections by paragraphs, then lines, then whitespace or characters for an oversized line
 - Preserves header with content
 
 Implementation: [document_processing.py:264-460](../src/mcps/rag/document_processing.py#L264-L460)

@@ -608,6 +608,163 @@ Invalid tags: # (space after hash), #-invalid (starts with hyphen).
             :document.content.index("## S3")
         ].count("\n")
 
+    def test_semantic_chunker_splits_flat_h1_h2_h3_sections_within_maximum(self):
+        content = "# One\n\nAAAA\n\n## Two\n\nBBBB\n\n### Three\n\nCCCC"
+        document = Document(
+            id="note-123",
+            content=content,
+            metadata=Metadata(title="Note", description="Description", source="source"),
+            tags=[],
+            source_path="note.md",
+            wikilink_name="note",
+            file_size=len(content),
+            modified_at=NOW,
+        )
+
+        chunks = list(SemanticChunker(max_chunk_size=20, min_chunk_size=1).chunk(document))
+
+        assert [chunk.content for chunk in chunks] == [
+            "# One\n\nAAAA",
+            "## Two\n\nBBBB",
+            "### Three\n\nCCCC",
+        ]
+        assert [chunk.offset for chunk in chunks] == [0, 4, 8]
+        assert all(len(chunk.content) <= 20 for chunk in chunks)
+
+    def test_semantic_chunker_splits_oversized_section_at_paragraph_boundaries(self):
+        content = "## Title\n\nAAAAAA\n\nBBBBBB\n\nCCCCCC"
+        document = Document(
+            id="note-123",
+            content=content,
+            metadata=Metadata(title="Note", description="Description", source="source"),
+            tags=[],
+            source_path="note.md",
+            wikilink_name="note",
+            file_size=len(content),
+            modified_at=NOW,
+        )
+
+        chunks = list(SemanticChunker(max_chunk_size=20, min_chunk_size=1).chunk(document))
+
+        assert [chunk.content for chunk in chunks] == [
+            "## Title\n\nAAAAAA",
+            "BBBBBB\n\nCCCCCC",
+        ]
+        assert [chunk.offset for chunk in chunks] == [0, 4]
+        assert all(len(chunk.content) <= 20 for chunk in chunks)
+
+    def test_semantic_chunker_splits_oversized_paragraph_at_line_boundaries(self):
+        content = "## Title\n\nalpha\nbeta\ngamma\ndelta"
+        document = Document(
+            id="note-123",
+            content=content,
+            metadata=Metadata(title="Note", description="Description", source="source"),
+            tags=[],
+            source_path="note.md",
+            wikilink_name="note",
+            file_size=len(content),
+            modified_at=NOW,
+        )
+
+        chunks = list(SemanticChunker(max_chunk_size=16, min_chunk_size=1).chunk(document))
+
+        assert [chunk.content for chunk in chunks] == [
+            "## Title",
+            "alpha\nbeta",
+            "gamma\ndelta",
+        ]
+        assert [chunk.offset for chunk in chunks] == [0, 2, 4]
+        assert all(len(chunk.content) <= 16 for chunk in chunks)
+
+    def test_semantic_chunker_splits_oversized_line_with_strict_maximum(self):
+        content = "## Title\n\nalpha beta gamma delta"
+        document = Document(
+            id="note-123",
+            content=content,
+            metadata=Metadata(title="Note", description="Description", source="source"),
+            tags=[],
+            source_path="note.md",
+            wikilink_name="note",
+            file_size=len(content),
+            modified_at=NOW,
+        )
+
+        chunks = list(SemanticChunker(max_chunk_size=12, min_chunk_size=1).chunk(document))
+
+        assert [chunk.content for chunk in chunks] == [
+            "## Title",
+            "alpha beta",
+            "gamma delta",
+        ]
+        assert [chunk.offset for chunk in chunks] == [0, 2, 2]
+        assert all(len(chunk.content) <= 12 for chunk in chunks)
+
+    def test_semantic_chunker_character_splits_unspaced_oversized_line(self):
+        content = "## Title\n\nABCDEFGHIJKLMNOP"
+        document = Document(
+            id="note-123",
+            content=content,
+            metadata=Metadata(title="Note", description="Description", source="source"),
+            tags=[],
+            source_path="note.md",
+            wikilink_name="note",
+            file_size=len(content),
+            modified_at=NOW,
+        )
+
+        chunks = list(SemanticChunker(max_chunk_size=10, min_chunk_size=1).chunk(document))
+
+        assert [chunk.content for chunk in chunks] == [
+            "## Title",
+            "ABCDEFGHIJ",
+            "KLMNOP",
+        ]
+        assert all(len(chunk.content) <= 10 for chunk in chunks)
+
+    def test_semantic_chunker_merges_undersized_large_section_tail_with_next_section(self):
+        content = "## First\n\nAAAAAAAAAAAAAAA\n\nBB\n\n## Second\n\nCC"
+        document = Document(
+            id="note-123",
+            content=content,
+            metadata=Metadata(title="Note", description="Description", source="source"),
+            tags=[],
+            source_path="note.md",
+            wikilink_name="note",
+            file_size=len(content),
+            modified_at=NOW,
+        )
+
+        chunks = list(SemanticChunker(max_chunk_size=26, min_chunk_size=10).chunk(document))
+
+        assert [chunk.content for chunk in chunks] == [
+            "## First\n\nAAAAAAAAAAAAAAA",
+            "BB\n\n## Second\n\nCC",
+        ]
+        assert [chunk.offset for chunk in chunks] == [0, 4]
+        assert all(len(chunk.content) <= 26 for chunk in chunks)
+
+    def test_semantic_chunker_keeps_undersized_content_when_merge_exceeds_maximum(self):
+        content = "## First\n\nAA\n\n## Second\n\nBBBBBBBBBBBBBBBB"
+        document = Document(
+            id="note-123",
+            content=content,
+            metadata=Metadata(title="Note", description="Description", source="source"),
+            tags=[],
+            source_path="note.md",
+            wikilink_name="note",
+            file_size=len(content),
+            modified_at=NOW,
+        )
+
+        chunks = list(SemanticChunker(max_chunk_size=20, min_chunk_size=10).chunk(document))
+
+        assert [chunk.content for chunk in chunks] == [
+            "## First\n\nAA",
+            "## Second",
+            "BBBBBBBBBBBBBBBB",
+        ]
+        assert all(len(chunk.content) <= 20 for chunk in chunks)
+
     def test_chunk_offsets_count_lines(self):
         content = "aaaa\nbbbb"
         document = Document(
