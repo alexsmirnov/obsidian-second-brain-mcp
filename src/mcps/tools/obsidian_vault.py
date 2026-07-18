@@ -138,13 +138,14 @@ ReadLimit = Annotated[
     ),
 ]
 
-
 class SearchResultItem(BaseModel):
-    """Structured search result returned by the obsidian_search tool."""
+    """Short result"""
+    content: str
 
+class SearchResultFullItem(SearchResultItem):
+    """Structured search result returned by the obsidian_search tool."""
     title: str | None
     description: str | None
-    content: str
     tags: list[str]
     outgoing_links: list[str] = Field(default_factory=list)  # Wikilinks
     source_path: str
@@ -365,8 +366,8 @@ async def search(
             query, tags=tags, path=path
         )
         logger.info(f"Search completed for query: {query}")
-        return [
-            SearchResultItem(
+        result: list[SearchResultItem] = [
+            SearchResultFullItem(
                 title=c.title,
                 description=c.description,
                 content=c.content,
@@ -377,8 +378,14 @@ async def search(
                 offset=c.offset,
                 file_size=c.file_size,
             )
-            for c in chunks
+            for c in chunks[:10]
         ]
+        if len(chunks) > 10:
+            result.append(SearchResultItem(
+                content=f"WARNING: search result truncated to 10 from {len(chunks)}. Use more concrete query",
+            ))
+
+        return result
 
     except Exception as e:
         logger.error(f"Failed to search vault for query '{query}': {e}")

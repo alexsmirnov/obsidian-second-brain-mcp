@@ -43,7 +43,7 @@ Document file discovery, markdown processing, and text chunking strategies.
 ### [src/mcps/rag/database.py](../src/mcps/rag/database.py) #module
 LanceDB vector store implementation with hybrid search and index management.
 **Uses**: interfaces, lancedb, pyarrow
-**Used by**: vault, tools.rag_search
+**Used by**: vault 
 
 ### [src/mcps/rag/embeddings.py](../src/mcps/rag/embeddings.py) #module
 Provider-neutral LangChain embedding adapter.
@@ -88,11 +88,6 @@ MCP tool implementations exposing functionality to AI assistants.
 Obsidian vault operations: file listing, content retrieval, rename/move, and semantic search. Builds the Obsidian lifespan and registers vault tools conditionally.
 **Uses**: config, rag.interfaces, rag.vault, fastmcp, httpx
 **Used by**: server
-
-### [src/mcps/tools/rag_search.py](../src/mcps/tools/rag_search.py) #module
-RAG search tool wrapper. Currently a placeholder stub.
-**Uses**: config, rag.database
-**Used by**: (currently unused)
 
 ### [src/mcps/tools/internet_search.py](../src/mcps/tools/internet_search.py) #module
 Internet search placeholder stub.
