@@ -230,15 +230,6 @@ class ISearchEngine(ABC):
         pass
 
 
-class IResultFormatter(ABC):
-    """Interface for formatting search results."""
-
-    @abstractmethod
-    async def format(self, results: list[Chunk], query: SearchQuery) -> str:
-        """Format search results for display."""
-        pass
-
-
 class IFileTraversal(ABC):
     """Interface for file discovery and traversal."""
 

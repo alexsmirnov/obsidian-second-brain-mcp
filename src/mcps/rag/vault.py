@@ -35,7 +35,6 @@ from .interfaces import (
     IDocumentSummaryGenerator,
     IEmbeddingService,
     IFileTraversal,
-    IResultFormatter,
     ISearchEngine,
     IVault,
     IVectorStore,
@@ -46,7 +45,6 @@ from .interfaces import (
 from .reranking import LangChainReranker
 from .search import (
     HypotheticalDocumentGenerator,
-    MarkdownResultFormatter,
     SemanticSearchEngine,
 )
 from .summarization import LangChainDocumentSummaryGenerator
@@ -240,7 +238,6 @@ class Vault(IVault):
             chunker: Service for chunking text
             vector_store: Service for storing and retrieving vectors
             search_engine: Service for semantic search
-            result_formatter: Service for formatting search results
             batch_size: Number of files to process in each batch
         """
         self.vault_path = Path(vault_path)

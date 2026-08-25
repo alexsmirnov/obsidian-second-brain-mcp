@@ -205,7 +205,7 @@ async def test_search_neighbor_offset_one_fetches_adjacent_chunks() -> None:
     result = await engine.search(SearchQuery(text="query", tags=[]))
 
     assert len(result) == 1
-    assert result[0].id == "doc_0_2"
+    assert result[0].id == "doc_0"
     assert "previous" in result[0].content
     assert "center" in result[0].content
     assert "next" in result[0].content
@@ -230,7 +230,7 @@ async def test_search_overlapping_neighbors_merge_into_single_window() -> None:
     result = await engine.search(SearchQuery(text="query", tags=[]))
 
     assert len(result) == 1
-    assert result[0].id == "doc_2_5"
+    assert result[0].id == "doc_2"
     assert result[0].content == "two\n\nthree\n\nfour\n\nfive"
     assert result[0].position == 2
     assert getattr(result[0], "_relevance_score") == 0.8
@@ -257,7 +257,7 @@ async def test_search_non_overlapping_neighbors_remain_separate() -> None:
 
     assert len(result) == 2
     ids = {chunk.id for chunk in result}
-    assert ids == {"doc_1_3", "doc_5_7"}
+    assert ids == {"doc_1", "doc_5"}
 
 
 async def test_search_neighbor_boundary_clamps_to_zero() -> None:
@@ -272,7 +272,7 @@ async def test_search_neighbor_boundary_clamps_to_zero() -> None:
     result = await engine.search(SearchQuery(text="query", tags=[]))
 
     assert len(result) == 1
-    assert result[0].id == "doc_0_1"
+    assert result[0].id == "doc_0"
     assert result[0].position == 0
     vector_store.get_chunks_by_ids.assert_awaited_once_with(
         ["doc_0", "doc_1"]

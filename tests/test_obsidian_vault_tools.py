@@ -17,7 +17,6 @@ from mcps.tools import obsidian_vault
 OBSIDIAN_TOOL_NAMES = {
     "obsidian_list_files",
     "obsidian_read_note",
-    "obsidian_rename_move",
     "obsidian_search",
 }
 
