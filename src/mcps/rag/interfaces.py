@@ -386,3 +386,16 @@ class IVault(ABC):
             plus directory names ended with `/`.
         """
         pass
+
+    @abstractmethod
+    async def get_backlinks(
+        self, wikilink_names: list[str]
+    ) -> dict[str, list[Link]]:
+        """Return incoming links for the requested notes, keyed by note name.
+
+        Each returned Link has `type` set to the incoming edge's type and
+        `target` set to the source note's wikilink_name. Notes with no
+        incoming links map to an empty list; every requested name is present
+        as a key. An empty input returns an empty dict.
+        """
+        pass

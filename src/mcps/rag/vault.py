@@ -38,9 +38,11 @@ from .interfaces import (
     ISearchEngine,
     IVault,
     IVectorStore,
+    Link,
     NotInitializedError,
     SearchQuery,
     SearchScope,
+    dedupe_links,
 )
 from .reranking import LangChainReranker
 from .search import (
@@ -439,6 +441,37 @@ class Vault(IVault):
         except Exception as e:
             logger.error(f"Search operation failed: {e}")
             raise RuntimeError(f"Failed to search vault: {e}") from e
+
+    async def get_backlinks(
+        self, wikilink_names: list[str]
+    ) -> dict[str, list[Link]]:
+        """Return incoming links for the requested notes, keyed by note name.
+
+        A single store query fetches every note linking to any requested
+        name; each returned Link carries the incoming edge's type and the
+        source note's wikilink_name as target. Per-note buckets are
+        deduplicated on (type, target): summary chunks carry the whole
+        document's links and would otherwise report every edge twice.
+        """
+        if not self._initialized:
+            raise NotInitializedError(
+                "Vault must be initialized before fetching backlinks"
+            )
+        if not wikilink_names:
+            return {}
+        backlinks: dict[str, list[Link]] = {
+            name: [] for name in wikilink_names
+        }
+        sources = await self.vector_store.get_notes_linking_to(wikilink_names)
+        for source in sources:
+            for link in source.links:
+                if link.target in backlinks:
+                    backlinks[link.target].append(
+                        Link(type=link.type, target=source.note)
+                    )
+        return {
+            name: dedupe_links(links) for name, links in backlinks.items()
+        }
     
     async def get_file(
         self,

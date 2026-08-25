@@ -148,6 +148,7 @@ class SearchResultFullItem(SearchResultItem):
     description: str | None
     tags: list[str]
     outgoing_links: list[Link] = Field(default_factory=list)  # Typed wikilinks
+    backlinks: list[Link] = Field(default_factory=list)  # Typed incoming links
     source_path: str
     wikilink_name: str
     offset: int
@@ -155,6 +156,7 @@ class SearchResultFullItem(SearchResultItem):
 
 
 UPDATE_INTERVAL = timedelta(minutes=1)
+MAX_BACKLINKS_PER_NOTE = 20
 
 
 async def _periodic_update_index(vault: IVault, interval: timedelta) -> None:
@@ -239,8 +241,11 @@ def register_tools(mcp: FastMCP) -> None:
             "to recall something they wrote, asks to find or look up their notes "
             "on a subject, refers to their knowledge base or vault, or asks "
             "'do I have anything on...' / 'what did I write about...'. Returns "
-            "relevant note excerpts ranked by relevance. outgoing_links are Wikiling names "
-            "of related notes. Does NOT list files or "
+            "relevant note excerpts ranked by relevance. Results carry typed "
+            "outgoing links and typed backlinks: each is an object with "
+            "'type' (the relation type) and 'target' (the note on the other "
+            "end of the edge — the destination for outgoing links, the "
+            "linking note for backlinks). Does NOT list files or "
             "read a specific file by path — use obsidian_list_files or "
             "obsidian_read_note for those."
         ),
@@ -366,6 +371,9 @@ async def search(
             query, tags=tags, path=path
         )
         logger.info(f"Search completed for query: {query}")
+        returned_chunks = chunks[:10]
+        note_names = list(dict.fromkeys(c.wikilink_name for c in returned_chunks))
+        backlink_map = await _vault_from_context(ctx).get_backlinks(note_names)
         result: list[SearchResultItem] = [
             SearchResultFullItem(
                 title=c.title,
@@ -373,12 +381,15 @@ async def search(
                 content=c.content,
                 tags=c.tags,
                 outgoing_links=c.typed_links,
+                backlinks=backlink_map.get(c.wikilink_name, [])[
+                    :MAX_BACKLINKS_PER_NOTE
+                ],
                 source_path=c.source_path,
                 wikilink_name=c.wikilink_name,
                 offset=c.offset,
                 file_size=c.file_size,
             )
-            for c in chunks[:10]
+            for c in returned_chunks
         ]
         if len(chunks) > 10:
             result.append(SearchResultItem(
