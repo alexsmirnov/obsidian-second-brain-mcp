@@ -13,6 +13,7 @@ from .interfaces import (
     ISearchEngine,
     IVectorStore,
     SearchQuery,
+    dedupe_links,
 )
 from .reranking import IRerankingService
 
@@ -290,8 +291,8 @@ class SemanticSearchEngine(ISearchEngine):
         content = "\n\n".join(chunk.content for chunk in window_chunks)
         offset = min(chunk.offset for chunk in window_chunks)
         tags = sorted({tag for chunk in window_chunks for tag in chunk.tags})
-        outgoing_links = sorted(
-            {link for chunk in window_chunks for link in chunk.outgoing_links}
+        merged_links = dedupe_links(
+            link for chunk in window_chunks for link in chunk.typed_links
         )
         relevance_score = max(
             (
@@ -307,7 +308,8 @@ class SemanticSearchEngine(ISearchEngine):
             title=primary.title,
             description=primary.description,
             source=primary.source,
-            outgoing_links=list(outgoing_links),
+            links=[link.target for link in merged_links],
+            link_types=[link.type for link in merged_links],
             tags=list(tags),
             source_path=primary.source_path,
             wikilink_name=primary.wikilink_name,

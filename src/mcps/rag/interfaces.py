@@ -3,12 +3,12 @@ Abstract interfaces for the RAG search system components.
 """
 
 from abc import ABC, abstractmethod
-from collections.abc import Generator
+from collections.abc import Generator, Iterable
 from dataclasses import dataclass
 from enum import Enum, auto
 from pathlib import Path
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class SearchScope(Enum):
@@ -25,6 +25,42 @@ class Metadata(BaseModel):
     source: str | None = Field(default=None)
     description: str | None = Field(default=None)
     title: str | None = Field(default=None)
+
+
+DEFAULT_LINK_TYPE = "related"
+
+
+class Link(BaseModel):
+    """A typed link from a note to a wikilink target."""
+    model_config = ConfigDict(frozen=True)
+
+    type: str
+    target: str
+
+
+def dedupe_links(links: Iterable[Link]) -> list[Link]:
+    """Return links in first-occurrence order, dropping redundant entries.
+
+    Drops exact (type, target) duplicates. Also drops a default-typed link
+    when the same target carries an explicit type elsewhere in the input;
+    two distinct explicit types to one target both survive.
+    """
+    links = list(links)
+    explicitly_typed_targets = {
+        link.target for link in links if link.type != DEFAULT_LINK_TYPE
+    }
+    deduped: list[Link] = []
+    seen: set[Link] = set()
+    for link in links:
+        if (
+            link.type == DEFAULT_LINK_TYPE
+            and link.target in explicitly_typed_targets
+        ):
+            continue
+        if link not in seen:
+            seen.add(link)
+            deduped.append(link)
+    return deduped
 
 
 class Document(BaseModel):
@@ -49,7 +85,8 @@ class Chunk(BaseModel):
     title: str | None
     description: str | None
     source: str | None = None
-    outgoing_links: list[str] = Field(default_factory=list)  # Wikilinks
+    links: list[str] = Field(default_factory=list)  # Wikilink targets
+    link_types: list[str] = Field(default_factory=list)  # Aligned with links
     tags: list[str] = Field(default_factory=list)
     source_path: str  # file path relative to vault root
     wikilink_name: str  # source path without .md, as used in Obsidian wikilinks
@@ -58,6 +95,23 @@ class Chunk(BaseModel):
     offset: int  # zero-based line index of the chunk start within the document
     file_size: int
     embeddings: list[float] | None = None
+
+    @model_validator(mode="after")
+    def _link_arrays_aligned(self) -> "Chunk":
+        if len(self.links) != len(self.link_types):
+            raise ValueError(
+                f"links ({len(self.links)}) and link_types "
+                f"({len(self.link_types)}) must be aligned"
+            )
+        return self
+
+    @property
+    def typed_links(self) -> list[Link]:
+        """Links reconstructed from the aligned links/link_types arrays."""
+        return [
+            Link(type=link_type, target=target)
+            for link_type, target in zip(self.link_types, self.links, strict=True)
+        ]
 
     def __hash__(self) -> int:                      # hash/id only, it's primary key
         return hash(self.id)

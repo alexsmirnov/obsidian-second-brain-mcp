@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock
 
-from mcps.rag.interfaces import Chunk, SearchQuery, SearchScope
+from mcps.rag.interfaces import Chunk, Link, SearchQuery, SearchScope
 from mcps.rag.search import SemanticSearchEngine
 
 
@@ -14,7 +14,7 @@ def make_chunk(
     position: int = 0,
     source_path: str | None = None,
     tags: list[str] | None = None,
-    outgoing_links: list[str] | None = None,
+    links: list[Link] | None = None,
     offset: int = 0,
 ) -> Chunk:
     id_ = f"{doc_id}_{position}"
@@ -30,7 +30,8 @@ def make_chunk(
         offset=offset,
         file_size=len(content),
         tags=tags or [],
-        outgoing_links=outgoing_links or [],
+        links=[link.target for link in links or []],
+        link_types=[link.type for link in links or []],
     )
     if relevance_score is not None:
         object.__setattr__(chunk, "_relevance_score", relevance_score)
@@ -286,14 +287,17 @@ async def test_search_neighbor_merging_unions_tags_and_links() -> None:
         relevance_score=0.8,
         position=1,
         tags=["center"],
-        outgoing_links=["center_link"],
+        links=[Link(type="requires", target="Shared")],
     )
     neighbor = make_chunk(
         "doc",
         content="neighbor",
         position=2,
         tags=["neighbor", "center"],
-        outgoing_links=["neighbor_link"],
+        links=[
+            Link(type="related", target="Shared"),
+            Link(type="related", target="Other"),
+        ],
     )
     vector_store = make_vector_store(
         search_results=[center],
@@ -304,7 +308,10 @@ async def test_search_neighbor_merging_unions_tags_and_links() -> None:
     result = await engine.search(SearchQuery(text="query", tags=[]))
 
     assert result[0].tags == ["center", "neighbor"]
-    assert result[0].outgoing_links == ["center_link", "neighbor_link"]
+    assert result[0].typed_links == [
+        Link(type="requires", target="Shared"),
+        Link(type="related", target="Other"),
+    ]
 
 
 async def test_search_neighbor_merged_chunk_drops_embeddings() -> None:

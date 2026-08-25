@@ -46,7 +46,8 @@ def sample_chunks():
             source="AI Tutorial",
             description="Machine learning basics",
             title="ML Introduction",
-            outgoing_links=["artificial_intelligence"],
+            links=["artificial_intelligence"],
+            link_types=["related"],
             tags=["machine-learning", "ai"],
             source_path="/test/doc1.md",
             wikilink_name="doc1",
@@ -64,7 +65,8 @@ def sample_chunks():
             source="Deep Learning Guide",
             description="Neural networks and deep learning",
             title="Deep Learning Basics",
-            outgoing_links=["neural_networks"],
+            links=["neural_networks"],
+            link_types=["related"],
             tags=["deep-learning", "neural-networks"],
             source_path="/test/doc2.md",
             wikilink_name="doc2",
@@ -82,7 +84,8 @@ def sample_chunks():
             source="NLP Handbook",
             description="Natural language processing techniques",
             title="NLP Overview",
-            outgoing_links=["language_models"],
+            links=["language_models"],
+            link_types=["related"],
             tags=["nlp", "language"],
             source_path="/test/doc3.md",
             wikilink_name="doc3",
@@ -100,7 +103,8 @@ def sample_chunks():
             source="Python Guide",
             description="Python programming for data science",
             title="Python Basics",
-            outgoing_links=["python", "data_science"],
+            links=["python", "data_science"],
+            link_types=["related", "related"],
             tags=["python", "programming"],
             source_path="/test/doc1.md",
             wikilink_name="doc1",
@@ -483,7 +487,8 @@ def make_chunk(source_path, modified_at, idx=0):
         source="Test Source",
         description="Test Description",
         title="Test Title",
-        outgoing_links=[],
+        links=[],
+        link_types=[],
         tags=["test"],
         source_path=source_path,
         wikilink_name=source_path.removesuffix(".md"),
@@ -503,20 +508,21 @@ async def test_sources_empty(lancedb_store):
 async def test_sources_unique_and_min_time(lancedb_store):
     from datetime import datetime, timedelta
     await lancedb_store.initialize()
-    base_time = datetime.now()
+    base_time = datetime.now().timestamp()
+    day_seconds = timedelta(days=1).total_seconds()
     # Create chunks with duplicate source_path but different times
     chunks = [
-        make_chunk("/file1.md", base_time - timedelta(days=2), idx=0),
-        make_chunk("/file1.md", base_time - timedelta(days=1), idx=1),
-        make_chunk("/file2.md", base_time - timedelta(days=3), idx=0),
+        make_chunk("/file1.md", base_time - 2 * day_seconds, idx=0),
+        make_chunk("/file1.md", base_time - day_seconds, idx=1),
+        make_chunk("/file2.md", base_time - 3 * day_seconds, idx=0),
         make_chunk("/file2.md", base_time, idx=1),
-        make_chunk("/file3.md", base_time - timedelta(days=5), idx=0),
+        make_chunk("/file3.md", base_time - 5 * day_seconds, idx=0),
     ]
     await lancedb_store.store(chunks)
     await lancedb_store.reindex()
     updates = await lancedb_store.sources()
     # Should return one update per unique source_path, with minimal modified_at
-    assert updates["/file1.md"] == base_time - timedelta(days=2)
-    assert updates["/file2.md"] == base_time - timedelta(days=3)
-    assert updates["/file3.md"] == base_time - timedelta(days=5)
+    assert updates["/file1.md"] == base_time - 2 * day_seconds
+    assert updates["/file2.md"] == base_time - 3 * day_seconds
+    assert updates["/file3.md"] == base_time - 5 * day_seconds
     assert len(updates) == 3

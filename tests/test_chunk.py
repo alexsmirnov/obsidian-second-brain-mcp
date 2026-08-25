@@ -7,14 +7,59 @@ from pathlib import Path
 from datetime import datetime
 from typing import Generator
 
+import pydantic
 import pytest
 
 from mcps.rag.document_processing import FixedSizeChunker, SemanticChunker
-from mcps.rag.interfaces import Document, Chunk, Metadata
+from mcps.rag.interfaces import Document, Chunk, Link, Metadata
 
 NOW: float= 4444435.454
+
+
+def valid_payload(**overrides):
+    """Minimal valid Chunk payload; overrides applied as keyword arguments."""
+    payload = {
+        "id": "chunk-1",
+        "content": "content",
+        "title": None,
+        "description": None,
+        "source_path": "Folder/Note.md",
+        "wikilink_name": "Folder/Note",
+        "modified_at": NOW,
+        "position": 0,
+        "offset": 0,
+        "file_size": 7,
+    }
+    payload.update(overrides)
+    return payload
 class TestLazyChunking:
     """Test cases for lazy chunking with generators."""
+
+    def test_chunk_rejects_misaligned_link_arrays(self):
+        # Arrange
+        payload = valid_payload(links=["A", "B"], link_types=["requires"])
+        # Act / Assert
+        with pytest.raises(pydantic.ValidationError):
+            Chunk.model_validate(payload)
+
+    def test_chunk_typed_links_zips_parallel_arrays(self):
+        # Arrange
+        chunk = Chunk.model_validate(
+            valid_payload(links=["A", "B"], link_types=["requires", "related"])
+        )
+        # Act / Assert
+        assert chunk.typed_links == [
+            Link(type="requires", target="A"),
+            Link(type="related", target="B"),
+        ]
+
+    def test_chunk_defaults_link_arrays_to_empty(self):
+        # Arrange
+        chunk = Chunk.model_validate(valid_payload())
+        # Assert
+        assert chunk.links == []
+        assert chunk.link_types == []
+        assert chunk.typed_links == []
 
     def test_chunk_accepts_wikilink_name_offset_and_size(self):
         chunk = Chunk.model_validate(
@@ -52,7 +97,7 @@ class TestLazyChunking:
         }
         data.pop(missing_field)
 
-        with pytest.raises(ValueError):
+        with pytest.raises(pydantic.ValidationError):
             Chunk.model_validate(data)
 
     @pytest.fixture

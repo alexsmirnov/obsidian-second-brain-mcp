@@ -13,7 +13,7 @@ from fastmcp.server.lifespan import Lifespan, lifespan
 from pydantic import BaseModel, Field
 
 from mcps.config import ServerConfig
-from mcps.rag.interfaces import IVault
+from mcps.rag.interfaces import IVault, Link
 from mcps.rag.vault import create_vault
 
 logger = logging.getLogger("mcps")
@@ -147,7 +147,7 @@ class SearchResultFullItem(SearchResultItem):
     title: str | None
     description: str | None
     tags: list[str]
-    outgoing_links: list[str] = Field(default_factory=list)  # Wikilinks
+    outgoing_links: list[Link] = Field(default_factory=list)  # Typed wikilinks
     source_path: str
     wikilink_name: str
     offset: int
@@ -372,7 +372,7 @@ async def search(
                 description=c.description,
                 content=c.content,
                 tags=c.tags,
-                outgoing_links=c.outgoing_links,
+                outgoing_links=c.typed_links,
                 source_path=c.source_path,
                 wikilink_name=c.wikilink_name,
                 offset=c.offset,

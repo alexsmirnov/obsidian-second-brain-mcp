@@ -14,6 +14,7 @@ from mcps.rag.interfaces import (
     IFileTraversal,
     ISearchEngine,
     IVectorStore,
+    Link,
     Metadata,
     SearchQuery,
     SearchScope,
@@ -120,20 +121,20 @@ def document() -> Document:
 def normal_chunks(document: Document) -> list[Chunk]:
     return [
         Chunk(
-            id=f"{document.id}_0",
-            content="Normal chunk",
+            id=f"{document.id}_{position}",
+            content=f"Normal chunk {position}",
             title=document.metadata.title,
             description=document.metadata.description,
             source=document.metadata.source,
-            outgoing_links=[],
             tags=document.tags,
             source_path=document.source_path,
             wikilink_name="folder/note",
             modified_at=document.modified_at,
-            position=0,
+            position=position,
             offset=0,
-            file_size=len("Normal chunk"),
+            file_size=len(f"Normal chunk {position}"),
         )
+        for position in range(3)
     ]
 
 
@@ -170,10 +171,12 @@ async def test_process_file_stores_summary_chunk_in_addition_to_semantic_chunks(
     assert [chunk.position for chunk in vector_store.stored_chunks] == [
         SUMMARY_CHUNK_POSITION,
         0,
+        1,
+        2,
     ]
     summary_chunk = vector_store.stored_chunks[0]
     assert summary_chunk.content == "Generated summary"
-    assert set(summary_chunk.outgoing_links) == {"Whole Link"}
+    assert summary_chunk.typed_links == [Link(type="related", target="Whole Link")]
     assert set(summary_chunk.tags) == {"frontmatter", "whole-tag"}
     assert vector_store.stored_chunks[1:] == normal_chunks
 

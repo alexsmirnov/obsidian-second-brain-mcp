@@ -21,9 +21,9 @@ from mcps.rag.document_processing import (
     create_chunk,
     default_skip_patterns,
     extract_content_tags,
-    extract_wikilinks,
+    extract_typed_links,
 )
-from mcps.rag.interfaces import Document, Metadata
+from mcps.rag.interfaces import Document, Link, Metadata, dedupe_links
 
 
 NOW: float= 4444435.454
@@ -396,13 +396,14 @@ Invalid tags: # (space after hash), #-invalid (starts with hyphen).
         assert chunk.position == SUMMARY_CHUNK_POSITION
         assert chunk.id == f"{document.id}_{SUMMARY_CHUNK_POSITION}"
 
-    def test_create_summary_chunk_extracts_tags_and_links_from_whole_document(self):
+    def test_create_summary_chunk_extracts_typed_links_from_whole_document(self):
         document = Document(
             id="note-123",
             content=(
                 "# Note\n\n"
                 "Summary text does not contain metadata.\n\n"
-                "See [[Global Link]] and [[Second Link|display]].\n"
+                "requires:: [[Global Link]]\n\n"
+                "See [[Second Link|display]].\n"
                 "#inline-tag #frontmatter"
             ),
             metadata=Metadata(title="Note", description="Description", source="source"),
@@ -419,7 +420,10 @@ Invalid tags: # (space after hash), #-invalid (starts with hyphen).
             SUMMARY_CHUNK_POSITION,
         )
 
-        assert set(chunk.outgoing_links) == {"Global Link", "Second Link"}
+        assert chunk.typed_links == [
+            Link(type="requires", target="Global Link"),
+            Link(type="related", target="Second Link"),
+        ]
         assert set(chunk.tags) == {"frontmatter", "yaml-only", "inline-tag"}
 
     def test_create_summary_chunk_preserves_document_metadata(self):
@@ -836,35 +840,6 @@ Invalid tags: # (space after hash), #-invalid (starts with hyphen).
         assert document.content == ""
         assert document.tags == []
 
-    async def test_extract_wikilinks_various_patterns(self, markdown_with_complex_wikilinks):
-        """Test wikilink extraction with various patterns."""
-        links = extract_wikilinks(markdown_with_complex_wikilinks)
-        
-        expected_links = {
-            'Simple Link',
-            'Actual Link',
-            'Link With Spaces',
-            'Another [Special] Link',
-            'Link',
-            'Link1',
-            'Link2'
-        }
-        assert set(links) == expected_links
-
-    async def test_extract_wikilinks_duplicates_removed(self):
-        """Test that duplicate wikilinks are removed."""
-        content = "[[Link1]] and [[Link2]] and [[Link1]] again."
-        links = extract_wikilinks(content)
-        
-        assert set(links) == {'Link1', 'Link2'}
-        assert len(links) == 2
-
-    async def test_extract_wikilinks_empty_content(self):
-        """Test wikilink extraction from empty content."""
-        links = extract_wikilinks("")
-        assert links == []
-
-
     async def test_extract_tags_from_frontmatter(self, processor, markdown_with_various_tags):
         """Test tag extraction from both frontmatter and content."""
         # Parse the content using frontmatter
@@ -1005,20 +980,6 @@ Regular content here.
         document = await processor.process(temp_file)
         assert isinstance(document, Document)
 
-    @pytest.mark.parametrize("wikilink_content,expected_links", [
-        ("[[Simple]]", ["Simple"]),
-        ("[[Link|Display]]", ["Link"]),
-        ("[[Multi Word Link]]", ["Multi Word Link"]),
-        ("[[Link1]] and [[Link2]]", ["Link1", "Link2"]),
-        ("No links here", []),
-        ("[[]]", []),  # Empty wikilink
-        ("[[Link with | pipe]]", ["Link with "]),  # Pipe in middle
-    ])
-    async def test_extract_wikilinks_parametrized(self, wikilink_content, expected_links):
-        """Parametrized test for wikilink extraction."""
-        links = extract_wikilinks(wikilink_content)
-        assert set(links) == set(expected_links)
-
     @pytest.mark.parametrize("tag_content,expected_tags", [
         ("#simple", ["simple"]),
         ("#tag1 #tag2", ["tag1", "tag2"]),
@@ -1152,3 +1113,258 @@ Just a tiny bit of content with a [[link]]."""
         assert document.metadata.description == 'A very small document'
         assert set(document.tags) == {'small', 'test'}
         assert 'Just a tiny bit of content' in document.content
+
+
+class TestTypedLinks:
+    """Typed-link extraction and deduplication tests."""
+
+    def test_extract_typed_links_standalone_field(self):
+        # Arrange
+        content = "requires:: [[RAG Basics]]"
+        # Act
+        links = extract_typed_links(content)
+        # Assert
+        assert links == [Link(type="requires", target="RAG Basics")]
+
+    def test_extract_typed_links_hidden_parenthesised_field(self):
+        # Arrange
+        content = "Prose (requires:: [[RAG Basics]]) continues."
+        # Act
+        links = extract_typed_links(content)
+        # Assert
+        assert links == [Link(type="requires", target="RAG Basics")]
+
+    def test_extract_typed_links_visible_bracketed_field(self):
+        # Arrange
+        content = "Prose [requires:: [[RAG Basics]]] continues."
+        # Act
+        links = extract_typed_links(content)
+        # Assert
+        assert links == [Link(type="requires", target="RAG Basics")]
+
+    @pytest.mark.parametrize("content", [
+        "- requires:: [[RAG Basics]]",
+        "* requires:: [[RAG Basics]]",
+        "+ requires:: [[RAG Basics]]",
+        "\trequires:: [[RAG Basics]]",
+    ])
+    def test_extract_typed_links_list_item_field(self, content):
+        # Act
+        links = extract_typed_links(content)
+        # Assert
+        assert links == [Link(type="requires", target="RAG Basics")]
+
+    def test_extract_typed_links_indented_field(self):
+        # Arrange
+        content = "  requires:: [[Indented]]"
+        # Act
+        links = extract_typed_links(content)
+        # Assert
+        assert links == [Link(type="requires", target="Indented")]
+
+    def test_extract_typed_links_bare_wikilink_defaults_to_related(self):
+        # Arrange
+        content = "See [[Some Note]] for detail."
+        # Act
+        links = extract_typed_links(content)
+        # Assert
+        assert links == [Link(type="related", target="Some Note")]
+
+    def test_extract_typed_links_arbitrary_field_name_is_kept_verbatim(self):
+        # Arrange
+        content = "custom-field:: [[X]]"
+        # Act
+        links = extract_typed_links(content)
+        # Assert
+        assert links == [Link(type="custom-field", target="X")]
+
+    def test_extract_typed_links_field_types_only_first_following_wikilink(self):
+        # Arrange
+        content = "requires:: [[A]] and [[B]]"
+        # Act
+        links = extract_typed_links(content)
+        # Assert
+        assert links == [
+            Link(type="requires", target="A"),
+            Link(type="related", target="B"),
+        ]
+
+    def test_extract_typed_links_strips_header_and_alias_from_target(self):
+        # Arrange
+        content = "requires:: [[RAG Basics#Section|Alias]]"
+        # Act
+        links = extract_typed_links(content)
+        # Assert
+        assert links == [Link(type="requires", target="RAG Basics")]
+
+    def test_extract_typed_links_ignores_external_markdown_link_target(self):
+        # Arrange
+        content = "implements:: [ColBERT](https://x.com)"
+        # Act
+        links = extract_typed_links(content)
+        # Assert
+        assert links == []
+
+    @pytest.mark.parametrize("content,expected", [
+        ("see the C++ std::vector [[docs]]", [Link(type="related", target="docs")]),
+        ("prose not::a field but [[Y]]", [Link(type="related", target="Y")]),
+    ])
+    def test_extract_typed_links_ignores_double_colon_in_prose(
+        self,
+        content,
+        expected,
+    ):
+        # Act
+        links = extract_typed_links(content)
+        # Assert
+        assert links == expected
+
+    def test_extract_typed_links_preserves_source_order(self):
+        # Arrange
+        content = "[[Zulu]] then requires:: [[Alpha]] then [[Mike]]"
+        # Act
+        links = extract_typed_links(content)
+        # Assert
+        assert links == [
+            Link(type="related", target="Zulu"),
+            Link(type="requires", target="Alpha"),
+            Link(type="related", target="Mike"),
+        ]
+
+    def test_extract_typed_links_empty_content_returns_empty_list(self):
+        # Act
+        links = extract_typed_links("")
+        # Assert
+        assert links == []
+
+    def test_extract_typed_links_empty_wikilink_is_skipped(self):
+        # Arrange
+        content = "requires:: [[]]"
+        # Act
+        links = extract_typed_links(content)
+        # Assert
+        assert links == []
+
+    @pytest.mark.parametrize("content,expected", [
+        ("[[Simple]]", [Link(type="related", target="Simple")]),
+        ("[[Link|Display]]", [Link(type="related", target="Link")]),
+        ("[[Multi Word Link]]", [Link(type="related", target="Multi Word Link")]),
+        (
+            "[[Link1]] and [[Link2]]",
+            [
+                Link(type="related", target="Link1"),
+                Link(type="related", target="Link2"),
+            ],
+        ),
+        ("No links here", []),
+        ("[[]]", []),  # Empty wikilink
+        # Pipe in middle
+        ("[[Link with | pipe]]", [Link(type="related", target="Link with ")]),
+    ])
+    def test_extract_typed_links_parametrized(self, content, expected):
+        # Act
+        links = extract_typed_links(content)
+        # Assert
+        assert links == expected
+
+    def test_extract_typed_links_deduplicates_repeated_typed_links(self):
+        # Arrange
+        content = "requires:: [[A]] and requires:: [[A]]"
+        # Act
+        links = extract_typed_links(content)
+        # Assert
+        assert links == [Link(type="requires", target="A")]
+
+    def test_link_is_hashable_and_set_uses_value_equality(self):
+        # Arrange
+        links = {Link(type="requires", target="A"), Link(type="requires", target="A")}
+        # Assert
+        assert len(links) == 1
+        assert hash(Link(type="requires", target="A")) == hash(
+            Link(type="requires", target="A")
+        )
+
+    def test_dedupe_links_accepts_any_iterable(self):
+        # Arrange
+        links = [
+            Link(type="requires", target="A"),
+            Link(type="related", target="A"),
+        ]
+        # Act
+        deduped = dedupe_links(iter(links))
+        # Assert
+        assert deduped == [Link(type="requires", target="A")]
+
+    def test_dedupe_links_removes_exact_duplicate_pairs(self):
+        # Arrange
+        links = [
+            Link(type="requires", target="A"),
+            Link(type="requires", target="A"),
+        ]
+        # Act
+        deduped = dedupe_links(links)
+        # Assert
+        assert deduped == [Link(type="requires", target="A")]
+
+    def test_dedupe_links_explicit_type_absorbs_default_to_same_target(self):
+        # Arrange
+        links = [
+            Link(type="related", target="A"),
+            Link(type="requires", target="A"),
+            Link(type="related", target="B"),
+        ]
+        # Act
+        deduped = dedupe_links(links)
+        # Assert
+        assert deduped == [
+            Link(type="requires", target="A"),
+            Link(type="related", target="B"),
+        ]
+
+    def test_dedupe_links_keeps_two_distinct_explicit_types_to_same_target(self):
+        # Arrange
+        links = [
+            Link(type="requires", target="A"),
+            Link(type="refines", target="A"),
+        ]
+        # Act
+        deduped = dedupe_links(links)
+        # Assert
+        assert deduped == links
+
+    def test_dedupe_links_preserves_first_occurrence_order(self):
+        # Arrange
+        links = [
+            Link(type="related", target="Z"),
+            Link(type="requires", target="A"),
+            Link(type="related", target="Z"),
+        ]
+        # Act
+        deduped = dedupe_links(links)
+        # Assert
+        assert deduped == [
+            Link(type="related", target="Z"),
+            Link(type="requires", target="A"),
+        ]
+
+    def test_create_chunk_stores_typed_links_from_chunk_content(self):
+        # Arrange
+        document = Document(
+            id="doc",
+            content="Body with [[Alpha]] and requires:: [[Beta]].",
+            metadata=Metadata(title=None, description=None, source=None),
+            tags=[],
+            source_path="notes/doc.md",
+            wikilink_name="doc",
+            file_size=48,
+            modified_at=1234.5,
+        )
+        # Act
+        chunk = create_chunk(
+            document,
+            "Body with [[Alpha]] and requires:: [[Beta]].",
+            0,
+        )
+        # Assert
+        assert chunk.links == ["Alpha", "Beta"]
+        assert chunk.link_types == ["related", "requires"]
