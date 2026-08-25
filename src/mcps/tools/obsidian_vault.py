@@ -35,11 +35,9 @@ FolderPath = Annotated[
 WikilinkName = Annotated[
     str,
     Field(
-        description=(
-            "File name used in [[Wikilinks]] to retrieve content from. "
-            "Exclude the file extension (.md) for markdown files. Examples: "
-            "'Meeting Notes', 'README', '2024-01-15'."
-        ),
+        description="""Exact indexed note name, case-sensitive — "Breaking News Aggregator"
+resolves, "breaking news aggregator" does not. Safest source is the
+`wikilink_name` field of an obsidian_search result. Omit the .md extension.""",
         min_length=1,
         max_length=500,
     ),
@@ -144,18 +142,20 @@ TraversalDepth = Annotated[
         default=1,
         ge=1,
         le=3,
-        description="Number of relation hops to walk from the origin note.",
+        description="""Hops from the origin (1-3, default 1). Depth 1 is safe unfiltered. At depth
+2+ ALWAYS pass relation_types: traversal expands by node degree, so a single
+high-degree neighbor (a daily/monthly note or a MOC) can consume the entire
+100-node budget with unrelated content before the relevant path is reached.""",
     ),
 ]
 
 RelationTypes = Annotated[
-    list[str] | None,
+    list[str],
     Field(
         default=None,
-        description=(
-            "Optional free-form relation types to follow. Multiple values are "
-            "OR-combined; omit to follow all relation types."
-        ),
+        description="""Field names from the `Relations` taxonomy, OR-combined. Omit to follow all.
+Unrecognized names match nothing and return an empty result without error —
+verify spelling against the `Relations` note."""
     ),
 ]
 
@@ -269,18 +269,32 @@ def register_tools(mcp: FastMCP) -> None:
             "linking note for backlinks). Does NOT list files or "
             "read a specific file by path — use obsidian_list_files or "
             "obsidian_read_note for those."
+            """outgoing_links are scoped to the returned CHUNK; backlinks are scoped to the
+whole NOTE, so the same backlink set repeats on every chunk of a large note.
+Link types are as authored. Untyped wikilinks are reported as "related"."""
         ),
     )
     mcp.tool(
         traverse_relations,
         name="obsidian_traverse_relations",
-        description=(
-            "Walk typed relation links forward and backward from an Obsidian "
-            "note. Depth is 1-3. relation_types OR-combines free-form types and "
-            "defaults to every type. Results contain at most 100 distinct notes "
-            "and warn when truncated; every node identifies its relation, "
-            "direction, and the note it was reached through."
-        ),
+        description="""Walk typed relation links out from an Obsidian note to find its structural
+neighborhood — prerequisites, sub-topics, alternatives, tooling, tasks.
+Use when you already know a note name; use obsidian_search when you don't.
+
+Common navigation patterns (relation_types to pass):
+prerequisite / learning-path chain ...... ["requires"]
+expand a broad note into its parts ...... ["details", "covers", "example"]
+what a system runs on .................... ["uses"]
+competing approaches ..................... ["compares", "refines"]
+claims that refute this .................. ["contradicts"]
+a project's tasks and outputs ............ ["tracks", "delivers", "blocked-by"]
+benchmarks a claim is tested against ..... ["measures"]
+
+Traversal is bidirectional at every hop: the filter matches edges authored
+on either note. Because the vault authors most relations broad → narrow
+(see the `Relations` note), a Descent type returned as direction "incoming"
+means the origin is the NARROW end — e.g. traversing ["details"] and getting
+direction "incoming" tells you the origin is a component of the note returned.""",
     )
 
     logger.info("Obsidian tools registered successfully with MCP")
@@ -439,7 +453,7 @@ async def traverse_relations(
     note: WikilinkName,
     ctx: Context,
     depth: TraversalDepth = 1,
-    relation_types: RelationTypes = None,
+    relation_types: RelationTypes = None, # type: ignore
 ) -> TraversalResult:
     """Walk typed note relations forward and backward from one note."""
     try:

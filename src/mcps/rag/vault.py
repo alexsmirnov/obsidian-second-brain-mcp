@@ -202,7 +202,7 @@ def _create_document_summary_generator(
 
 class Vault(IVault):
     """
-    Production-ready Vault implementation for managing RAG operations.
+    Vault implementation for managing RAG operations.
     
     This class provides a comprehensive implementation of the IVault interface,
     managing document indexing, searching, and retrieval operations using
