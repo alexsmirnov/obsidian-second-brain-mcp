@@ -43,6 +43,16 @@ _SERVER_INSTRUCTIONS = (
     "`obsidian_read_note` to understand available tags before filtering.\n"
     "- Folder structure is documented in the `Folders` note — read it "
     "with `obsidian_read_note` to understand how notes are organized."
+    """- Relation taxonomy is documented in the `Relations` note — 16 typed link
+    fields grouped as Descent (broad → narrow), Lateral (peer), and Ascent
+    (narrow → broad). Read it with obsidian_read_note before filtering a
+    traversal by relation_types.
+
+  Choosing a tool:
+  - obsidian_search — you don't know which note you need. Start here.
+  - obsidian_traverse_relations — you have a note name and want its typed
+    neighborhood (prerequisites, components, alternatives, tooling).
+  - obsidian_read_note — you know the note and need its full text."""
 )
 
 _WEB_RESEARCH_DESCRIPTION = (

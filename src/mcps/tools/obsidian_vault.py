@@ -13,7 +13,7 @@ from fastmcp.server.lifespan import Lifespan, lifespan
 from pydantic import BaseModel, Field
 
 from mcps.config import ServerConfig
-from mcps.rag.interfaces import IVault
+from mcps.rag.interfaces import IVault, Link, TraversalResult
 from mcps.rag.vault import create_vault
 
 logger = logging.getLogger("mcps")
@@ -35,11 +35,9 @@ FolderPath = Annotated[
 WikilinkName = Annotated[
     str,
     Field(
-        description=(
-            "File name used in [[Wikilinks]] to retrieve content from. "
-            "Exclude the file extension (.md) for markdown files. Examples: "
-            "'Meeting Notes', 'README', '2024-01-15'."
-        ),
+        description="""Exact indexed note name, case-sensitive — "Breaking News Aggregator"
+resolves, "breaking news aggregator" does not. Safest source is the
+`wikilink_name` field of an obsidian_search result. Omit the .md extension.""",
         min_length=1,
         max_length=500,
     ),
@@ -138,6 +136,29 @@ ReadLimit = Annotated[
     ),
 ]
 
+TraversalDepth = Annotated[
+    int,
+    Field(
+        default=1,
+        ge=1,
+        le=3,
+        description="""Hops from the origin (1-3, default 1). Depth 1 is safe unfiltered. At depth
+2+ ALWAYS pass relation_types: traversal expands by node degree, so a single
+high-degree neighbor (a daily/monthly note or a MOC) can consume the entire
+100-node budget with unrelated content before the relevant path is reached.""",
+    ),
+]
+
+RelationTypes = Annotated[
+    list[str],
+    Field(
+        default=None,
+        description="""Field names from the `Relations` taxonomy, OR-combined. Omit to follow all.
+Unrecognized names match nothing and return an empty result without error —
+verify spelling against the `Relations` note."""
+    ),
+]
+
 class SearchResultItem(BaseModel):
     """Short result"""
     content: str
@@ -147,7 +168,8 @@ class SearchResultFullItem(SearchResultItem):
     title: str | None
     description: str | None
     tags: list[str]
-    outgoing_links: list[str] = Field(default_factory=list)  # Wikilinks
+    outgoing_links: list[Link] = Field(default_factory=list)  # Typed wikilinks
+    backlinks: list[Link] = Field(default_factory=list)  # Typed incoming links
     source_path: str
     wikilink_name: str
     offset: int
@@ -155,6 +177,7 @@ class SearchResultFullItem(SearchResultItem):
 
 
 UPDATE_INTERVAL = timedelta(minutes=1)
+MAX_BACKLINKS_PER_NOTE = 20
 
 
 async def _periodic_update_index(vault: IVault, interval: timedelta) -> None:
@@ -239,11 +262,39 @@ def register_tools(mcp: FastMCP) -> None:
             "to recall something they wrote, asks to find or look up their notes "
             "on a subject, refers to their knowledge base or vault, or asks "
             "'do I have anything on...' / 'what did I write about...'. Returns "
-            "relevant note excerpts ranked by relevance. outgoing_links are Wikiling names "
-            "of related notes. Does NOT list files or "
+            "relevant note excerpts ranked by relevance. Results carry typed "
+            "outgoing links and typed backlinks: each is an object with "
+            "'type' (the relation type) and 'target' (the note on the other "
+            "end of the edge — the destination for outgoing links, the "
+            "linking note for backlinks). Does NOT list files or "
             "read a specific file by path — use obsidian_list_files or "
             "obsidian_read_note for those."
+            """outgoing_links are scoped to the returned CHUNK; backlinks are scoped to the
+whole NOTE, so the same backlink set repeats on every chunk of a large note.
+Link types are as authored. Untyped wikilinks are reported as "related"."""
         ),
+    )
+    mcp.tool(
+        traverse_relations,
+        name="obsidian_traverse_relations",
+        description="""Walk typed relation links out from an Obsidian note to find its structural
+neighborhood — prerequisites, sub-topics, alternatives, tooling, tasks.
+Use when you already know a note name; use obsidian_search when you don't.
+
+Common navigation patterns (relation_types to pass):
+prerequisite / learning-path chain ...... ["requires"]
+expand a broad note into its parts ...... ["details", "covers", "example"]
+what a system runs on .................... ["uses"]
+competing approaches ..................... ["compares", "refines"]
+claims that refute this .................. ["contradicts"]
+a project's tasks and outputs ............ ["tracks", "delivers", "blocked-by"]
+benchmarks a claim is tested against ..... ["measures"]
+
+Traversal is bidirectional at every hop: the filter matches edges authored
+on either note. Because the vault authors most relations broad → narrow
+(see the `Relations` note), a Descent type returned as direction "incoming"
+means the origin is the NARROW end — e.g. traversing ["details"] and getting
+direction "incoming" tells you the origin is a component of the note returned.""",
     )
 
     logger.info("Obsidian tools registered successfully with MCP")
@@ -366,19 +417,25 @@ async def search(
             query, tags=tags, path=path
         )
         logger.info(f"Search completed for query: {query}")
+        returned_chunks = chunks[:10]
+        note_names = list(dict.fromkeys(c.wikilink_name for c in returned_chunks))
+        backlink_map = await _vault_from_context(ctx).get_backlinks(note_names)
         result: list[SearchResultItem] = [
             SearchResultFullItem(
                 title=c.title,
                 description=c.description,
                 content=c.content,
                 tags=c.tags,
-                outgoing_links=c.outgoing_links,
+                outgoing_links=c.typed_links,
+                backlinks=backlink_map.get(c.wikilink_name, [])[
+                    :MAX_BACKLINKS_PER_NOTE
+                ],
                 source_path=c.source_path,
                 wikilink_name=c.wikilink_name,
                 offset=c.offset,
                 file_size=c.file_size,
             )
-            for c in chunks[:10]
+            for c in returned_chunks
         ]
         if len(chunks) > 10:
             result.append(SearchResultItem(
@@ -390,6 +447,21 @@ async def search(
     except Exception as e:
         logger.error(f"Failed to search vault for query '{query}': {e}")
         return []
+
+
+async def traverse_relations(
+    note: WikilinkName,
+    ctx: Context,
+    depth: TraversalDepth = 1,
+    relation_types: RelationTypes = None, # type: ignore
+) -> TraversalResult:
+    """Walk typed note relations forward and backward from one note."""
+    try:
+        return await _vault_from_context(ctx).traverse_relations(
+            note, depth, relation_types
+        )
+    except FileNotFoundError as error:
+        raise ToolError(f"No indexed note found for: {note}") from error
 
 
 def _vault_from_context(ctx: Context) -> IVault:

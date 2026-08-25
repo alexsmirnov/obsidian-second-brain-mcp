@@ -29,35 +29,32 @@ FastMCP-based Model Context Protocol server with RAG capabilities for Obsidian v
 
 ### Design Pattern: Dependency Injection with Interface Abstractions
 
-The architecture follows a **Dependency Injection** pattern with clear interface definitions in [src/mcps/rag/interfaces.py:101-307](../src/mcps/rag/interfaces.py#L101-L307). All RAG components implement abstract interfaces enabling flexible implementation swapping.
+The architecture follows a **Dependency Injection** pattern with clear interface definitions in [src/mcps/rag/interfaces.py:184-436](../src/mcps/rag/interfaces.py#L184-L436). All RAG components implement abstract interfaces enabling flexible implementation swapping.
 
 #### Core Interfaces
 
-**IDocumentProcessor** [src/mcps/rag/interfaces.py:101-107](../src/mcps/rag/interfaces.py#L101-L107)
+**IDocumentProcessor** [src/mcps/rag/interfaces.py:184-190](../src/mcps/rag/interfaces.py#L184-L190)
 - Document file processing and metadata extraction
 
-**IChunker** [src/mcps/rag/interfaces.py:111-117](../src/mcps/rag/interfaces.py#L111-L117)
+**IChunker** [src/mcps/rag/interfaces.py:194-200](../src/mcps/rag/interfaces.py#L194-L200)
 - Text chunking strategies (FixedSizeChunker, SemanticChunker)
 
-**IEmbeddingService** [src/mcps/rag/interfaces.py:120-147](../src/mcps/rag/interfaces.py#L120-L147)
+**IEmbeddingService** [src/mcps/rag/interfaces.py:203-231](../src/mcps/rag/interfaces.py#L203-L231)
 - Embedding generation from multiple providers
 
-**IDocumentSummaryGenerator** [src/mcps/rag/interfaces.py:150-156](../src/mcps/rag/interfaces.py#L150-L156)
+**IDocumentSummaryGenerator** [src/mcps/rag/interfaces.py:233-239](../src/mcps/rag/interfaces.py#L233-L239)
 - Whole-document summary generation
 
-**IVectorStore** [src/mcps/rag/interfaces.py:158-223](../src/mcps/rag/interfaces.py#L158-L223)
+**IVectorStore** [src/mcps/rag/interfaces.py:241-331](../src/mcps/rag/interfaces.py#L241-L331)
 - Vector storage and hybrid search operations
 
-**ISearchEngine** [src/mcps/rag/interfaces.py:225-231](../src/mcps/rag/interfaces.py#L225-L231)
+**ISearchEngine** [src/mcps/rag/interfaces.py:333-339](../src/mcps/rag/interfaces.py#L333-L339)
 - Search execution and result retrieval
 
-**IResultFormatter** [src/mcps/rag/interfaces.py:234-240](../src/mcps/rag/interfaces.py#L234-L240)
-- Search result formatting
-
-**IFileTraversal** [src/mcps/rag/interfaces.py:243-249](../src/mcps/rag/interfaces.py#L243-L249)
+**IFileTraversal** [src/mcps/rag/interfaces.py:342-348](../src/mcps/rag/interfaces.py#L342-L348)
 - File system discovery
 
-**IVault** [src/mcps/rag/interfaces.py:252-307](../src/mcps/rag/interfaces.py#L252-L307)
+**IVault** [src/mcps/rag/interfaces.py:351-436](../src/mcps/rag/interfaces.py#L351-L436)
 - High-level vault management orchestrating all components
 
 ### Component Architecture

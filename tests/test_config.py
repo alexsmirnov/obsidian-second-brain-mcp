@@ -35,13 +35,23 @@ class TestCreateConfigVaultPrecedence:
 
 class TestCreateConfigRouter:
 
-    def test_router_api_base_reads_env_var(self, monkeypatch):
-        monkeypatch.setenv("ROUTER_API_BASE", "http://localhost:4000")
+    def test_router_api_base_uses_host_url_outside_container(self, monkeypatch):
+        monkeypatch.setenv("ROUTER_API_BASE", "http://host-router:4000")
+        monkeypatch.setenv("ROUTER_DOCKER_API_BASE", "http://docker-router:4000")
+        monkeypatch.setattr("mcps.config.os.path.isfile", lambda _: False)
 
         config = create_config()
 
-        assert config.router_api_base == "http://localhost:4000"
+        assert config.router_api_base == "http://host-router:4000"
 
+    def test_router_api_base_uses_docker_url_inside_container(self, monkeypatch):
+        monkeypatch.setenv("ROUTER_API_BASE", "http://host-router:4000")
+        monkeypatch.setenv("ROUTER_DOCKER_API_BASE", "http://docker-router:4000")
+        monkeypatch.setattr("mcps.config.os.path.isfile", lambda _: True)
+
+        config = create_config()
+
+        assert config.router_api_base == "http://docker-router:4000"
 
     def test_router_api_key_reads_env_var(self, monkeypatch):
         monkeypatch.setenv("ROUTER_API_KEY", "sk-test")

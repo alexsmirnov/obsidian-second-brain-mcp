@@ -23,3 +23,4 @@ test_content
 /tasks/
 /.claude-data/
 .roo
+.DS_Store

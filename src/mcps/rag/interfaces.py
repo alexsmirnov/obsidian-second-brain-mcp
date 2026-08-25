@@ -3,12 +3,12 @@ Abstract interfaces for the RAG search system components.
 """
 
 from abc import ABC, abstractmethod
-from collections.abc import Generator
+from collections.abc import Generator, Iterable
 from dataclasses import dataclass
 from enum import Enum, auto
 from pathlib import Path
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class SearchScope(Enum):
@@ -25,6 +25,72 @@ class Metadata(BaseModel):
     source: str | None = Field(default=None)
     description: str | None = Field(default=None)
     title: str | None = Field(default=None)
+
+
+DEFAULT_LINK_TYPE = "related"
+
+
+class Link(BaseModel):
+    """A typed link from a note to a wikilink target."""
+    model_config = ConfigDict(frozen=True)
+
+    type: str
+    target: str
+
+
+def dedupe_links(links: Iterable[Link]) -> list[Link]:
+    """Return links in first-occurrence order, dropping redundant entries.
+
+    Drops exact (type, target) duplicates. Also drops a default-typed link
+    when the same target carries an explicit type elsewhere in the input;
+    two distinct explicit types to one target both survive.
+    """
+    links = list(links)
+    explicitly_typed_targets = {
+        link.target for link in links if link.type != DEFAULT_LINK_TYPE
+    }
+    deduped: list[Link] = []
+    seen: set[Link] = set()
+    for link in links:
+        if (
+            link.type == DEFAULT_LINK_TYPE
+            and link.target in explicitly_typed_targets
+        ):
+            continue
+        if link not in seen:
+            seen.add(link)
+            deduped.append(link)
+    return deduped
+
+
+class NoteLinks(BaseModel):
+    """Typed outgoing links of one note, aggregated across all its chunks."""
+
+    note: str
+    title: str | None = None
+    description: str | None = None
+    links: list[Link] = Field(default_factory=list)
+
+
+class TraversalNode(BaseModel):
+    """A note reached while traversing typed relations."""
+
+    note: str
+    title: str | None = None
+    description: str | None = None
+    depth: int
+    direction: str
+    relation: str
+    via: str
+
+
+class TraversalResult(BaseModel):
+    """The bounded typed-relation graph traversal result."""
+
+    origin: str
+    nodes: list[TraversalNode] = Field(default_factory=list)
+    truncated: bool = False
+    warning: str | None = None
 
 
 class Document(BaseModel):
@@ -49,7 +115,8 @@ class Chunk(BaseModel):
     title: str | None
     description: str | None
     source: str | None = None
-    outgoing_links: list[str] = Field(default_factory=list)  # Wikilinks
+    links: list[str] = Field(default_factory=list)  # Wikilink targets
+    link_types: list[str] = Field(default_factory=list)  # Aligned with links
     tags: list[str] = Field(default_factory=list)
     source_path: str  # file path relative to vault root
     wikilink_name: str  # source path without .md, as used in Obsidian wikilinks
@@ -58,6 +125,23 @@ class Chunk(BaseModel):
     offset: int  # zero-based line index of the chunk start within the document
     file_size: int
     embeddings: list[float] | None = None
+
+    @model_validator(mode="after")
+    def _link_arrays_aligned(self) -> "Chunk":
+        if len(self.links) != len(self.link_types):
+            raise ValueError(
+                f"links ({len(self.links)}) and link_types "
+                f"({len(self.link_types)}) must be aligned"
+            )
+        return self
+
+    @property
+    def typed_links(self) -> list[Link]:
+        """Links reconstructed from the aligned links/link_types arrays."""
+        return [
+            Link(type=link_type, target=target)
+            for link_type, target in zip(self.link_types, self.links, strict=True)
+        ]
 
     def __hash__(self) -> int:                      # hash/id only, it's primary key
         return hash(self.id)
@@ -221,21 +305,37 @@ class IVectorStore(ABC):
         """Return source paths matching a wikilink note name."""
         pass
 
+    @abstractmethod
+    async def get_notes_with_links(
+        self, wikilink_names: list[str]
+    ) -> list[NoteLinks]:
+        """Return outgoing typed links for the requested notes.
+
+        Aggregates the links of all chunk rows of each note, deduplicated.
+        Notes absent from the index are silently omitted. An empty input
+        returns an empty list.
+        """
+        pass
+
+    @abstractmethod
+    async def get_notes_linking_to(
+        self, targets: list[str], relation_types: list[str] | None = None
+    ) -> list[NoteLinks]:
+        """Return notes holding at least one link to a requested target.
+
+        Each returned entry carries only the edges pointing at a requested
+        target, optionally restricted to the given relation types
+        (OR-combined). An empty input returns an empty list. Matching is
+        exact on the (type, target) pair, never on the SQL pre-filter alone.
+        """
+        pass
+
 class ISearchEngine(ABC):
     """Interface for search operations."""
 
     @abstractmethod
     async def search(self, query: SearchQuery) -> list[Chunk]:
         """Perform a search operation."""
-        pass
-
-
-class IResultFormatter(ABC):
-    """Interface for formatting search results."""
-
-    @abstractmethod
-    async def format(self, results: list[Chunk], query: SearchQuery) -> str:
-        """Format search results for display."""
         pass
 
 
@@ -305,5 +405,32 @@ class IVault(ABC):
         Returns:
             list[str]: List of file names without .md extension in the directory,
             plus directory names ended with `/`.
+        """
+        pass
+
+    @abstractmethod
+    async def get_backlinks(
+        self, wikilink_names: list[str]
+    ) -> dict[str, list[Link]]:
+        """Return incoming links for the requested notes, keyed by note name.
+
+        Each returned Link has `type` set to the incoming edge's type and
+        `target` set to the source note's wikilink_name. Notes with no
+        incoming links map to an empty list; every requested name is present
+        as a key. An empty input returns an empty dict.
+        """
+        pass
+
+    @abstractmethod
+    async def traverse_relations(
+        self,
+        wikilink_name: str,
+        depth: int = 1,
+        relation_types: list[str] | None = None,
+    ) -> TraversalResult:
+        """Walk typed relations in both directions from a note.
+
+        The walk is breadth-first, includes at most ``depth`` hops, and
+        follows only the requested relation types when provided.
         """
         pass

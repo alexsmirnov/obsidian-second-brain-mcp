@@ -10,11 +10,10 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 from .interfaces import (
     Chunk,
-    IResultFormatter,
     ISearchEngine,
     IVectorStore,
     SearchQuery,
-    SearchResult,
+    dedupe_links,
 )
 from .reranking import IRerankingService
 
@@ -292,8 +291,8 @@ class SemanticSearchEngine(ISearchEngine):
         content = "\n\n".join(chunk.content for chunk in window_chunks)
         offset = min(chunk.offset for chunk in window_chunks)
         tags = sorted({tag for chunk in window_chunks for tag in chunk.tags})
-        outgoing_links = sorted(
-            {link for chunk in window_chunks for link in chunk.outgoing_links}
+        merged_links = dedupe_links(
+            link for chunk in window_chunks for link in chunk.typed_links
         )
         relevance_score = max(
             (
@@ -309,7 +308,8 @@ class SemanticSearchEngine(ISearchEngine):
             title=primary.title,
             description=primary.description,
             source=primary.source,
-            outgoing_links=list(outgoing_links),
+            links=[link.target for link in merged_links],
+            link_types=[link.type for link in merged_links],
             tags=list(tags),
             source_path=primary.source_path,
             wikilink_name=primary.wikilink_name,
@@ -322,89 +322,3 @@ class SemanticSearchEngine(ISearchEngine):
             object.__setattr__(merged, "_relevance_score", relevance_score)
         return merged
 
-
-class MarkdownResultFormatter(IResultFormatter):
-    """Markdown result formatter for search results."""
-
-    def __init__(self, max_content_length: int = 1000):
-        self.max_content_length = max_content_length
-
-    async def format(self, results: list[Chunk], query: SearchQuery) -> str:
-        """Format search results as markdown."""
-        if not results:
-            return f"No results found for query: **{query.text}**"
-
-        formatted_parts = []
-
-        for i, chunk in enumerate(results, 1):
-            score_text = self._format_score(chunk)
-            formatted_parts.append(f"# Result {i}{score_text} ")
-            formatted_parts.append(f"**Source:** `{chunk.source_path}`")
-
-            content = chunk.content.strip()
-            if len(content) > self.max_content_length:
-                content = content[: self.max_content_length] + "..."
-
-            formatted_parts.append("**Content:**")
-            formatted_parts.append(f"```\n{content}\n```")
-
-            if chunk.tags:
-                tags = ", ".join(f"#{tag}" for tag in chunk.tags)
-                formatted_parts.append(f"**Tags:** {tags}")
-
-            if chunk.outgoing_links:
-                links = ", ".join(f"[[{link}]]" for link in chunk.outgoing_links)
-                formatted_parts.append(f"**Links:** {links}")
-
-            formatted_parts.append("")  # Empty line between results
-
-        return "\n".join(formatted_parts)
-
-    @staticmethod
-    def _format_score(chunk: Chunk) -> str:
-        if not hasattr(chunk, "_relevance_score"):
-            return ""
-        return f" (Score: {getattr(chunk, '_relevance_score', 0.0):.3f})"
-
-
-class CompactResultFormatter(IResultFormatter):
-    """Compact result formatter for brief search results."""
-
-    def __init__(self, max_results: int = 3, snippet_length: int = 150):
-        self.max_results = max_results
-        self.snippet_length = snippet_length
-
-    async def format(self, results: list[SearchResult], query: SearchQuery) -> str:
-        """Format search results in a compact format."""
-        if not results:
-            return f"No results found for: {query.text}"
-
-        formatted_parts = []
-
-        display_results = results[: self.max_results]
-
-        for i, result in enumerate(display_results, 1):
-            chunk = result.chunk
-
-            content = chunk.content.strip()
-            if len(content) > self.snippet_length:
-                content = content[: self.snippet_length] + "..."
-
-            source_name = chunk.source_path
-            score_text = MarkdownResultFormatter._format_score(chunk)
-            formatted_parts.append(f"**{i}.** Source: {source_name}{score_text})")
-            formatted_parts.append(f"   {content}")
-
-            if chunk.tags:
-                tags = ", ".join(f"#{tag}" for tag in chunk.tags[:10])
-                formatted_parts.append(f"Tags: {tags}")
-            if chunk.outgoing_links:
-                links = ", ".join(f"[[{link}]]" for link in chunk.outgoing_links[:10])
-                formatted_parts.append(f"Links: {links}")
-            formatted_parts.append("")
-
-        if len(results) > self.max_results:
-            remaining_count = len(results) - self.max_results
-            formatted_parts.append(f"... and {remaining_count} more results")
-
-        return "\n".join(formatted_parts)

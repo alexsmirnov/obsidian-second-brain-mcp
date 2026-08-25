@@ -80,7 +80,14 @@ def create_config(
         tests_dir=tests_dir,
         library_docs=library_docs,
         project_paths=project_paths,
-        router_api_base=os.getenv("ROUTER_API_BASE", ""),
+        router_api_base=os.getenv(
+            (
+                "ROUTER_DOCKER_API_BASE"
+                if os.path.isfile("/.dockerenv")
+                else "ROUTER_API_BASE"
+            ),
+            "",
+        ),
         router_api_key=os.getenv("ROUTER_API_KEY", ""),
         rag_embedding_model=os.getenv("RAG_EMBEDDING_MODEL", ""),
         rag_embedding_dimensions=int(os.getenv("RAG_EMBEDDING_DIMENSIONS", "0")),
@@ -122,11 +129,13 @@ def validate_config(config: ServerConfig) -> None:
         if config.rag_embedding_model:
             logger.warning(
                 "RAG embedding model is configured but ROUTER_API_BASE is empty. "
-                "Obsidian vault indexing and search will fail until a router URL is provided."
+                "Obsidian vault indexing and search will fail until a router URL "
+                "is provided."
             )
 
     if config.rag_embedding_model and not config.rag_embedding_dimensions:
         logger.warning(
             "RAG_EMBEDDING_MODEL is set but RAG_EMBEDDING_DIMENSIONS is 0. "
-            "LanceDB schema creation will fail; set the dimension to match the embedding model."
+            "LanceDB schema creation will fail; set the dimension to match "
+            "the embedding model."
         )

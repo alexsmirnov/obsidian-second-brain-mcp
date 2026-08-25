@@ -10,10 +10,15 @@ Environment variables, configuration options, and server settings for the MCPS M
 
 ### Router Configuration
 
-#### `ROUTER_API_BASE` (required for AI tools) #env
-OpenAI-compatible model router base URL used by web research and Obsidian RAG model adapters.
+#### `ROUTER_API_BASE` (required for AI tools on the host) #env
+OpenAI-compatible model router base URL used by web research and Obsidian RAG model adapters when the server runs outside a container.
 **Format**: `http://host:port`
-**Used by**: [src/mcps/config.py:83](../src/mcps/config.py#L83), [src/mcps/research/config.py](../src/mcps/research/config.py), [src/mcps/rag/vault.py](../src/mcps/rag/vault.py)
+**Used by**: [src/mcps/config.py](../src/mcps/config.py), [src/mcps/research/config.py](../src/mcps/research/config.py), [src/mcps/rag/vault.py](../src/mcps/rag/vault.py)
+
+#### `ROUTER_DOCKER_API_BASE` (required for AI tools in a container) #env
+OpenAI-compatible model router base URL used when the server runs in a container. `create_config()` detects a container from the presence of `/.dockerenv` and uses this value instead of `ROUTER_API_BASE`.
+**Format**: `http://host:port`
+**Used by**: [src/mcps/config.py](../src/mcps/config.py)
 
 #### `ROUTER_API_KEY` (required for AI tools) #env
 Authentication token for the model router.

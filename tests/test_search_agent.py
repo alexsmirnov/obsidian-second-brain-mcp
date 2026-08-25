@@ -19,7 +19,6 @@ def _make_chunk(id_: str, title: str | None = None) -> Chunk:
         content=content,
         title=title,
         description=None,
-        outgoing_links=[],
         tags=[],
         source_path=f"path/{id_}.md",
         wikilink_name=f"path/{id_}",

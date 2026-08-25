@@ -12,15 +12,31 @@ import frontmatter
 from yaml.parser import ParserError
 
 from .interfaces import (
+    DEFAULT_LINK_TYPE,
     Chunk,
     Document,
     IChunker,
     IDocumentProcessor,
     IFileTraversal,
+    Link,
     Metadata,
+    dedupe_links,
 )
 
 SUMMARY_CHUNK_POSITION = -1
+
+# Wikilink interiors; unchanged from the former extract_wikilinks regex.
+WIKILINK_PATTERN = re.compile(
+    r'!?\[\[((?:[^\[\]]|\[[^\[\]]*\])*?)(?:[#|][^\]]*?)?\]\]'
+)
+# Dataview inline fields: `name:: [[wikilink]]` where the field begins at
+# line start or after whitespace, '(' or '[', and is immediately followed by
+# a wikilink after one-or-more whitespace chars. Keeps prose like `std::` or
+# `not::a` and fields followed by non-wikilink text from being misread.
+INLINE_FIELD_PATTERN = re.compile(
+    r'(?:^|[(\[\s])([a-zA-Z][a-zA-Z0-9_-]*)::\s+(?=\[\[)',
+    re.MULTILINE,
+)
 
 
 def _leading_line_delta(text: str) -> int:
@@ -31,25 +47,36 @@ def _leading_line_delta(text: str) -> int:
     return text[:leading_chars].count("\n")
 
 
-def extract_wikilinks(content: str) -> list[str]:
-    """Extract wikilinks from markdown content.
-    
-    Handles the following wikilink formats:
-    - Basic wikilinks: [[Note Name]]
-    - Wikilinks with display text: [[Note Name|Display Text]]
-    - Wikilinks with headers: [[Note Name#Header]]
-    - Wikilinks with both: [[Note Name#Header|Display Text]]
-    - Image wikilinks: ![[Note Name]]
-    - Wikilinks with spaces and special characters
-    - Wikilinks with nested brackets: [[Note [with] brackets]]
-    
-    Returns only the note name portion, without the header or display text.
+def extract_typed_links(content: str) -> list[Link]:
+    """Extract typed links from markdown content.
+
+    Wikilinks in the same formats as the former extract_wikilinks, typed by
+    the closest preceding Dataview inline field when one ends with `::` and
+    whitespace immediately before the wikilink, and its match starts at line
+    start or after whitespace, '(' or '['. Bare wikilinks default to
+    DEFAULT_LINK_TYPE. Blank interiors like [[]] are skipped and do not
+    consume a preceding field.
     """
-    wikilink_pattern = r'!?\[\[((?:[^\[\]]|\[[^\[\]]*\])*?)(?:[#|][^\]]*?)?\]\]'
-    matches = re.findall(wikilink_pattern, content)
-    # Filter out empty matches but preserve trailing spaces for compatibility
-    filtered_matches = [match for match in matches if match.strip()]
-    return list(set(filtered_matches))  # Remove duplicates
+    links: list[Link] = []
+    field: re.Match[str] | None = None
+    for match in sorted(
+        [
+            *WIKILINK_PATTERN.finditer(content),
+            *INLINE_FIELD_PATTERN.finditer(content),
+        ],
+        key=lambda match: match.start(),
+    ):
+        if match.re is INLINE_FIELD_PATTERN:
+            field = match
+            continue
+        if not match.group(1).strip():
+            continue
+        link_type = DEFAULT_LINK_TYPE
+        if field is not None and field.end() <= match.start():
+            link_type = field.group(1)
+            field = None
+        links.append(Link(type=link_type, target=match.group(1)))
+    return dedupe_links(links)
 
 
 def extract_content_tags(text: str) -> list[str]:
@@ -76,8 +103,8 @@ def create_chunk(
 
     metadata_source_text = document.content if is_summary_chunk else content
 
-    # Extract wikilinks from chunk content
-    outgoing_links = extract_wikilinks(metadata_source_text)
+    # Extract typed links from chunk content
+    typed_links = extract_typed_links(metadata_source_text)
 
     # Extract tags from chunk content and combine with document tags
     content_tags = extract_content_tags(metadata_source_text)
@@ -89,7 +116,8 @@ def create_chunk(
         title=document.metadata.title,
         description=document.metadata.description,
         source=document.metadata.source,
-        outgoing_links=outgoing_links,
+        links=[link.target for link in typed_links],
+        link_types=[link.type for link in typed_links],
         tags=combined_tags,
         source_path=document.source_path,
         wikilink_name=document.wikilink_name,

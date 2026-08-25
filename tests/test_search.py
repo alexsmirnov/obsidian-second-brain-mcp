@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock
 
-from mcps.rag.interfaces import Chunk, SearchQuery, SearchScope
+from mcps.rag.interfaces import Chunk, Link, SearchQuery, SearchScope
 from mcps.rag.search import SemanticSearchEngine
 
 
@@ -14,7 +14,7 @@ def make_chunk(
     position: int = 0,
     source_path: str | None = None,
     tags: list[str] | None = None,
-    outgoing_links: list[str] | None = None,
+    links: list[Link] | None = None,
     offset: int = 0,
 ) -> Chunk:
     id_ = f"{doc_id}_{position}"
@@ -30,7 +30,8 @@ def make_chunk(
         offset=offset,
         file_size=len(content),
         tags=tags or [],
-        outgoing_links=outgoing_links or [],
+        links=[link.target for link in links or []],
+        link_types=[link.type for link in links or []],
     )
     if relevance_score is not None:
         object.__setattr__(chunk, "_relevance_score", relevance_score)
@@ -205,7 +206,7 @@ async def test_search_neighbor_offset_one_fetches_adjacent_chunks() -> None:
     result = await engine.search(SearchQuery(text="query", tags=[]))
 
     assert len(result) == 1
-    assert result[0].id == "doc_0_2"
+    assert result[0].id == "doc_0"
     assert "previous" in result[0].content
     assert "center" in result[0].content
     assert "next" in result[0].content
@@ -230,7 +231,7 @@ async def test_search_overlapping_neighbors_merge_into_single_window() -> None:
     result = await engine.search(SearchQuery(text="query", tags=[]))
 
     assert len(result) == 1
-    assert result[0].id == "doc_2_5"
+    assert result[0].id == "doc_2"
     assert result[0].content == "two\n\nthree\n\nfour\n\nfive"
     assert result[0].position == 2
     assert getattr(result[0], "_relevance_score") == 0.8
@@ -257,7 +258,7 @@ async def test_search_non_overlapping_neighbors_remain_separate() -> None:
 
     assert len(result) == 2
     ids = {chunk.id for chunk in result}
-    assert ids == {"doc_1_3", "doc_5_7"}
+    assert ids == {"doc_1", "doc_5"}
 
 
 async def test_search_neighbor_boundary_clamps_to_zero() -> None:
@@ -272,7 +273,7 @@ async def test_search_neighbor_boundary_clamps_to_zero() -> None:
     result = await engine.search(SearchQuery(text="query", tags=[]))
 
     assert len(result) == 1
-    assert result[0].id == "doc_0_1"
+    assert result[0].id == "doc_0"
     assert result[0].position == 0
     vector_store.get_chunks_by_ids.assert_awaited_once_with(
         ["doc_0", "doc_1"]
@@ -286,14 +287,17 @@ async def test_search_neighbor_merging_unions_tags_and_links() -> None:
         relevance_score=0.8,
         position=1,
         tags=["center"],
-        outgoing_links=["center_link"],
+        links=[Link(type="requires", target="Shared")],
     )
     neighbor = make_chunk(
         "doc",
         content="neighbor",
         position=2,
         tags=["neighbor", "center"],
-        outgoing_links=["neighbor_link"],
+        links=[
+            Link(type="related", target="Shared"),
+            Link(type="related", target="Other"),
+        ],
     )
     vector_store = make_vector_store(
         search_results=[center],
@@ -304,7 +308,10 @@ async def test_search_neighbor_merging_unions_tags_and_links() -> None:
     result = await engine.search(SearchQuery(text="query", tags=[]))
 
     assert result[0].tags == ["center", "neighbor"]
-    assert result[0].outgoing_links == ["center_link", "neighbor_link"]
+    assert result[0].typed_links == [
+        Link(type="requires", target="Shared"),
+        Link(type="related", target="Other"),
+    ]
 
 
 async def test_search_neighbor_merged_chunk_drops_embeddings() -> None:

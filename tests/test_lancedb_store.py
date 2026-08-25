@@ -19,6 +19,7 @@ from mcps.rag.interfaces import (
     Chunk,
     IEmbeddingService,
     IVectorStore,
+    Link,
     SearchScope,
 )
 
@@ -46,7 +47,8 @@ def sample_chunks():
             source="AI Tutorial",
             description="Machine learning basics",
             title="ML Introduction",
-            outgoing_links=["artificial_intelligence"],
+            links=["artificial_intelligence"],
+            link_types=["related"],
             tags=["machine-learning", "ai"],
             source_path="/test/doc1.md",
             wikilink_name="doc1",
@@ -64,7 +66,8 @@ def sample_chunks():
             source="Deep Learning Guide",
             description="Neural networks and deep learning",
             title="Deep Learning Basics",
-            outgoing_links=["neural_networks"],
+            links=["neural_networks"],
+            link_types=["related"],
             tags=["deep-learning", "neural-networks"],
             source_path="/test/doc2.md",
             wikilink_name="doc2",
@@ -82,7 +85,8 @@ def sample_chunks():
             source="NLP Handbook",
             description="Natural language processing techniques",
             title="NLP Overview",
-            outgoing_links=["language_models"],
+            links=["language_models"],
+            link_types=["related"],
             tags=["nlp", "language"],
             source_path="/test/doc3.md",
             wikilink_name="doc3",
@@ -100,7 +104,8 @@ def sample_chunks():
             source="Python Guide",
             description="Python programming for data science",
             title="Python Basics",
-            outgoing_links=["python", "data_science"],
+            links=["python", "data_science"],
+            link_types=["related", "related"],
             tags=["python", "programming"],
             source_path="/test/doc1.md",
             wikilink_name="doc1",
@@ -483,7 +488,8 @@ def make_chunk(source_path, modified_at, idx=0):
         source="Test Source",
         description="Test Description",
         title="Test Title",
-        outgoing_links=[],
+        links=[],
+        link_types=[],
         tags=["test"],
         source_path=source_path,
         wikilink_name=source_path.removesuffix(".md"),
@@ -503,20 +509,290 @@ async def test_sources_empty(lancedb_store):
 async def test_sources_unique_and_min_time(lancedb_store):
     from datetime import datetime, timedelta
     await lancedb_store.initialize()
-    base_time = datetime.now()
+    base_time = datetime.now().timestamp()
+    day_seconds = timedelta(days=1).total_seconds()
     # Create chunks with duplicate source_path but different times
     chunks = [
-        make_chunk("/file1.md", base_time - timedelta(days=2), idx=0),
-        make_chunk("/file1.md", base_time - timedelta(days=1), idx=1),
-        make_chunk("/file2.md", base_time - timedelta(days=3), idx=0),
+        make_chunk("/file1.md", base_time - 2 * day_seconds, idx=0),
+        make_chunk("/file1.md", base_time - day_seconds, idx=1),
+        make_chunk("/file2.md", base_time - 3 * day_seconds, idx=0),
         make_chunk("/file2.md", base_time, idx=1),
-        make_chunk("/file3.md", base_time - timedelta(days=5), idx=0),
+        make_chunk("/file3.md", base_time - 5 * day_seconds, idx=0),
     ]
     await lancedb_store.store(chunks)
     await lancedb_store.reindex()
     updates = await lancedb_store.sources()
     # Should return one update per unique source_path, with minimal modified_at
-    assert updates["/file1.md"] == base_time - timedelta(days=2)
-    assert updates["/file2.md"] == base_time - timedelta(days=3)
-    assert updates["/file3.md"] == base_time - timedelta(days=5)
+    assert updates["/file1.md"] == base_time - 2 * day_seconds
+    assert updates["/file2.md"] == base_time - 3 * day_seconds
+    assert updates["/file3.md"] == base_time - 5 * day_seconds
     assert len(updates) == 3
+
+
+@pytest.fixture
+def link_graph_chunks():
+    """Chunks forming a small typed-link graph across five notes.
+
+    Alpha requires->Beta (twice, over two chunks) and related->Gamma,
+    Beta refines->Gamma, Gamma requires->Delta, Decoy requires->Gamma
+    and related->Beta. Decoy satisfies the SQL pre-filter for target
+    Beta with type requires while its actual requires edge points at
+    Gamma, exposing the array_has_any positional-correlation limit.
+    """
+    base_time = datetime.now().timestamp()
+
+    def graph_chunk(chunk_id, note, title, position, links, link_types):
+        content = f"{note} body {chunk_id}"
+        return Chunk(
+            id=chunk_id,
+            content=content,
+            source=None,
+            description=f"About {note.lower()}",
+            title=title,
+            links=links,
+            link_types=link_types,
+            tags=[],
+            source_path=f"/g/{note.lower()}.md",
+            wikilink_name=note,
+            modified_at=base_time,
+            position=position,
+            offset=0,
+            file_size=len(content),
+        )
+
+    return [
+        graph_chunk("alpha_0", "Alpha", "Alpha Note", 0, ["Beta"], ["requires"]),
+        graph_chunk(
+            "alpha_1",
+            "Alpha",
+            "Alpha Note",
+            1,
+            ["Gamma", "Beta"],
+            ["related", "requires"],
+        ),
+        graph_chunk("beta_0", "Beta", "Beta Note", 0, ["Gamma"], ["refines"]),
+        graph_chunk("gamma_0", "Gamma", "Gamma Note", 0, ["Delta"], ["requires"]),
+        graph_chunk(
+            "decoy_0",
+            "Decoy",
+            "Decoy Note",
+            0,
+            ["Gamma", "Beta"],
+            ["requires", "related"],
+        ),
+    ]
+
+
+@pytest.fixture
+async def lancedb_store_with_links(
+    temp_db_path,
+    dummy_embedding_function,
+    link_graph_chunks,
+):
+    """Create a LanceDBStore with the typed-link graph pre-loaded."""
+    store = LanceDBStore(temp_db_path, dummy_embedding_function, "test_chunks")
+    await store.initialize()
+    await store.store(link_graph_chunks)
+    await store.reindex()
+
+    yield store
+    await store.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_store_and_search_round_trips_typed_links(
+    lancedb_store,
+    sample_chunks,
+):
+    # Arrange
+    await lancedb_store.initialize()
+    chunk = sample_chunks[0]  # links=["artificial_intelligence"], type related
+    await lancedb_store.store([chunk])
+
+    # Act
+    results = await lancedb_store.search("machine learning", limit=1)
+
+    # Assert
+    assert results[0].links == ["artificial_intelligence"]
+    assert results[0].link_types == ["related"]
+    assert results[0].typed_links == [
+        Link(type="related", target="artificial_intelligence")
+    ]
+
+
+@pytest.mark.asyncio
+async def test_store_and_search_round_trips_multiple_typed_links_in_order(
+    lancedb_store,
+    sample_chunks,
+):
+    # Arrange
+    await lancedb_store.initialize()
+    chunk = sample_chunks[3].model_copy(
+        # links=["python", "data_science"] with explicit mixed types
+        update={"link_types": ["requires", "related"]}
+    )
+    await lancedb_store.store([chunk])
+
+    # Act
+    results = await lancedb_store.search("python programming", limit=1)
+
+    # Assert
+    assert results[0].typed_links == [
+        Link(type="requires", target="python"),
+        Link(type="related", target="data_science"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_reindex_creates_label_list_indexes_on_link_columns(
+    lancedb_store_with_links,
+):
+    # Arrange — fixture initialized, stored the link graph, and ran reindex()
+
+    # Act
+    indices = await lancedb_store_with_links.table.list_indices()
+
+    # Assert
+    indexed_columns = {
+        column for index in indices for column in index.columns
+    }
+    assert {"tags", "links", "link_types"} <= indexed_columns
+
+
+@pytest.mark.asyncio
+async def test_get_notes_with_links_aggregates_all_chunks_of_a_note(
+    lancedb_store_with_links,
+):
+    # Arrange — Alpha's two chunk rows carry requires->Beta, related->Gamma,
+    # requires->Beta between them
+
+    # Act
+    result = await lancedb_store_with_links.get_notes_with_links(["Alpha"])
+
+    # Assert
+    assert len(result) == 1
+    alpha = result[0]
+    assert alpha.note == "Alpha"
+    assert alpha.title == "Alpha Note"
+    assert alpha.description == "About alpha"
+    assert alpha.links == [
+        Link(type="requires", target="Beta"),
+        Link(type="related", target="Gamma"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_get_notes_with_links_returns_nothing_for_unknown_note(
+    lancedb_store_with_links,
+):
+    # Act
+    result = await lancedb_store_with_links.get_notes_with_links(["Nonexistent"])
+
+    # Assert
+    assert result == []
+
+
+@pytest.mark.asyncio
+async def test_get_notes_with_links_returns_empty_list_for_empty_input(
+    lancedb_store,
+):
+    # Arrange
+    await lancedb_store.initialize()
+
+    # Act
+    result = await lancedb_store.get_notes_with_links([])
+
+    # Assert
+    assert result == []
+
+
+@pytest.mark.asyncio
+async def test_get_notes_linking_to_returns_sources_with_only_matching_edges(
+    lancedb_store_with_links,
+):
+    # Act
+    result = await lancedb_store_with_links.get_notes_linking_to(["Gamma"])
+
+    # Assert
+    by_note = {entry.note: entry for entry in result}
+    assert set(by_note) == {"Alpha", "Beta", "Decoy"}
+    assert by_note["Alpha"].links == [Link(type="related", target="Gamma")]
+    assert by_note["Beta"].links == [Link(type="refines", target="Gamma")]
+    assert by_note["Decoy"].links == [Link(type="requires", target="Gamma")]
+
+
+@pytest.mark.asyncio
+async def test_get_notes_linking_to_filters_by_relation_type_without_trusting_sql(
+    lancedb_store_with_links,
+):
+    # Arrange — Decoy satisfies the SQL pre-filter for target Beta with type
+    # requires (its links contain Beta, its link_types contain requires), but
+    # its actual requires edge points at Gamma, not Beta. An implementation
+    # trusting the SQL predicate alone would wrongly return it.
+
+    # Act
+    result = await lancedb_store_with_links.get_notes_linking_to(
+        ["Beta"],
+        relation_types=["requires"],
+    )
+
+    # Assert
+    assert [entry.note for entry in result] == ["Alpha"]
+    assert result[0].links == [Link(type="requires", target="Beta")]
+
+
+@pytest.mark.asyncio
+async def test_get_notes_linking_to_or_combines_relation_types(
+    lancedb_store_with_links,
+):
+    # Act
+    result = await lancedb_store_with_links.get_notes_linking_to(
+        ["Gamma"],
+        relation_types=["related", "refines"],
+    )
+
+    # Assert
+    by_note = {entry.note: entry for entry in result}
+    assert set(by_note) == {"Alpha", "Beta"}
+    assert by_note["Alpha"].links == [Link(type="related", target="Gamma")]
+    assert by_note["Beta"].links == [Link(type="refines", target="Gamma")]
+
+
+@pytest.mark.asyncio
+async def test_get_notes_linking_to_returns_empty_list_for_empty_input(
+    lancedb_store,
+):
+    # Arrange
+    await lancedb_store.initialize()
+
+    # Act
+    result = await lancedb_store.get_notes_linking_to([])
+
+    # Assert
+    assert result == []
+
+
+@pytest.mark.asyncio
+async def test_get_notes_linking_to_escapes_quotes_in_target_names(
+    lancedb_store,
+    sample_chunks,
+):
+    # Arrange
+    await lancedb_store.initialize()
+    chunk = sample_chunks[0].model_copy(
+        update={
+            "id": "q_0",
+            "wikilink_name": "Quoter",
+            "links": ["O'Malley"],
+            "link_types": ["requires"],
+        }
+    )
+    await lancedb_store.store([chunk])
+
+    # Act
+    result = await lancedb_store.get_notes_linking_to(["O'Malley"])
+
+    # Assert
+    assert len(result) == 1
+    assert result[0].note == "Quoter"
+    assert result[0].links == [Link(type="requires", target="O'Malley")]

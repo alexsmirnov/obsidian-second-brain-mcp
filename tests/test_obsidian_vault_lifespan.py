@@ -6,7 +6,7 @@ from unittest.mock import patch
 import pytest
 
 from mcps.config import ServerConfig
-from mcps.rag.interfaces import IVault
+from mcps.rag.interfaces import IVault, Link, TraversalResult
 from mcps.tools.obsidian_vault import _periodic_update_index, build_obsidian_lifespan
 
 
@@ -48,6 +48,19 @@ class FakeVault(IVault):
 
     async def list_files(self, directory: str) -> list[str]:
         return []
+
+    async def get_backlinks(
+        self, wikilink_names: list[str]
+    ) -> dict[str, list[Link]]:
+        return {name: [] for name in wikilink_names}
+
+    async def traverse_relations(
+        self,
+        wikilink_name: str,
+        depth: int = 1,
+        relation_types: list[str] | None = None,
+    ) -> TraversalResult:
+        return TraversalResult(origin=wikilink_name)
 
 
 @pytest.fixture

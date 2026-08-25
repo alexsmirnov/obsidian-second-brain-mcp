@@ -25,7 +25,7 @@ class SearchAgent(ISearchEngine):
         outgoing_links = {
             link
             for chunk in search_results
-            for link in chunk.outgoing_links
+            for link in chunk.links
         }
         linked_notes = await self._collect_linked_notes(query, outgoing_links)
         incoming_notes = await self._collect_incoming_notes(query, search_results)
