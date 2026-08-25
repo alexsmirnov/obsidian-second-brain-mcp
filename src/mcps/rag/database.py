@@ -17,11 +17,23 @@ from .interfaces import (
     Chunk,
     IEmbeddingService,
     IVectorStore,
+    Link,
+    NoteLinks,
     NotInitializedError,
     SearchScope,
+    dedupe_links,
 )
 
 logger = logging.getLogger("mcps.database")
+
+_LINK_QUERY_COLUMNS = [
+    "wikilink_name",
+    "title",
+    "description",
+    "position",
+    "links",
+    "link_types",
+]
 
 
 class LanceDBStore(IVectorStore):
@@ -300,6 +312,18 @@ class LanceDBStore(IVectorStore):
             except Exception as e:
                 logger.error(f"Failed to create list index for tags: {e}")
                 raise
+            for column in ["links", "link_types"]:
+                try:
+                    await self.table.create_index(
+                        column=column,
+                        config=LabelList(),
+                        wait_timeout=wait_time,
+                        replace=replace,
+                    )
+                except Exception as e:
+                    # Link-column indexes are a fetch-volume optimization;
+                    # a failure must not break indexing.
+                    logger.error(f"Failed to create list index for {column}: {e}")
         indices = await self.table.list_indices()
         logger.info([f"index {idx}," for idx in indices])
 
@@ -373,3 +397,116 @@ class LanceDBStore(IVectorStore):
         except Exception as e:
             logger.error(f"Failed to fetch source paths from LanceDB: {e}")
             raise
+
+    @staticmethod
+    def _group_rows_by_note(rows: list[dict]) -> dict[str, list[dict]]:
+        """Group chunk rows by note, each group sorted by position."""
+        groups: dict[str, list[dict]] = {}
+        for row in rows:
+            groups.setdefault(row["wikilink_name"], []).append(row)
+        return {
+            note: sorted(group, key=lambda r: r["position"])
+            for note, group in groups.items()
+        }
+
+    @staticmethod
+    def _links_from_row(row: dict, note: str) -> list[Link]:
+        """Reconstruct typed links from one chunk row, skipping corrupt rows."""
+        targets = row["links"] or []
+        types = row["link_types"] or []
+        if len(targets) != len(types):
+            logger.warning(
+                f"Skipping corrupt chunk row for note '{note}': "
+                f"links ({len(targets)}) and link_types ({len(types)}) misaligned"
+            )
+            return []
+        return [Link(type=t, target=n) for t, n in zip(types, targets, strict=True)]
+
+    @staticmethod
+    def _first_non_none(rows: list[dict], column: str) -> str | None:
+        return next((row[column] for row in rows if row[column] is not None), None)
+
+    async def get_notes_with_links(
+        self, wikilink_names: list[str]
+    ) -> list[NoteLinks]:
+        """Return outgoing typed links for the requested notes."""
+        if not self._initialized:
+            raise NotInitializedError(
+                "LanceDBStore is not initialized. Call await store.initialize() first."
+            )
+        if not wikilink_names:
+            return []
+        name_list = ",".join(
+            f"'{self._escape_sql_string(n)}'" for n in wikilink_names
+        )
+        rows = (
+            await self.table.query()
+            .where(f"wikilink_name IN ({name_list})")
+            .select(_LINK_QUERY_COLUMNS)
+            .to_list()
+        )
+        return [
+            NoteLinks(
+                note=note,
+                title=self._first_non_none(group, "title"),
+                description=self._first_non_none(group, "description"),
+                links=dedupe_links(
+                    link for row in group for link in self._links_from_row(row, note)
+                ),
+            )
+            for note, group in self._group_rows_by_note(rows).items()
+        ]
+
+    async def get_notes_linking_to(
+        self, targets: list[str], relation_types: list[str] | None = None
+    ) -> list[NoteLinks]:
+        """Return notes holding at least one link to a requested target.
+
+        The array_has_any SQL predicate is a sound-but-inexact pre-filter:
+        it cannot correlate positions across the links/link_types arrays.
+        The exact (type, target) match below in Python is the filter of
+        record; the SQL predicate only limits transferred rows.
+        """
+        if not self._initialized:
+            raise NotInitializedError(
+                "LanceDBStore is not initialized. Call await store.initialize() first."
+            )
+        if not targets:
+            return []
+        targets_array = ",".join(
+            f"'{self._escape_sql_string(t)}'" for t in targets
+        )
+        predicates = [f"array_has_any(links, [{targets_array}])"]
+        if relation_types:
+            types_array = ",".join(
+                f"'{self._escape_sql_string(t)}'" for t in relation_types
+            )
+            predicates.append(f"array_has_any(link_types, [{types_array}])")
+        rows = (
+            await self.table.query()
+            .where(" AND ".join(predicates))
+            .select(_LINK_QUERY_COLUMNS)
+            .to_list()
+        )
+        wanted_targets = set(targets)
+        wanted_types = set(relation_types) if relation_types else None
+        result = []
+        for note, group in self._group_rows_by_note(rows).items():
+            links = dedupe_links(
+                link
+                for row in group
+                for link in self._links_from_row(row, note)
+                if link.target in wanted_targets
+                and (wanted_types is None or link.type in wanted_types)
+            )
+            if not links:
+                continue
+            result.append(
+                NoteLinks(
+                    note=note,
+                    title=self._first_non_none(group, "title"),
+                    description=self._first_non_none(group, "description"),
+                    links=links,
+                )
+            )
+        return result

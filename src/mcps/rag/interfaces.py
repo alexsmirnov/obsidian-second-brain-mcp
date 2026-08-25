@@ -63,6 +63,15 @@ def dedupe_links(links: Iterable[Link]) -> list[Link]:
     return deduped
 
 
+class NoteLinks(BaseModel):
+    """Typed outgoing links of one note, aggregated across all its chunks."""
+
+    note: str
+    title: str | None = None
+    description: str | None = None
+    links: list[Link] = Field(default_factory=list)
+
+
 class Document(BaseModel):
     """Represents a document with its content and metadata."""
     
@@ -273,6 +282,31 @@ class IVectorStore(ABC):
     @abstractmethod
     async def get_sources_by_name(self, wikilink_name: str) -> list[str]:
         """Return source paths matching a wikilink note name."""
+        pass
+
+    @abstractmethod
+    async def get_notes_with_links(
+        self, wikilink_names: list[str]
+    ) -> list[NoteLinks]:
+        """Return outgoing typed links for the requested notes.
+
+        Aggregates the links of all chunk rows of each note, deduplicated.
+        Notes absent from the index are silently omitted. An empty input
+        returns an empty list.
+        """
+        pass
+
+    @abstractmethod
+    async def get_notes_linking_to(
+        self, targets: list[str], relation_types: list[str] | None = None
+    ) -> list[NoteLinks]:
+        """Return notes holding at least one link to a requested target.
+
+        Each returned entry carries only the edges pointing at a requested
+        target, optionally restricted to the given relation types
+        (OR-combined). An empty input returns an empty list. Matching is
+        exact on the (type, target) pair, never on the SQL pre-filter alone.
+        """
         pass
 
 class ISearchEngine(ABC):

@@ -16,6 +16,7 @@ from mcps.rag.interfaces import (
     IVectorStore,
     Link,
     Metadata,
+    NoteLinks,
     SearchQuery,
     SearchScope,
 )
@@ -72,6 +73,16 @@ class FakeVectorStore(IVectorStore):
         return []
 
     async def get_chunks_by_ids(self, ids: list[str]) -> list[Chunk]:
+        return []
+
+    async def get_notes_with_links(
+        self, wikilink_names: list[str]
+    ) -> list[NoteLinks]:
+        return []
+
+    async def get_notes_linking_to(
+        self, targets: list[str], relation_types: list[str] | None = None
+    ) -> list[NoteLinks]:
         return []
 
 
