@@ -72,6 +72,27 @@ class NoteLinks(BaseModel):
     links: list[Link] = Field(default_factory=list)
 
 
+class TraversalNode(BaseModel):
+    """A note reached while traversing typed relations."""
+
+    note: str
+    title: str | None = None
+    description: str | None = None
+    depth: int
+    direction: str
+    relation: str
+    via: str
+
+
+class TraversalResult(BaseModel):
+    """The bounded typed-relation graph traversal result."""
+
+    origin: str
+    nodes: list[TraversalNode] = Field(default_factory=list)
+    truncated: bool = False
+    warning: str | None = None
+
+
 class Document(BaseModel):
     """Represents a document with its content and metadata."""
     
@@ -397,5 +418,19 @@ class IVault(ABC):
         `target` set to the source note's wikilink_name. Notes with no
         incoming links map to an empty list; every requested name is present
         as a key. An empty input returns an empty dict.
+        """
+        pass
+
+    @abstractmethod
+    async def traverse_relations(
+        self,
+        wikilink_name: str,
+        depth: int = 1,
+        relation_types: list[str] | None = None,
+    ) -> TraversalResult:
+        """Walk typed relations in both directions from a note.
+
+        The walk is breadth-first, includes at most ``depth`` hops, and
+        follows only the requested relation types when provided.
         """
         pass

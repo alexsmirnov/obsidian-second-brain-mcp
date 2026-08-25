@@ -7,7 +7,7 @@ import asyncio
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path
 
 import httpx
@@ -39,9 +39,12 @@ from .interfaces import (
     IVault,
     IVectorStore,
     Link,
+    NoteLinks,
     NotInitializedError,
     SearchQuery,
     SearchScope,
+    TraversalNode,
+    TraversalResult,
     dedupe_links,
 )
 from .reranking import LangChainReranker
@@ -52,6 +55,7 @@ from .search import (
 from .summarization import LangChainDocumentSummaryGenerator
 
 logger = logging.getLogger("mcps.vault")
+MAX_TRAVERSAL_NODES = 100
 
 
 def _create_file_traversal(vault_path: Path) -> IFileTraversal:
@@ -473,6 +477,137 @@ class Vault(IVault):
             name: dedupe_links(links) for name, links in backlinks.items()
         }
     
+    async def traverse_relations(
+        self,
+        wikilink_name: str,
+        depth: int = 1,
+        relation_types: list[str] | None = None,
+    ) -> TraversalResult:
+        """Walk typed note relations breadth-first in both directions."""
+        if not self._initialized:
+            raise NotInitializedError(
+                "Vault must be initialized before traversing relations"
+            )
+
+        origin_notes = await self.vector_store.get_notes_with_links(
+            [wikilink_name]
+        )
+        if not origin_notes:
+            raise FileNotFoundError(wikilink_name)
+
+        nodes: list[TraversalNode] = []
+        visited = {wikilink_name}
+        frontier = [wikilink_name]
+        frontier_notes = origin_notes
+
+        for current_depth in range(1, depth + 1):
+            incoming_notes = await self.vector_store.get_notes_linking_to(
+                frontier, relation_types
+            )
+            proposals = self._relation_proposals(
+                frontier_notes,
+                incoming_notes,
+                relation_types,
+            )
+            candidates = self._unvisited_proposals(proposals, visited)
+            candidate_names = list(dict.fromkeys(node.note for node in candidates))
+            if not candidate_names:
+                break
+            resolved_notes = await self.vector_store.get_notes_with_links(
+                candidate_names
+            )
+            resolved_by_name = {note.note: note for note in resolved_notes}
+            resolved_nodes = self._resolved_nodes(
+                candidates,
+                resolved_by_name,
+                current_depth,
+            )
+
+            remaining = MAX_TRAVERSAL_NODES - len(nodes)
+            if len(resolved_nodes) > remaining:
+                nodes.extend(resolved_nodes[:remaining])
+                return TraversalResult(
+                    origin=wikilink_name,
+                    nodes=nodes,
+                    truncated=True,
+                    warning=(
+                        f"Traversal reached the {MAX_TRAVERSAL_NODES}-note cap "
+                        f"at depth {current_depth}; narrow relation_types or "
+                        "reduce depth."
+                    ),
+                )
+
+            nodes.extend(resolved_nodes)
+            frontier = [node.note for node in resolved_nodes]
+            if not frontier:
+                break
+            frontier_notes = [
+                resolved_by_name[name] for name in frontier
+            ]
+
+        return TraversalResult(origin=wikilink_name, nodes=nodes)
+
+    @staticmethod
+    def _relation_proposals(
+        outgoing_notes: list[NoteLinks],
+        incoming_notes: list[NoteLinks],
+        relation_types: list[str] | None,
+    ) -> list[TraversalNode]:
+        proposals = [
+            TraversalNode(
+                note=link.target,
+                depth=0,
+                direction="outgoing",
+                relation=link.type,
+                via=source.note,
+            )
+            for source in outgoing_notes
+            for link in source.links
+            if relation_types is None or link.type in relation_types
+        ]
+        proposals.extend(
+            TraversalNode(
+                note=source.note,
+                depth=0,
+                direction="incoming",
+                relation=link.type,
+                via=link.target,
+            )
+            for source in incoming_notes
+            for link in source.links
+        )
+        return proposals
+
+    @staticmethod
+    def _unvisited_proposals(
+        proposals: list[TraversalNode], visited: set[str]
+    ) -> list[TraversalNode]:
+        candidates: list[TraversalNode] = []
+        for proposal in proposals:
+            if proposal.note in visited:
+                continue
+            visited.add(proposal.note)
+            candidates.append(proposal)
+        return candidates
+
+    @staticmethod
+    def _resolved_nodes(
+        candidates: list[TraversalNode],
+        resolved_by_name: dict[str, NoteLinks],
+        depth: int,
+    ) -> list[TraversalNode]:
+        return [
+            proposal.model_copy(
+                update={
+                    "title": resolved_by_name[proposal.note].title,
+                    "description": resolved_by_name[proposal.note].description,
+                    "depth": depth,
+                }
+            )
+            for proposal in candidates
+            if proposal.note in resolved_by_name
+        ]
+
     async def get_file(
         self,
         wikilink_name: str,

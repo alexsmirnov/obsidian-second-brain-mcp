@@ -13,7 +13,7 @@ from fastmcp.server.lifespan import Lifespan, lifespan
 from pydantic import BaseModel, Field
 
 from mcps.config import ServerConfig
-from mcps.rag.interfaces import IVault, Link
+from mcps.rag.interfaces import IVault, Link, TraversalResult
 from mcps.rag.vault import create_vault
 
 logger = logging.getLogger("mcps")
@@ -138,6 +138,27 @@ ReadLimit = Annotated[
     ),
 ]
 
+TraversalDepth = Annotated[
+    int,
+    Field(
+        default=1,
+        ge=1,
+        le=3,
+        description="Number of relation hops to walk from the origin note.",
+    ),
+]
+
+RelationTypes = Annotated[
+    list[str] | None,
+    Field(
+        default=None,
+        description=(
+            "Optional free-form relation types to follow. Multiple values are "
+            "OR-combined; omit to follow all relation types."
+        ),
+    ),
+]
+
 class SearchResultItem(BaseModel):
     """Short result"""
     content: str
@@ -248,6 +269,17 @@ def register_tools(mcp: FastMCP) -> None:
             "linking note for backlinks). Does NOT list files or "
             "read a specific file by path — use obsidian_list_files or "
             "obsidian_read_note for those."
+        ),
+    )
+    mcp.tool(
+        traverse_relations,
+        name="obsidian_traverse_relations",
+        description=(
+            "Walk typed relation links forward and backward from an Obsidian "
+            "note. Depth is 1-3. relation_types OR-combines free-form types and "
+            "defaults to every type. Results contain at most 100 distinct notes "
+            "and warn when truncated; every node identifies its relation, "
+            "direction, and the note it was reached through."
         ),
     )
 
@@ -401,6 +433,21 @@ async def search(
     except Exception as e:
         logger.error(f"Failed to search vault for query '{query}': {e}")
         return []
+
+
+async def traverse_relations(
+    note: WikilinkName,
+    ctx: Context,
+    depth: TraversalDepth = 1,
+    relation_types: RelationTypes = None,
+) -> TraversalResult:
+    """Walk typed note relations forward and backward from one note."""
+    try:
+        return await _vault_from_context(ctx).traverse_relations(
+            note, depth, relation_types
+        )
+    except FileNotFoundError as error:
+        raise ToolError(f"No indexed note found for: {note}") from error
 
 
 def _vault_from_context(ctx: Context) -> IVault:
