@@ -1,5 +1,14 @@
 # Phase 1: Typed link model and extraction [NEW_FEATURE]
 
+## Deviations recorded during implementation
+
+1. **`search_agent.py` adapted minimally (user decision: option 1).** The plan's research missed `src/mcps/rag/search_agent.py:25-29`, which reads `chunk.outgoing_links`. Adapted to `chunk.links` (targets only, preserving its existing semantics), and the stale `outgoing_links=[]` kwarg removed from `tests/test_search_agent.py:_make_chunk`. `SearchAgent` is not wired anywhere in production.
+2. **Inline-field anchor regex replaced per user instruction.** The plan's GREEN regex (line-start | `(`/`[` boundary, optional bullet, `[ \t]*::`) could not satisfy the RED case "mid-sentence `requires:: [[Beta]]`". Following user direction, the boundary was widened to `^` | `(`,`[`, or whitespace; the name must be followed by `::` then **one-or-more whitespace** (`\s+`); and a lookahead requires the next thing to be `[[`. `std::[[array]]` and `prose not::a field but [[Y]]` are rejected; `implements:: [ColBERT](https://x.com)` types nothing. Verified experimentally against all 16 documented samples.
+3. **Pre-existing never-passing tests fixed (user direction: option 1, "fix the test").** `test_vault_summary_chunks.py::test_process_file_stores_summary_chunk_in_addition_...` — guard `len(chunks) > 2` in `vault.py` long predated the test's 1-chunk fixture; fixture now builds 3 chunks. `test_lancedb_store.py::test_sources_unique_and_min_time` — previously passed raw `datetime` values into `Chunk.modified_at`; now epoch-second floats. Both defects pre-dated Phase 1.
+4. **Generator-exhaustion bug in `dedupe_links` fixed.** `_merge_window` passes a generator; `dedupe_links` iterated its input twice. Now materializes `list(links)` first. New contract test `test_dedupe_links_accepts_any_iterable` locks this in.
+5. **Rubber-duck review findings incorporated into RED tests:** `test_link_is_hashable_and_set_uses_value_equality`; `*`/`+`/tab bullet forms added to test_extract_typed_links_list_item_field. Review verdict: APPROVED.
+6. **Pre-existing E501 violations on touched files are unchanged in count; this phase removes 2 and adds 0 (per deviation 3 of Phase 0).**
+
 Introduces the `Link` type, the dedup rule, the two aligned `Chunk` columns with their alignment invariant, and the Dataview inline-field parser. This phase does not touch the database or the tool layer beyond one mechanical field rename.
 
 ### RED — `tests/test_document_processing.py` (new tests appended after line 1016), `tests/test_chunk.py` (new tests appended after line 56), `tests/test_search.py` (modification at lines 282-307)

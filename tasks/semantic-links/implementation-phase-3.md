@@ -1,5 +1,14 @@
 # Phase 3: `obsidian_search` typed links and backlinks [NEW_FEATURE]
 
+## Deviations recorded during implementation
+
+1. **`test_search_exposes_typed_outgoing_links` passed at RED for the right reason**, exactly as the plan's CONFIRM_RED anticipated: Phase 1 already wired `outgoing_links=c.typed_links`, and the test asserts actual `Link` objects (verified non-vacuous). The other 5 new tests failed correctly at RED (3x `AttributeError` on missing `SearchResultFullItem.backlinks`, 2x assertion on `get_backlinks_calls == []`).
+2. **Batching test asserts exact ordered list** (`get_backlinks_calls == [["A", "B"]]`) rather than just set membership. The RED section said only "contains 'A' and 'B' exactly once each", but the GREEN section mandates first-appearance order, so the stronger assertion locks in the deterministic contract (rubber-duck validated).
+3. **`NoteLinks` not imported in `vault.py`.** The plan said to add `Link, NoteLinks, dedupe_links` to the vault import; `NoteLinks` appears only in inferred positions (the store call's return), and an unused import would violate F401 per the Phase 0 deviation-2 precedent. `Link` and `dedupe_links` were added as specified.
+4. **`search()` refactored to name `returned_chunks = chunks[:10]`** so the backlink query scope and the result-builder slice cannot drift apart; distinct names collected via `list(dict.fromkeys(...))` for first-appearance order.
+5. **Description rewrite fixed a pre-existing E501** on the old `"outgoing_links are Wikiling names..."` line (also correcting the "Wikiling" typo).
+6. **Rubber-duck review verdicts:** RED tests APPROVED, GREEN implementation APPROVED (one informational warning noted: unbounded backlink fetch is the plan's explicit design — no SQL row limit, Python-side cap after grouping).
+
 Surfaces typed outgoing links (already carried on the chunk since Phase 1) plus newly computed backlinks in the search tool's results.
 
 ### RED — `tests/test_obsidian_vault_tools.py` (new tests appended after line 88)

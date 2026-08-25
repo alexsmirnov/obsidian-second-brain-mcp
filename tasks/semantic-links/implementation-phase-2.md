@@ -1,5 +1,12 @@
 # Phase 2: LanceDB storage and link queries [NEW_FEATURE]
 
+## Deviations recorded during implementation
+
+1. **Two round-trip tests passed at RED for the right reason (user decision: option 1, accept as contract guards).** `test_store_and_search_round_trips_typed_links` and `test_store_and_search_round_trips_multiple_typed_links_in_order` passed immediately because Phase 1 already placed `links`/`link_types` on `Chunk` and the existing `pydantic_to_schema`/`model_dump`/`model_validate` path round-trips them with no new code. Both assert `typed_links == [Link(type=..., target=...)]` — actual `Link` objects, order and type preserved — so they are non-vacuous regression guards for SPEC criterion #4. The remaining 9 new tests failed at RED for the correct reasons (8x `AttributeError` on the missing methods, 1x assertion failure on the missing indexes).
+2. **Index-failure handling follows the plan's final explicit instruction, not the contradictory one.** The plan asked both for "the same try/except-and-log handling already applied to `tags`" (which re-raises) and for failures to be "logged and swallowed ... not raised". Implemented log-and-swallow (no raise) for the `links`/`link_types` `LabelList` indexes, since a fetch-volume-optimization index failure must not break indexing. The `tags` handler is unchanged.
+3. **Import adjustments per the Phase 0 deviation-2 precedent (no unused imports).** Only `NoteLinks` was added to `tests/test_vault.py` and `tests/test_vault_summary_chunks.py` (`Link` is unused there and would trip F401). `tests/test_lancedb_store.py` imports `Link` but never `NoteLinks`: the tests assert duck-typed attributes (`.note`, `.links`) on returned objects, so the module stayed importable during RED — the same pattern Phase 3's CONFIRM_RED pre-approves.
+4. **Shared helpers extracted per DRY.** `_group_rows_by_note`, `_links_from_row`, `_first_non_none`, and the module-level `_LINK_QUERY_COLUMNS` constant factor the grouping, metadata-resolution, corrupt-row handling, and column projection shared by both query methods. Rubber-duck review verdict on both RED tests and GREEN implementation: APPROVED.
+
 Persists the two link columns, indexes them, and adds the two link-lookup methods every later phase depends on.
 
 ### RED — `tests/test_lancedb_store.py` (new tests appended after line 523)
