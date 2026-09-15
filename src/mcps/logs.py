@@ -49,3 +49,4 @@ def setup_logging():
     )
     # Reduce noise
     logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpx2").setLevel(logging.WARNING)

@@ -77,7 +77,7 @@ markdown v3.8 to parse markdown text, python-frontmatter v1.1.0 to extract metad
 lancedb v0.23.0 as vector and data storage
 pydantic v2.11.7 for data model classes
 Full dependencies tree:
-├── fastmcp v2.8.1
+├── fastmcp v4.0.3
 │   ├── authlib v1.6.0
 │   │   └── cryptography v45.0.4
 │   │       └── cffi v1.17.1

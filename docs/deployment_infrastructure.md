@@ -57,7 +57,8 @@ requires-python = ">=3.13"
 ### Runtime Dependencies
 
 Core dependencies [pyproject.toml:10-26](../pyproject.toml#L10-L26):
-- fastmcp==3.4.2
+- fastmcp>=4.0.3,<5
+- httpx>=0.28.0
 - lancedb==0.25.3
 - markdown>=3.10.0
 - rank_bm25

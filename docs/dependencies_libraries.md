@@ -6,7 +6,7 @@ External libraries and tools used by the MCPS Model Context Protocol server, org
 
 ### fastmcp
 Model Context Protocol server framework providing `FastMCP`, `Context`, tool/resource decorators, and lifespan management.
-**Version**: `==3.4.2`
+**Version**: `>=4.0.3`
 **Used by**: [src/mcps/server.py:8](../src/mcps/server.py#L8), [src/mcps/tools/obsidian_vault.py:10](../src/mcps/tools/obsidian_vault.py#L10), [src/mcps/research/lifespan.py:5](../src/mcps/research/lifespan.py#L5)
 **Docs**: [github.com/jlowin/fastmcp](https://github.com/jlowin/fastmcp)
 
@@ -76,7 +76,7 @@ PDF text extraction.
 
 ### httpx
 Shared async HTTP client for model router and web requests.
-**Version**: transitive via fastmcp
+**Version**: `>=0.28.0`
 **Used by**: [src/mcps/server.py:7](../src/mcps/server.py#L7), [src/mcps/tools/obsidian_vault.py:9](../src/mcps/tools/obsidian_vault.py#L9), [src/mcps/research/tools.py:15](../src/mcps/research/tools.py#L15)
 
 ### pydantic
