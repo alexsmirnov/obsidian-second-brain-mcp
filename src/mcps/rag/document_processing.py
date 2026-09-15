@@ -309,7 +309,7 @@ class SemanticChunker(IChunker):
 
     def __init__(self, max_chunk_size: int = 1000, min_chunk_size: int = 500):
         self.max_chunk_size = max_chunk_size
-        self.min_chunk_size = min_chunk_size
+        self.min_chunk_size = min(min_chunk_size, max_chunk_size)
 
     def chunk(self, document: Document) -> Generator[Chunk]:
         """Split document into semantic chunks based on markdown structure."""

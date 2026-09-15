@@ -114,7 +114,7 @@ The RAG pipeline in [src/mcps/rag/vault.py:252-556](../src/mcps/rag/vault.py#L25
 - Splits by markdown headers (H1-H3)
 - Merges small sections to meet minimum chunk size
 - Splits large sections by paragraphs
-- Default: max_chunk_size=1000, min_chunk_size=500
+- Default: max_chunk_size=2000, min_chunk_size=1000 (250-500 tokens)
 
 **Chunk Creation** [src/mcps/rag/document_processing.py:56-93](../src/mcps/rag/document_processing.py#L56-L93):
 - Extracts outgoing wikilinks using regex patterns

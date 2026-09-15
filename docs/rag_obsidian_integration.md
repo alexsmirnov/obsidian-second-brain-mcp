@@ -291,7 +291,8 @@ If HyDE generation or search-level reranking fails, search logs the error and re
 |---------|---------|---------|
 | `vault_dir` | — | Path to the Obsidian vault |
 | `table_name` | `"documents"` | LanceDB table name |
-| `max_chunk_size` | `4000` | Maximum content in results |
+| `min_chunk_size` | `1000` | Minimum section size in characters before merging (250 tokens) |
+| `max_chunk_size` | `2000` | Maximum chunk size in characters (500 tokens) |
 | `search_limit` | `30` | Maximum results returned |
 | `rag_embedding_model` | `""` | Model-router embedding model |
 | `rag_embedding_dimensions` | `0` | LanceDB vector dimension |

@@ -6,6 +6,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from mcps.config import ServerConfig
+from mcps.rag.document_processing import SemanticChunker
 from mcps.rag.interfaces import (
     Chunk,
     Document,
@@ -19,7 +21,7 @@ from mcps.rag.interfaces import (
     SearchQuery,
     SearchScope,
 )
-from mcps.rag.vault import Vault
+from mcps.rag.vault import Vault, _create_chunker
 
 
 class FakeDocumentProcessor(IDocumentProcessor):
@@ -221,3 +223,19 @@ async def test_search_returns_immediately_when_index_update_is_slow(
     results = await asyncio.wait_for(vault.search("query"), timeout=0.1)
 
     assert results == []
+
+
+def test_create_chunker_without_config_uses_defaults() -> None:
+    chunker = _create_chunker()
+    assert isinstance(chunker, SemanticChunker)
+    assert chunker.min_chunk_size == 1000
+    assert chunker.max_chunk_size == 2000
+
+
+def test_create_chunker_with_config_passes_bounds() -> None:
+    config = ServerConfig(min_chunk_size=800, max_chunk_size=1600)
+    chunker = _create_chunker(config)
+    assert isinstance(chunker, SemanticChunker)
+    assert chunker.min_chunk_size == 800
+    assert chunker.max_chunk_size == 1600
+

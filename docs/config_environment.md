@@ -93,11 +93,19 @@ Number of files to process in a single batch.
 **Default**: `8` [src/mcps/config.py:27](../src/mcps/config.py#L27)
 **Used by**: [src/mcps/rag/vault.py:329-375](../src/mcps/rag/vault.py#L329-L375)
 
-#### `max_chunk_size` #config
-Maximum size of text chunks in characters.
+#### `min_chunk_size` #config
+Minimum size of text sections in characters before merging (representing 250 tokens).
 **Type**: int
-**Default**: `4000`
-**Used by**: [src/mcps/rag/document_processing.py](../src/mcps/rag/document_processing.py)
+**Default**: `1000`
+**Environment**: `MIN_CHUNK_SIZE`
+**Used by**: [src/mcps/rag/document_processing.py](../src/mcps/rag/document_processing.py), [src/mcps/rag/vault.py](../src/mcps/rag/vault.py)
+
+#### `max_chunk_size` #config
+Maximum size of text chunks in characters (representing 500 tokens).
+**Type**: int
+**Default**: `2000`
+**Environment**: `MAX_CHUNK_SIZE`
+**Used by**: [src/mcps/rag/document_processing.py](../src/mcps/rag/document_processing.py), [src/mcps/rag/vault.py](../src/mcps/rag/vault.py)
 
 ### Model Configuration
 

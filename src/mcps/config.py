@@ -26,7 +26,8 @@ class ServerConfig:
     skip_patterns: list[str] = field(default_factory=list)
     batch_size: int = 8
     # Chunking configuration
-    max_chunk_size: int = 4000
+    min_chunk_size: int = 500
+    max_chunk_size: int = 1000
 
     # RAG models. All model values are intentionally empty by default and must
     # be supplied through environment variables (see env.example).
@@ -107,6 +108,8 @@ def create_config(
             else (Path(env_vault) if (env_vault := os.getenv("VAULT")) else None)
         ),
         skip_patterns=default_skip_patterns,
+        min_chunk_size=int(os.environ.get("MIN_CHUNK_SIZE") or 500),
+        max_chunk_size=int(os.environ.get("MAX_CHUNK_SIZE") or 1000),
         google_api_key=os.environ.get("GOOGLE_API_KEY", ""),
         google_search_id=os.environ.get("GOOGLE_SEARCH_ID", "")
     )
@@ -120,6 +123,20 @@ def validate_config(config: ServerConfig) -> None:
     Validation is intentionally non-fatal so the server can start with a
     subset of features enabled (e.g. no vault, no AI tools).
     """
+    if config.min_chunk_size <= 0 or config.max_chunk_size <= 0:
+        logger.warning(
+            "min_chunk_size (%d) and max_chunk_size (%d) must be positive integers.",
+            config.min_chunk_size,
+            config.max_chunk_size,
+        )
+    elif config.min_chunk_size > config.max_chunk_size:
+        logger.warning(
+            "min_chunk_size (%d) is greater than max_chunk_size (%d). "
+            "Undersized sections will be merged up to max_chunk_size.",
+            config.min_chunk_size,
+            config.max_chunk_size,
+        )
+
     if not config.router_api_base:
         if config.research_fast_model or config.research_infer_model:
             logger.warning(

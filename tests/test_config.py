@@ -200,3 +200,50 @@ class TestValidateConfig:
             validate_config(config)
 
         assert caplog.text == ""
+
+
+class TestCreateConfigChunkSize:
+    def test_config_chunk_size_defaults(self, monkeypatch):
+        monkeypatch.delenv("MIN_CHUNK_SIZE", raising=False)
+        monkeypatch.delenv("MAX_CHUNK_SIZE", raising=False)
+
+        config = create_config()
+
+        assert config.min_chunk_size == 1000
+        assert config.max_chunk_size == 2000
+
+    def test_config_reads_chunk_size_env_vars(self, monkeypatch):
+        monkeypatch.setenv("MIN_CHUNK_SIZE", "800")
+        monkeypatch.setenv("MAX_CHUNK_SIZE", "1600")
+
+        config = create_config()
+
+        assert config.min_chunk_size == 800
+        assert config.max_chunk_size == 1600
+
+    def test_config_empty_env_vars_fallback_to_defaults(self, monkeypatch):
+        monkeypatch.setenv("MIN_CHUNK_SIZE", "")
+        monkeypatch.setenv("MAX_CHUNK_SIZE", "")
+
+        config = create_config()
+
+        assert config.min_chunk_size == 1000
+        assert config.max_chunk_size == 2000
+
+    def test_validate_config_warns_when_min_chunk_size_greater_than_max(self, caplog):
+        config = ServerConfig(min_chunk_size=2500, max_chunk_size=1000)
+
+        with caplog.at_level("WARNING", logger="mcps.config"):
+            validate_config(config)
+
+        assert "min_chunk_size" in caplog.text
+        assert "greater than max_chunk_size" in caplog.text
+
+    def test_validate_config_warns_when_chunk_size_non_positive(self, caplog):
+        config = ServerConfig(min_chunk_size=0, max_chunk_size=1000)
+
+        with caplog.at_level("WARNING", logger="mcps.config"):
+            validate_config(config)
+
+        assert "must be positive integers" in caplog.text
+

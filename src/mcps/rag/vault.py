@@ -68,10 +68,13 @@ def _create_document_processor(vault_path: Path) -> IDocumentProcessor:
     return MarkdownProcessor(base_path=vault_path)
 
 
-def _create_chunker() -> IChunker:
+def _create_chunker(config: ServerConfig) -> IChunker:
     """Create and configure text chunker service."""
     # return FixedSizeChunker(chunk_size=chunk_size, overlap=chunk_overlap)
-    return SemanticChunker()
+    return SemanticChunker(
+        max_chunk_size=config.max_chunk_size,
+        min_chunk_size=config.min_chunk_size,
+    )
 
 
 def create_embeddings(
@@ -769,7 +772,7 @@ async def create_vault(
         # Create all services using factory methods
         file_traversal = _create_file_traversal(vault_path)
         document_processor = _create_document_processor(vault_path)
-        chunker = _create_chunker()
+        chunker = _create_chunker(config)
         embeddings = create_embeddings(config,http_client)
         reranker = create_reranker(config,http_client)
         async with _create_vector_store(config,embeddings,reranker) as vector_store:

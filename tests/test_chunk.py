@@ -578,3 +578,38 @@ class TestLazyChunking:
         assert "## S2" in chunks[0].content
         assert "## S3" not in chunks[0].content
         assert chunks[1].content.startswith("## S3")
+
+    def test_semantic_chunker_default_bounds(self):
+        """Test SemanticChunker default bounds are 1000 and 2000 characters."""
+        chunker = SemanticChunker()
+        assert chunker.min_chunk_size == 1000
+        assert chunker.max_chunk_size == 2000
+
+    def test_semantic_chunker_default_chunking_respects_2000_char_cap(self):
+        """Test default SemanticChunker enforces 2000 character cap."""
+        content = (
+            "# Title\n\n"
+            "## Section 1\n\n" + "A" * 700 + "\n\n"
+            "## Section 2\n\n" + "B" * 1400 + "\n\n"
+            "## Section 3\n\n" + "C" * 2400
+        )
+        document = Document(
+            id="test_doc",
+            content=content,
+            metadata=Metadata(title="Title", description="Desc"),
+            tags=["test"],
+            source_path="test.md",
+            modified_at=NOW,
+            file_size=len(content),
+            wikilink_name="test",
+        )
+        chunks = list(SemanticChunker().chunk(document))
+        assert len(chunks) > 0
+        assert all(len(c.content) <= 2000 for c in chunks)
+
+    def test_semantic_chunker_clamps_min_chunk_size_if_greater_than_max(self):
+        """Test SemanticChunker clamps min_chunk_size if greater than max_chunk_size."""
+        chunker = SemanticChunker(max_chunk_size=1500, min_chunk_size=2500)
+        assert chunker.min_chunk_size == 1500
+        assert chunker.max_chunk_size == 1500
+
