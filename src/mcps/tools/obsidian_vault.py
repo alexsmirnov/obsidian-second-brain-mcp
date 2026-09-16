@@ -3,6 +3,7 @@ import logging
 import re
 from collections.abc import AsyncIterator
 from datetime import timedelta
+from itertools import pairwise
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -13,7 +14,7 @@ from fastmcp.server.lifespan import Lifespan, lifespan
 from pydantic import BaseModel, Field
 
 from mcps.config import ServerConfig
-from mcps.rag.interfaces import IVault, Link, TraversalResult
+from mcps.rag.interfaces import Chunk, IVault, Link, TraversalResult, dedupe_links
 from mcps.rag.vault import create_vault
 
 logger = logging.getLogger("mcps")
@@ -35,7 +36,8 @@ FolderPath = Annotated[
 WikilinkName = Annotated[
     str,
     Field(
-        description="""Exact indexed note name, case-sensitive — "Breaking News Aggregator"
+        description="""Exact indexed note name, case-sensitive —
+"Breaking News Aggregator"
 resolves, "breaking news aggregator" does not. Safest source is the
 `wikilink_name` field of an obsidian_search result. Omit the .md extension.""",
         min_length=1,
@@ -142,7 +144,8 @@ TraversalDepth = Annotated[
         default=1,
         ge=1,
         le=3,
-        description="""Hops from the origin (1-3, default 1). Depth 1 is safe unfiltered. At depth
+        description="""Hops from the origin (1-3, default 1).
+Depth 1 is safe unfiltered. At depth
 2+ ALWAYS pass relation_types: traversal expands by node degree, so a single
 high-degree neighbor (a daily/monthly note or a MOC) can consume the entire
 100-node budget with unrelated content before the relevant path is reached.""",
@@ -153,7 +156,8 @@ RelationTypes = Annotated[
     list[str],
     Field(
         default=None,
-        description="""Field names from the `Relations` taxonomy, OR-combined. Omit to follow all.
+        description="""Field names from the `Relations` taxonomy, OR-combined.
+Omit to follow all.
 Unrecognized names match nothing and return an empty result without error —
 verify spelling against the `Relations` note."""
     ),
@@ -178,6 +182,8 @@ class SearchResultFullItem(SearchResultItem):
 
 UPDATE_INTERVAL = timedelta(minutes=1)
 MAX_BACKLINKS_PER_NOTE = 20
+MAX_SEARCH_RESULT_CHARACTERS = 25_000
+DROPPED_CONTENT = "<<Dropped: content is too big>>"
 
 
 async def _periodic_update_index(vault: IVault, interval: timedelta) -> None:
@@ -268,16 +274,19 @@ def register_tools(mcp: FastMCP) -> None:
             "end of the edge — the destination for outgoing links, the "
             "linking note for backlinks). Does NOT list files or "
             "read a specific file by path — use obsidian_list_files or "
-            "obsidian_read_note for those."
-            """outgoing_links are scoped to the returned CHUNK; backlinks are scoped to the
-whole NOTE, so the same backlink set repeats on every chunk of a large note.
-Link types are as authored. Untyped wikilinks are reported as "related"."""
+            "obsidian_read_note for those. Results from the same file are "
+            "combined into one record; isolated excerpts are separated by "
+            "gap markers. Links are aggregated per document. Large content "
+            "may be replaced by a dropped-content marker to bound output size. "
+            "Link types are as authored. Untyped wikilinks are reported as "
+            '"related".'
         ),
     )
     mcp.tool(
         traverse_relations,
         name="obsidian_traverse_relations",
-        description="""Walk typed relation links out from an Obsidian note to find its structural
+        description="""Walk typed relation links out from an Obsidian note to
+find its structural
 neighborhood — prerequisites, sub-topics, alternatives, tooling, tasks.
 Use when you already know a note name; use obsidian_search when you don't.
 
@@ -404,6 +413,95 @@ async def rename_move_note(
         return f"Error renaming/moving note: {e!s}"
 
 
+def _combine_document_content(chunks: list[Chunk]) -> str:
+    ordered_chunks = sorted(chunks, key=lambda chunk: chunk.offset)
+    sections = [ordered_chunks[0].content]
+    for previous, current in pairwise(ordered_chunks):
+        previous_end = previous.offset + len(previous.content.splitlines())
+        gap = current.offset - previous_end
+        if gap > 0:
+            sections.append(f"<<Gap: {gap} lines>>")
+        sections.append(current.content)
+    return "\n\n".join(sections)
+
+
+def _format_document_results(
+    chunks: list[Chunk],
+    backlink_map: dict[str, list[Link]],
+) -> list[SearchResultFullItem]:
+    chunks_by_path: dict[str, list[Chunk]] = {}
+    for chunk in chunks:
+        chunks_by_path.setdefault(chunk.source_path, []).append(chunk)
+
+    results: list[SearchResultFullItem] = []
+    for document_chunks in chunks_by_path.values():
+        primary = min(document_chunks, key=lambda chunk: chunk.offset)
+        results.append(SearchResultFullItem(
+            title=primary.title,
+            description=primary.description,
+            content=_combine_document_content(document_chunks),
+            tags=sorted({tag for chunk in document_chunks for tag in chunk.tags}),
+            outgoing_links=dedupe_links(
+                link
+                for chunk in document_chunks
+                for link in chunk.typed_links
+            ),
+            backlinks=backlink_map.get(primary.wikilink_name, [])[
+                :MAX_BACKLINKS_PER_NOTE
+            ],
+            source_path=primary.source_path,
+            wikilink_name=primary.wikilink_name,
+            offset=primary.offset,
+            file_size=primary.file_size,
+        ))
+    return results
+
+
+def _search_result_character_count(item: SearchResultFullItem) -> int:
+    values = [
+        item.content,
+        item.title or "",
+        item.description or "",
+        *item.tags,
+        *(
+            value
+            for link in item.outgoing_links
+            for value in (link.type, link.target)
+        ),
+        *(value for link in item.backlinks for value in (link.type, link.target)),
+        item.source_path,
+        item.wikilink_name,
+    ]
+    return sum(map(len, values))
+
+
+def _fit_search_results(
+    items: list[SearchResultFullItem],
+    limit: int = MAX_SEARCH_RESULT_CHARACTERS,
+) -> tuple[list[SearchResultFullItem], int]:
+    original_count = len(items)
+    fitted = list(items)
+    current_size = sum(map(_search_result_character_count, fitted))
+
+    content_candidates = sorted(
+        enumerate(fitted),
+        key=lambda ranked_item: (len(ranked_item[1].content), ranked_item[0]),
+        reverse=True,
+    )
+    for rank, item in content_candidates:
+        if current_size <= limit:
+            break
+        if len(item.content) <= len(DROPPED_CONTENT):
+            continue
+        fitted[rank] = item.model_copy(update={"content": DROPPED_CONTENT})
+        current_size -= len(item.content) - len(DROPPED_CONTENT)
+
+    while fitted and current_size > limit:
+        current_size -= _search_result_character_count(fitted.pop())
+
+    return fitted, original_count
+
+
 async def search(
     query: SearchQuery,
     ctx: Context,
@@ -417,29 +515,20 @@ async def search(
             query, tags=tags, path=path
         )
         logger.info(f"Search completed for query: {query}")
-        returned_chunks = chunks[:10]
-        note_names = list(dict.fromkeys(c.wikilink_name for c in returned_chunks))
+        note_names = list(dict.fromkeys(
+            chunk.wikilink_name for chunk in chunks
+        ))
         backlink_map = await _vault_from_context(ctx).get_backlinks(note_names)
-        result: list[SearchResultItem] = [
-            SearchResultFullItem(
-                title=c.title,
-                description=c.description,
-                content=c.content,
-                tags=c.tags,
-                outgoing_links=c.typed_links,
-                backlinks=backlink_map.get(c.wikilink_name, [])[
-                    :MAX_BACKLINKS_PER_NOTE
-                ],
-                source_path=c.source_path,
-                wikilink_name=c.wikilink_name,
-                offset=c.offset,
-                file_size=c.file_size,
-            )
-            for c in returned_chunks
-        ]
-        if len(chunks) > 10:
+        fitted, document_count = _fit_search_results(
+            _format_document_results(chunks, backlink_map)
+        )
+        result: list[SearchResultItem] = list(fitted)
+        if len(fitted) < document_count:
             result.append(SearchResultItem(
-                content=f"WARNING: search result truncated to 10 from {len(chunks)}. Use more concrete query",
+                content=(
+                    f"WARNING: search result truncated to {len(fitted)} from "
+                    f"{document_count} documents. Use more concrete query"
+                ),
             ))
 
         return result

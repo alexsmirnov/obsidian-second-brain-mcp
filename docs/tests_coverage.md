@@ -95,7 +95,7 @@ Integration tests for `LlmReranker` with different model pairs and embedding fus
 Tests for periodic vault indexing updates and error boundaries in the Obsidian lifespan.
 
 ### [tests/test_obsidian_vault_tools.py](../tests/test_obsidian_vault_tools.py)
-Tests verifying registrations, execution, and error handling of Obsidian tool definitions.
+Tests verifying registrations, execution, and error handling of Obsidian tool definitions, including per-document search-result consolidation, gap markers, typed links/backlinks, and the 25,000-character response budget.
 
 ### [tests/test_proxy_reranker.py](../tests/test_proxy_reranker.py)
 Integration tests for `ProxyReranker` with OpenAI-compatible rerank endpoints.

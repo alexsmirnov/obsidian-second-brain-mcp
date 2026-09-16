@@ -3,6 +3,7 @@ Vector database implementations for the RAG search system.
 """
 
 import logging
+import re
 from datetime import timedelta
 from pathlib import Path
 
@@ -11,6 +12,14 @@ import pyarrow as pa
 from lancedb import AsyncConnection, AsyncTable
 from lancedb.index import FTS, LabelList
 from lancedb.pydantic import pydantic_to_schema
+from lancedb.query import (
+    BooleanQuery,
+    FullTextOperator,
+    FullTextQuery,
+    MultiMatchQuery,
+    Occur,
+    PhraseQuery,
+)
 from lancedb.rerankers import Reranker, RRFReranker
 
 from .interfaces import (
@@ -156,6 +165,72 @@ class LanceDBStore(IVectorStore):
     def _escape_sql_string(val: str) -> str:
         return val.replace("'", "''")
 
+    @staticmethod
+    def _build_fts_query(
+        query: str, scope: SearchScope = SearchScope.ALL
+    ) -> FullTextQuery | str:
+        """
+        Build an FTS query object with field boosting and phrase search support.
+
+        - SearchScope.ALL searches title (4.0x boost), description (2.0x boost),
+          and content (1.0x).
+        - Quoted strings (e.g. "voice agent platform") are extracted and searched
+          as PhraseQuery across target columns combined via BooleanQuery.
+        - Unquoted terms are searched using MultiMatchQuery with
+          column-specific boosts.
+        - Mixed queries combine unquoted MultiMatchQuery and phrase PhraseQuery
+          clauses with Occur.SHOULD.
+        """
+        if scope == SearchScope.CONTENT:
+            target_columns = ["content"]
+            boosts = [1.0]
+        elif scope == SearchScope.TITLE:
+            target_columns = ["title"]
+            boosts = [1.0]
+        elif scope == SearchScope.DESCRIPTION:
+            target_columns = ["description"]
+            boosts = [1.0]
+        else:
+            target_columns = ["title", "description", "content"]
+            boosts = [4.0, 2.0, 1.0]
+
+        phrases = [p.strip() for p in re.findall(r'"([^"]+)"', query) if p.strip()]
+        unquoted = re.sub(r'"[^"]*"', " ", query).strip()
+
+        if not phrases:
+            if not unquoted:
+                return query
+            return MultiMatchQuery(
+                query=unquoted,
+                columns=target_columns,
+                boosts=boosts,
+                operator=FullTextOperator.OR,
+            )
+
+        phrase_queries: list[tuple[Occur, FullTextQuery]] = []
+        for phrase in phrases:
+            for col in target_columns:
+                phrase_queries.append(
+                    (Occur.SHOULD, PhraseQuery(phrase, col, slop=0))
+                )
+
+        if not unquoted:
+            if len(phrase_queries) == 1:
+                return phrase_queries[0][1]
+            return BooleanQuery(phrase_queries)
+
+        unquoted_query = MultiMatchQuery(
+            query=unquoted,
+            columns=target_columns,
+            boosts=boosts,
+            operator=FullTextOperator.OR,
+        )
+        boolean_clauses: list[tuple[Occur, FullTextQuery]] = [
+            (Occur.SHOULD, unquoted_query),
+            *phrase_queries,
+        ]
+        return BooleanQuery(boolean_clauses)
+
     async def search(
         self,
         query: str,
@@ -181,20 +256,14 @@ class LanceDBStore(IVectorStore):
                 "LanceDBStore is not initialized. Call await store.initialize() first."
             )
 
-        # Calculate embedding for the query
+        # Calculate embedding for the query, stripping quotes
+        cleaned_query = re.sub(r'["\']', " ", query).strip()
         query_embedding = await self.embedding_service.query_embeddings(
-            hypotetical_document or query
+            hypotetical_document or cleaned_query or query
         )
 
-        # Apply scope filter
-        if scope == SearchScope.CONTENT:
-            columns = ["content"]
-        elif scope == SearchScope.TITLE:
-            columns = ["title"]
-        elif scope == SearchScope.DESCRIPTION:
-            columns = ["description"]
-        else:
-            columns = ["content", "title", "description"]
+        fts_query = self._build_fts_query(query, scope)
+
         # Start the search query
         try:
             query_builder = self.table.query()
@@ -202,7 +271,21 @@ class LanceDBStore(IVectorStore):
             query_builder = query_builder.nearest_to(query_embedding).column(
                 "embeddings"
             )  # .distance_range(upper_bound=1000.0)
-            query_builder = query_builder.nearest_to_text(query, columns=columns)
+
+            if isinstance(fts_query, str):
+                if scope == SearchScope.CONTENT:
+                    columns = ["content"]
+                elif scope == SearchScope.TITLE:
+                    columns = ["title"]
+                elif scope == SearchScope.DESCRIPTION:
+                    columns = ["description"]
+                else:
+                    columns = ["content", "title", "description"]
+                query_builder = query_builder.nearest_to_text(
+                    fts_query, columns=columns
+                )
+            else:
+                query_builder = query_builder.nearest_to_text(fts_query)
 
             # Apply filters: collect all predicates and issue a single .where()
             # call, because chained .where() calls replace each other on the
@@ -286,9 +369,10 @@ class LanceDBStore(IVectorStore):
                     await self.table.create_index(
                         column,
                         config=FTS(
+                            with_position=True,
                             base_tokenizer="simple",
-                            max_token_length=30, # Drops huge base64 strings or logs from masking true chunk size
-                            ),
+                            max_token_length=30,  # Drops huge base64 strings or logs from masking true chunk size
+                        ),
                         replace=replace,
                         wait_timeout=wait_time,
                     )

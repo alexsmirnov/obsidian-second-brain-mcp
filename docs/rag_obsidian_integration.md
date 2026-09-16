@@ -277,6 +277,10 @@ Filter by min_score (0.5 default)
     ▼
 Merge neighboring chunks and perform structured reranking (optional)
     ▼
+Combine result windows by source file
+    ▼
+Apply the 25,000-character response budget
+    ▼
 list[SearchResultItem]
 ```
 
@@ -284,6 +288,10 @@ Search engine: [search.py](../src/mcps/rag/search.py)
 Tool result model: [obsidian_vault.py:161-175](../src/mcps/tools/obsidian_vault.py#L161-L175)
 
 If HyDE generation or search-level reranking fails, search logs the error and returns min-score-filtered vector-store results.
+
+The tool returns one record per source file, ranked by that file's first result window. Isolated windows from the same file are ordered by source offset and separated with `<<Gap: N lines>>`; title, description, tags, outgoing links, and backlinks appear once for the consolidated document.
+
+Returned string values have a combined 25,000-character budget. If the response exceeds it, document content is replaced by `<<Dropped: content is too big>>`, largest content first. If metadata alone still exceeds the budget, the lowest-ranked document records are removed and a trailing warning reports the retained and original document counts. The warning itself is outside the character budget.
 
 ## Configuration #config
 
@@ -293,7 +301,7 @@ If HyDE generation or search-level reranking fails, search logs the error and re
 | `table_name` | `"documents"` | LanceDB table name |
 | `min_chunk_size` | `1000` | Minimum section size in characters before merging (250 tokens) |
 | `max_chunk_size` | `2000` | Maximum chunk size in characters (500 tokens) |
-| `search_limit` | `30` | Maximum results returned |
+| `search_limit` | `30` | Maximum candidate chunks retrieved before document consolidation and response budgeting |
 | `rag_embedding_model` | `""` | Model-router embedding model |
 | `rag_embedding_dimensions` | `0` | LanceDB vector dimension |
 | `rag_infer_model` | `""` | Optional search-level HyDE and structured-reranking model |

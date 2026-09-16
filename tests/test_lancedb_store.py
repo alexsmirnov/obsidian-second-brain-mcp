@@ -796,3 +796,193 @@ async def test_get_notes_linking_to_escapes_quotes_in_target_names(
     assert len(result) == 1
     assert result[0].note == "Quoter"
     assert result[0].links == [Link(type="requires", target="O'Malley")]
+
+
+@pytest.mark.asyncio
+async def test_fts_field_boosting_ranks_title_match_first(
+    lancedb_store,
+):
+    """Test that matches in the title column rank higher than matches in content."""
+    await lancedb_store.initialize()
+    base_time = datetime.now().timestamp()
+
+    # Doc 1 has the key target terms in its title
+    chunk_title_match = Chunk(
+        id="chunk_title_match",
+        title="Testing and Evaluating Vapi.ai Voice Assistants",
+        description="Guide to evaluations",
+        content="This guide covers voice AI evaluations.",
+        source="doc",
+        links=[],
+        link_types=[],
+        tags=["ai"],
+        source_path="/test/vapi.md",
+        wikilink_name="vapi",
+        modified_at=base_time,
+        position=0,
+        offset=0,
+        file_size=100,
+    )
+    # Doc 2 has all the query words scattered in its body content
+    chunk_content_match = Chunk(
+        id="chunk_content_match",
+        title="General AI Agents Overview",
+        description="Broad survey of AI agents",
+        content=(
+            "Vapi voice agent platform is one of many voice AI agents conversational"
+            " tools."
+        ),
+        source="doc",
+        links=[],
+        link_types=[],
+        tags=["ai"],
+        source_path="/test/general.md",
+        wikilink_name="general",
+        modified_at=base_time,
+        position=0,
+        offset=0,
+        file_size=100,
+    )
+
+    await lancedb_store.store([chunk_title_match, chunk_content_match])
+    await lancedb_store.reindex()
+
+    results = await lancedb_store.search(
+        "Vapi voice agent platform",
+        scope=SearchScope.ALL,
+        limit=2,
+    )
+
+    assert len(results) >= 1
+    assert results[0].id == "chunk_title_match"
+
+
+@pytest.mark.asyncio
+async def test_fts_phrase_search_exact_match(
+    lancedb_store,
+):
+    """Test that quoted phrase queries match exact word sequences with positions."""
+    await lancedb_store.initialize()
+    base_time = datetime.now().timestamp()
+
+    chunk_phrase = Chunk(
+        id="chunk_phrase",
+        title="Animal Observations",
+        description="Nature log",
+        content="The quick brown fox jumped over the lazy sleeping dog.",
+        source="doc",
+        links=[],
+        link_types=[],
+        tags=["nature"],
+        source_path="/test/phrase.md",
+        wikilink_name="phrase",
+        modified_at=base_time,
+        position=0,
+        offset=0,
+        file_size=100,
+    )
+    chunk_separated = Chunk(
+        id="chunk_separated",
+        title="Color and Animals",
+        description="Color guide",
+        content="The fox was very quick and quite brown as it jumped.",
+        source="doc",
+        links=[],
+        link_types=[],
+        tags=["nature"],
+        source_path="/test/separated.md",
+        wikilink_name="separated",
+        modified_at=base_time,
+        position=0,
+        offset=0,
+        file_size=100,
+    )
+
+    await lancedb_store.store([chunk_phrase, chunk_separated])
+    await lancedb_store.reindex()
+
+    results = await lancedb_store.search(
+        '"quick brown fox"',
+        scope=SearchScope.CONTENT,
+        limit=2,
+    )
+
+    assert len(results) >= 1
+    assert results[0].id == "chunk_phrase"
+
+    # Verify FTS index matching directly
+    fts_q = lancedb_store._build_fts_query('"quick brown fox"', SearchScope.CONTENT)
+    fts_only = await lancedb_store.table.query().nearest_to_text(fts_q).to_list()
+    assert [r["id"] for r in fts_only] == ["chunk_phrase"]
+
+
+@pytest.mark.asyncio
+async def test_fts_mixed_query_unquoted_and_phrase(
+    lancedb_store,
+):
+    """Test that mixed queries with unquoted terms and phrases execute properly."""
+    await lancedb_store.initialize()
+    base_time = datetime.now().timestamp()
+
+    chunk_match = Chunk(
+        id="chunk_match",
+        title="Canine Behavior",
+        description="Dog observation",
+        content="The quick brown fox jumped over the lazy sleeping dog.",
+        source="doc",
+        links=[],
+        link_types=[],
+        tags=["animals"],
+        source_path="/test/match.md",
+        wikilink_name="match",
+        modified_at=base_time,
+        position=0,
+        offset=0,
+        file_size=100,
+    )
+
+    await lancedb_store.store([chunk_match])
+    await lancedb_store.reindex()
+
+    results = await lancedb_store.search(
+        'sleeping "quick brown fox"',
+        scope=SearchScope.ALL,
+        limit=5,
+    )
+
+    assert len(results) == 1
+    assert results[0].id == "chunk_match"
+
+
+def test_build_fts_query_structure():
+    """Test that _build_fts_query produces expected FullTextQuery instances."""
+    from lancedb.query import BooleanQuery, MultiMatchQuery, PhraseQuery
+
+    # Unquoted query across all scopes
+    q_unquoted = LanceDBStore._build_fts_query("machine learning", SearchScope.ALL)
+    assert isinstance(q_unquoted, MultiMatchQuery)
+    assert q_unquoted.columns == ["title", "description", "content"]
+    assert q_unquoted.boosts == [4.0, 2.0, 1.0]
+
+    # Unquoted query for single column
+    q_title = LanceDBStore._build_fts_query("neural net", SearchScope.TITLE)
+    assert isinstance(q_title, MultiMatchQuery)
+    assert q_title.columns == ["title"]
+    assert q_title.boosts == [1.0]
+
+    # Quoted phrase query for single column
+    q_phrase = LanceDBStore._build_fts_query('"deep learning"', SearchScope.CONTENT)
+    assert isinstance(q_phrase, PhraseQuery)
+    assert q_phrase.query == "deep learning"
+    assert q_phrase.column == "content"
+
+    # Quoted phrase query for all columns
+    q_phrase_all = LanceDBStore._build_fts_query('"deep learning"', SearchScope.ALL)
+    assert isinstance(q_phrase_all, BooleanQuery)
+    assert len(q_phrase_all.queries) == 3
+
+    # Mixed query
+    q_mixed = LanceDBStore._build_fts_query('overview "deep learning"', SearchScope.ALL)
+    assert isinstance(q_mixed, BooleanQuery)
+    assert len(q_mixed.queries) == 4
+

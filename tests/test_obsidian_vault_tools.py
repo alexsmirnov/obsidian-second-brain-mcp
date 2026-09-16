@@ -252,25 +252,52 @@ async def test_search_returns_wikilink_name_offset_and_size_in_results():
 
 def make_result_chunk(
     wikilink_name: str = "Doc",
+    *,
+    content: str = "body",
+    title: str | None = "Doc",
+    description: str | None = "A doc",
+    source_path: str | None = None,
+    position: int = 0,
+    offset: int = 0,
+    file_size: int = 4,
+    tags: list[str] | None = None,
     links: list[str] | None = None,
     link_types: list[str] | None = None,
 ) -> Chunk:
     """Build a minimal search-result chunk; links default to none."""
     return Chunk(
-        id=f"{wikilink_name}_0",
-        content="body",
-        title="Doc",
-        description="A doc",
-        source_path=f"notes/{wikilink_name}.md",
+        id=f"{wikilink_name}_{position}",
+        content=content,
+        title=title,
+        description=description,
+        source_path=source_path or f"notes/{wikilink_name}.md",
         wikilink_name=wikilink_name,
         modified_at=1234.5,
-        position=0,
-        offset=0,
-        file_size=4,
-        tags=[],
+        position=position,
+        offset=offset,
+        file_size=file_size,
+        tags=tags or [],
         links=links or [],
         link_types=link_types or [],
     )
+
+
+def result_text_size(result: obsidian_vault.SearchResultFullItem) -> int:
+    values = [
+        result.content,
+        result.title or "",
+        result.description or "",
+        *result.tags,
+        *(
+            value
+            for link in result.outgoing_links
+            for value in (link.type, link.target)
+        ),
+        *(value for link in result.backlinks for value in (link.type, link.target)),
+        result.source_path,
+        result.wikilink_name,
+    ]
+    return sum(map(len, values))
 
 
 @pytest.mark.asyncio
@@ -364,23 +391,183 @@ async def test_search_returns_empty_backlinks_when_note_has_none():
 
 
 @pytest.mark.asyncio
-async def test_search_truncation_warning_item_is_unaffected_by_backlinks():
-    # Arrange — 12 chunks over 12 distinct notes
+async def test_search_combines_isolated_sections_into_one_document_result():
+    # Arrange
     fake_vault = FakeVault()
     fake_vault.search_results = [
-        make_result_chunk(wikilink_name=f"N{i}") for i in range(12)
+        make_result_chunk(
+            "A",
+            content="later",
+            title="Later title",
+            description="Later description",
+            position=2,
+            offset=10,
+            tags=["later", "shared"],
+            links=["Target", "Other"],
+            link_types=["related", "uses"],
+        ),
+        make_result_chunk("B"),
+        make_result_chunk(
+            "A",
+            content="first\nline",
+            title="First title",
+            description="First description",
+            position=0,
+            offset=2,
+            file_size=100,
+            tags=["first", "shared"],
+            links=["Target"],
+            link_types=["requires"],
+        ),
+    ]
+    fake_vault.backlinks = {"A": [Link(type="related", target="Source")]}
+    ctx = cast(Context, FakeContext({"obsidian_vault": fake_vault}))
+
+    # Act
+    result = await obsidian_vault.search("query", ctx)
+
+    # Assert
+    assert [item.wikilink_name for item in result] == ["A", "B"]
+    assert result[0].content == "first\nline\n\n<<Gap: 6 lines>>\n\nlater"
+    assert result[0].title == "First title"
+    assert result[0].description == "First description"
+    assert result[0].offset == 2
+    assert result[0].file_size == 100
+    assert result[0].tags == ["first", "later", "shared"]
+    assert result[0].outgoing_links == [
+        Link(type="uses", target="Other"),
+        Link(type="requires", target="Target"),
+    ]
+    assert result[0].backlinks == [Link(type="related", target="Source")]
+    assert fake_vault.get_backlinks_calls == [["A", "B"]]
+
+
+@pytest.mark.asyncio
+async def test_search_joins_sections_without_gap_when_ranges_touch():
+    # Arrange
+    fake_vault = FakeVault()
+    fake_vault.search_results = [
+        make_result_chunk("Doc", content="one\ntwo", offset=0),
+        make_result_chunk("Doc", content="three", position=1, offset=2),
     ]
     ctx = cast(Context, FakeContext({"obsidian_vault": fake_vault}))
 
     # Act
     result = await obsidian_vault.search("query", ctx)
 
-    # Assert — 10 full items plus the trailing warning item, and backlinks
-    # requested only for the 10 notes actually returned
+    # Assert
+    assert len(result) == 1
+    assert result[0].content == "one\ntwo\n\nthree"
+    assert "<<Gap:" not in result[0].content
+
+
+@pytest.mark.asyncio
+async def test_search_returns_all_documents_when_response_fits_budget():
+    # Arrange
+    fake_vault = FakeVault()
+    fake_vault.search_results = [
+        make_result_chunk(wikilink_name=f"N{i}") for i in range(11)
+    ]
+    ctx = cast(Context, FakeContext({"obsidian_vault": fake_vault}))
+
+    # Act
+    result = await obsidian_vault.search("query", ctx)
+
+    # Assert
     assert len(result) == 11
+    assert all(isinstance(item, obsidian_vault.SearchResultFullItem) for item in result)
+    assert [item.wikilink_name for item in result] == [f"N{i}" for i in range(11)]
+    assert fake_vault.get_backlinks_calls == [[f"N{i}" for i in range(11)]]
+
+
+@pytest.mark.asyncio
+async def test_search_drops_largest_content_until_response_fits_budget():
+    # Arrange
+    fake_vault = FakeVault()
+    fake_vault.search_results = [
+        make_result_chunk("Largest", content="a" * 13_000),
+        make_result_chunk("Smaller", content="b" * 12_000),
+    ]
+    ctx = cast(Context, FakeContext({"obsidian_vault": fake_vault}))
+
+    # Act
+    result = await obsidian_vault.search("query", ctx)
+
+    # Assert
+    assert len(result) == 2
+    assert all(isinstance(item, obsidian_vault.SearchResultFullItem) for item in result)
+    full_results = cast(list[obsidian_vault.SearchResultFullItem], result)
+    assert result[0].content == "<<Dropped: content is too big>>"
+    assert result[1].content == "b" * 12_000
+    assert sum(result_text_size(item) for item in full_results) <= 25_000
+
+
+@pytest.mark.asyncio
+async def test_search_drops_lower_rank_content_first_when_sizes_are_equal():
+    # Arrange
+    fake_vault = FakeVault()
+    fake_vault.search_results = [
+        make_result_chunk("Higher", content="a" * 12_500),
+        make_result_chunk("Lower", content="b" * 12_500),
+    ]
+    ctx = cast(Context, FakeContext({"obsidian_vault": fake_vault}))
+
+    # Act
+    result = await obsidian_vault.search("query", ctx)
+
+    # Assert
+    assert result[0].content == "a" * 12_500
+    assert result[1].content == "<<Dropped: content is too big>>"
+
+
+@pytest.mark.asyncio
+async def test_search_keeps_short_content_when_marker_would_not_reduce_size():
+    # Arrange
+    fake_vault = FakeVault()
+    fake_vault.search_results = [
+        make_result_chunk("Higher", content="short", title="x" * 24_900),
+        make_result_chunk("Lower", content="tiny", title="y" * 100),
+    ]
+    ctx = cast(Context, FakeContext({"obsidian_vault": fake_vault}))
+
+    # Act
+    result = await obsidian_vault.search("query", ctx)
+
+    # Assert
+    assert len(result) == 2
+    assert result[0].content == "short"
+    assert result[1].content.startswith("WARNING: search result truncated")
+
+
+@pytest.mark.asyncio
+async def test_search_removes_lowest_rank_documents_when_metadata_exceeds_budget():
+    # Arrange
+    fake_vault = FakeVault()
+    fake_vault.search_results = [
+        make_result_chunk(f"N{i}", content="body", title=str(i) * 9_000)
+        for i in range(3)
+    ]
+    ctx = cast(Context, FakeContext({"obsidian_vault": fake_vault}))
+
+    # Act
+    result = await obsidian_vault.search("query", ctx)
+
+    # Assert
+    assert all(
+        isinstance(item, obsidian_vault.SearchResultFullItem)
+        for item in result[:-1]
+    )
+    full_results = cast(
+        list[obsidian_vault.SearchResultFullItem], result[:-1]
+    )
+    assert [item.wikilink_name for item in full_results] == ["N0", "N1"]
+    assert sum(result_text_size(item) for item in full_results) <= 25_000
     assert isinstance(result[-1], obsidian_vault.SearchResultItem)
     assert not isinstance(result[-1], obsidian_vault.SearchResultFullItem)
-    assert fake_vault.get_backlinks_calls == [[f"N{i}" for i in range(10)]]
+    assert result[-1].content == (
+        "WARNING: search result truncated to 2 from 3 documents. "
+        "Use more concrete query"
+    )
 
 
 GRAPH_LINKS = {
@@ -604,6 +791,7 @@ async def test_traverse_relations_caps_distinct_notes_at_limit() -> None:
     # Assert
     assert len(result.nodes) == 100
     assert result.truncated is True
+    assert result.warning is not None
     assert "100" in result.warning
     assert "depth" in result.warning.lower()
 
