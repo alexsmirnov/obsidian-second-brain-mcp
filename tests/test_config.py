@@ -247,3 +247,34 @@ class TestCreateConfigChunkSize:
 
         assert "must be positive integers" in caplog.text
 
+
+class TestCreateConfigMinScore:
+    def test_min_score_defaults_to_zero(self, monkeypatch):
+        monkeypatch.delenv("MIN_SCORE", raising=False)
+
+        config = create_config()
+
+        assert config.min_score == 0.0
+
+    def test_min_score_reads_env_var(self, monkeypatch):
+        monkeypatch.setenv("MIN_SCORE", "0.35")
+
+        config = create_config()
+
+        assert config.min_score == 0.35
+
+    def test_empty_min_score_env_var_falls_back_to_default(self, monkeypatch):
+        monkeypatch.setenv("MIN_SCORE", "")
+
+        config = create_config()
+
+        assert config.min_score == 0.0
+
+    def test_validate_config_warns_when_min_score_out_of_range(self, caplog):
+        config = ServerConfig(min_score=1.5)
+
+        with caplog.at_level("WARNING", logger="mcps.config"):
+            validate_config(config)
+
+        assert "MIN_SCORE" in caplog.text
+

@@ -61,6 +61,20 @@ class TestLazyChunking:
         assert chunk.link_types == []
         assert chunk.typed_links == []
 
+    def test_chunk_reads_relevance_score_by_alias(self):
+        chunk = Chunk.model_validate(valid_payload(_relevance_score=0.75))
+
+        assert chunk.score == 0.75
+
+    def test_chunk_score_defaults_to_none(self):
+        assert Chunk.model_validate(valid_payload()).score is None
+
+    def test_chunk_score_excluded_from_dump(self):
+        chunk = Chunk.model_validate(valid_payload(score=0.9))
+
+        assert chunk.score == 0.9
+        assert "score" not in chunk.model_dump()
+
     def test_chunk_accepts_wikilink_name_offset_and_size(self):
         chunk = Chunk.model_validate(
             {

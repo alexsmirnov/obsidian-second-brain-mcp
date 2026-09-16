@@ -201,6 +201,69 @@ async def test_get_file_raises_value_error_for_ambiguous_short_name(
         await vault.get_file("Note")
 
 
+async def test_list_files_lists_notes_and_folders_for_root(tmp_path: Path) -> None:
+    vault_root = tmp_path / "vault"
+    (vault_root / "Projects").mkdir(parents=True)
+    (vault_root / "Note.md").write_text("content", encoding="utf-8")
+    vault, _ = make_vault(vault_root)
+
+    result = await vault.list_files("")
+
+    assert result == ["Note", "Projects/"]
+
+
+async def test_list_files_lists_subfolder_contents(tmp_path: Path) -> None:
+    vault_root = tmp_path / "vault"
+    (vault_root / "Projects").mkdir(parents=True)
+    (vault_root / "Projects" / "Plan.md").write_text("content", encoding="utf-8")
+    vault, _ = make_vault(vault_root)
+
+    result = await vault.list_files("Projects")
+
+    assert result == ["Plan"]
+
+
+async def test_list_files_rejects_parent_traversal_escape(
+    tmp_path: Path,
+) -> None:
+    vault_root = tmp_path / "vault"
+    vault_root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "Secret.md").write_text("secret", encoding="utf-8")
+    vault, _ = make_vault(vault_root)
+
+    with pytest.raises(ValueError, match="escapes the vault root"):
+        await vault.list_files("../outside")
+
+
+async def test_list_files_rejects_nested_parent_traversal_escape(
+    tmp_path: Path,
+) -> None:
+    vault_root = tmp_path / "vault"
+    (vault_root / "a").mkdir(parents=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "Secret.md").write_text("secret", encoding="utf-8")
+    vault, _ = make_vault(vault_root)
+
+    with pytest.raises(ValueError, match="escapes the vault root"):
+        await vault.list_files("a/../../outside")
+
+
+async def test_list_files_rejects_symlink_escape(tmp_path: Path) -> None:
+    vault_root = tmp_path / "vault"
+    vault_root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "Secret.md").write_text("secret", encoding="utf-8")
+    (vault_root / "linked").symlink_to(outside, target_is_directory=True)
+    vault, _ = make_vault(vault_root)
+
+    with pytest.raises(ValueError, match="escapes the vault root"):
+        await vault.list_files("linked")
+
+
 async def test_search_does_not_call_update_index(tmp_path: Path) -> None:
     vault, _ = make_vault(tmp_path)
     vault.update_index = AsyncMock(side_effect=RuntimeError("update_index called"))  # type: ignore[method-assign]

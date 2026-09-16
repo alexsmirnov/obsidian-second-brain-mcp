@@ -42,6 +42,11 @@ class ServerConfig:
     rag_summary_model: str = ""
 
     search_limit: int = 30
+    # Minimum reranker relevance score for a search result to be returned.
+    # 0.0 keeps all results: reranker score scales differ (RRF ~0.016,
+    # LLM/proxy rerankers 0..1), so any positive default would silently
+    # drop all RRF-scored results.
+    min_score: float = 0.0
     # Web deep research config
     google_api_key: str = ""
     google_search_id: str = ""
@@ -110,6 +115,7 @@ def create_config(
         skip_patterns=default_skip_patterns,
         min_chunk_size=int(os.environ.get("MIN_CHUNK_SIZE") or 500),
         max_chunk_size=int(os.environ.get("MAX_CHUNK_SIZE") or 1000),
+        min_score=float(os.environ.get("MIN_SCORE") or 0.0),
         google_api_key=os.environ.get("GOOGLE_API_KEY", ""),
         google_search_id=os.environ.get("GOOGLE_SEARCH_ID", "")
     )
@@ -135,6 +141,13 @@ def validate_config(config: ServerConfig) -> None:
             "Undersized sections will be merged up to max_chunk_size.",
             config.min_chunk_size,
             config.max_chunk_size,
+        )
+
+    if not 0.0 <= config.min_score <= 1.0:
+        logger.warning(
+            "min_score (%.3f) is outside the reranker score range [0, 1]. "
+            "Search will drop all or no results; check MIN_SCORE.",
+            config.min_score,
         )
 
     if not config.router_api_base:

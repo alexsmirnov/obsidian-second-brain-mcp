@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from enum import Enum, auto
 from pathlib import Path
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
 
 
 class SearchScope(Enum):
@@ -125,6 +125,13 @@ class Chunk(BaseModel):
     offset: int  # zero-based line index of the chunk start within the document
     file_size: int
     embeddings: list[float] | None = None
+    # Search-only reranker relevance, read from the `_relevance_score` column
+    # of reranked query results; never persisted or serialized.
+    score: float | None = Field(
+        default=None,
+        validation_alias=AliasChoices("score", "_relevance_score"),
+        exclude=True,
+    )
 
     @model_validator(mode="after")
     def _link_arrays_aligned(self) -> "Chunk":
@@ -264,8 +271,8 @@ class IVectorStore(ABC):
         """Search for chunks that contain text from query.
 
         Args:
-            query (str): The search query text. If empty, return chunks by tag
-                and file_path.
+            query (str): The search query text. If empty, return chunks by
+                tags and file_path only, without vector or full-text search.
             tags (list[str], optional): List of tags to filter by (all must be
                 present). Defaults to None.
             file_path (str | None, optional): Substring of source_path to filter
@@ -273,6 +280,10 @@ class IVectorStore(ABC):
             scope (SearchScope enum, optional): Where to search (CONTENT, TITLE,
                 DESCRIPTION, or ALL). Defaults to ALL.
             limit (int, optional): Maximum number of results to return. Defaults to 5.
+
+        Raises:
+            ValueError: If the query is empty and neither tags nor file_path
+                filters are provided.
         """
         pass
 

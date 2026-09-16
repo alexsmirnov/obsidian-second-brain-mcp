@@ -168,6 +168,7 @@ def _create_search_engine(
         return SemanticSearchEngine(
             vector_store,
             limit=config.search_limit,
+            min_score=config.min_score,
         )
 
     search_model = ChatOpenAI(
@@ -180,6 +181,7 @@ def _create_search_engine(
     return SemanticSearchEngine(
         vector_store,
         limit=config.search_limit,
+        min_score=config.min_score,
         hypothetical_document_generator=HypotheticalDocumentGenerator(search_model),
         reranker=LangChainReranker(search_model),
     )
@@ -684,22 +686,26 @@ class Vault(IVault):
             
         Raises:
             NotInitializedError: If vault is not initialized
+            ValueError: If directory path escapes the vault root
             RuntimeError: If directory listing fails
         """
         if not self._initialized:
             raise NotInitializedError("Vault must be initialized before listing files")
-        
+
+        # Reject traversal components before any filesystem operation
+        clean_dir = directory.strip("/")
+        if ".." in Path(clean_dir).parts:
+            raise ValueError(f"Directory path escapes the vault root: {directory}")
+
+        target_dir = self.vault_path / clean_dir if clean_dir else self.vault_path
+
+        # Reject targets that resolve outside the vault root, e.g. via symlinks
+        if not target_dir.resolve().is_relative_to(self.vault_path.resolve()):
+            raise ValueError(f"Directory path escapes the vault root: {directory}")
+
         try:
             logger.debug(f"Listing files in directory: {directory}")
-            
-            # Resolve target directory
-            if directory == "" or directory == "/":
-                target_dir = self.vault_path
-            else:
-                # Remove leading/trailing slashes and resolve path
-                clean_dir = directory.strip("/")
-                target_dir = self.vault_path / clean_dir
-            
+
             if not target_dir.exists():
                 logger.warning(f"Directory does not exist: {target_dir}")
                 return []

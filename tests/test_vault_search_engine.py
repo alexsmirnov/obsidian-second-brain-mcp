@@ -9,7 +9,11 @@ from mcps.rag.vault import _create_search_engine
 
 
 def test_create_search_engine_without_rag_infer_model_uses_vector_only() -> None:
-    config = ServerConfig(rag_infer_model="", search_limit=7)
+    config = ServerConfig(
+        rag_infer_model="",
+        search_limit=7,
+        min_score=0.25,
+    )
     vector_store = MagicMock()
     http_client = MagicMock()
 
@@ -19,6 +23,7 @@ def test_create_search_engine_without_rag_infer_model_uses_vector_only() -> None
     assert isinstance(search_engine, SemanticSearchEngine)
     assert search_engine.vector_store is vector_store
     assert search_engine.limit == 7
+    assert search_engine.min_score == 0.25
     assert search_engine.hypothetical_document_generator is None
     assert search_engine.reranker is None
     chat_model.assert_not_called()
@@ -30,6 +35,7 @@ def test_create_search_engine_with_rag_infer_model_wires_hyde_and_reranker() -> 
         router_api_base="http://router",
         router_api_key="token",
         search_limit=3,
+        min_score=0.4,
     )
     vector_store = MagicMock()
     http_client = MagicMock()
@@ -41,6 +47,7 @@ def test_create_search_engine_with_rag_infer_model_wires_hyde_and_reranker() -> 
 
     assert isinstance(search_engine, SemanticSearchEngine)
     assert search_engine.limit == 3
+    assert search_engine.min_score == 0.4
     assert isinstance(
         search_engine.hypothetical_document_generator,
         HypotheticalDocumentGenerator,

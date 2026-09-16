@@ -97,7 +97,7 @@ class SemanticSearchEngine(ISearchEngine):
         self,
         vector_store: IVectorStore,
         limit: int = 25,
-        min_score: float = 0.5,
+        min_score: float = 0.0,
         hypothetical_document_generator: HypotheticalDocumentGenerator | None = None,
         reranker: IRerankingService | None = None,
         neighbor_offset: int = 1,
@@ -111,7 +111,11 @@ class SemanticSearchEngine(ISearchEngine):
 
     async def search(self, query: SearchQuery) -> list[Chunk]:
         """Perform a semantic search operation."""
-        hypothetical_document = await self._generate_hypothetical_document(query.text)
+        hypothetical_document: str | None = None
+        if query.text.strip():
+            hypothetical_document = await self._generate_hypothetical_document(
+                query.text
+            )
         logger.info(
             "Search query:  %s , hypotetical document: %s",
             query,
@@ -173,7 +177,7 @@ class SemanticSearchEngine(ISearchEngine):
         return [
             chunk
             for chunk in chunks
-            if getattr(chunk, "_relevance_score", 1.0) >= self.min_score
+            if (chunk.score if chunk.score is not None else 1.0) >= self.min_score
             and not _has_seen(chunk.id)
         ]
 
@@ -295,11 +299,7 @@ class SemanticSearchEngine(ISearchEngine):
             link for chunk in window_chunks for link in chunk.typed_links
         )
         relevance_score = max(
-            (
-                getattr(chunk, "_relevance_score", 0.0)
-                for chunk in window_chunks
-                if hasattr(chunk, "_relevance_score")
-            ),
+            (chunk.score for chunk in window_chunks if chunk.score is not None),
             default=None,
         )
         merged = Chunk(
@@ -317,8 +317,7 @@ class SemanticSearchEngine(ISearchEngine):
             position=min_position,
             offset=offset,
             file_size=primary.file_size,
+            score=relevance_score,
         )
-        if relevance_score is not None:
-            object.__setattr__(merged, "_relevance_score", relevance_score)
         return merged
 

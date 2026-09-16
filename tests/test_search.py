@@ -18,7 +18,7 @@ def make_chunk(
     offset: int = 0,
 ) -> Chunk:
     id_ = f"{doc_id}_{position}"
-    chunk = Chunk(
+    return Chunk(
         id=id_,
         content=content,
         title=None,
@@ -32,10 +32,8 @@ def make_chunk(
         tags=tags or [],
         links=[link.target for link in links or []],
         link_types=[link.type for link in links or []],
+        score=relevance_score,
     )
-    if relevance_score is not None:
-        object.__setattr__(chunk, "_relevance_score", relevance_score)
-    return chunk
 
 
 def make_vector_store(
@@ -102,6 +100,22 @@ async def test_search_blank_hyde_result_uses_original_query_only() -> None:
 
     await engine.search(SearchQuery(text="query", tags=[]))
 
+    assert vector_store.search.await_args.kwargs["hypotetical_document"] is None
+
+
+async def test_search_empty_query_text_skips_hypothetical_document_generation() -> None:
+    vector_store = make_vector_store([make_chunk("match")])
+    generator = AsyncMock()
+    generator.generate = AsyncMock(return_value="hypothetical answer document")
+    engine = SemanticSearchEngine(
+        vector_store,
+        hypothetical_document_generator=generator,
+        neighbor_offset=0,
+    )
+
+    await engine.search(SearchQuery(text="", tags=["tag"]))
+
+    generator.generate.assert_not_awaited()
     assert vector_store.search.await_args.kwargs["hypotetical_document"] is None
 
 
@@ -234,7 +248,7 @@ async def test_search_overlapping_neighbors_merge_into_single_window() -> None:
     assert result[0].id == "doc_2"
     assert result[0].content == "two\n\nthree\n\nfour\n\nfive"
     assert result[0].position == 2
-    assert getattr(result[0], "_relevance_score") == 0.8
+    assert result[0].score == 0.8
 
 
 async def test_search_non_overlapping_neighbors_remain_separate() -> None:

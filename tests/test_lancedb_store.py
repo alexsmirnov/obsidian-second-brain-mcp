@@ -159,6 +159,47 @@ def lancedb_store(temp_db_path, dummy_embedding_function) -> IVectorStore:
     # Cleanup is handled by temp_db_path fixture
 
 
+class QueryRecordingEmbeddingService(IEmbeddingService):
+    """Embedding service spy that records every query embedding request."""
+
+    def __init__(self, inner: IEmbeddingService) -> None:
+        self.inner = inner
+        self.query_embeddings_requests: list[str] = []
+
+    async def documents_embeddings(
+        self,
+        texts: list[str],
+    ) -> list[list[float]]:
+        return await self.inner.documents_embeddings(texts)
+
+    async def query_embeddings(
+        self,
+        query: str,
+    ) -> list[float]:
+        self.query_embeddings_requests.append(query)
+        return await self.inner.query_embeddings(query)
+
+    def ndims(self) -> int:
+        return self.inner.ndims()
+
+
+@pytest.fixture
+async def store_with_query_spy(
+    temp_db_path,
+    dummy_embedding_function,
+    sample_chunks,
+):
+    """Create a store whose embedding service records query requests."""
+    spy = QueryRecordingEmbeddingService(dummy_embedding_function)
+    store = LanceDBStore(temp_db_path, spy, "test_chunks")
+    await store.initialize()
+    await store.store(sample_chunks)
+    await store.reindex()
+
+    yield store, spy
+    await store.cleanup()
+
+
 @pytest.fixture
 async def lancedb_store_with_data(
     temp_db_path,
@@ -244,6 +285,23 @@ async def test_search_empty_results(lancedb_store_with_data):
     _log_results(results)
     # LanceDB always returns results, even if there are no matches
     # assert len(results) == 0
+
+
+@pytest.mark.asyncio
+async def test_search_results_carry_reranker_score(lancedb_store_with_data):
+    """The reranker's `_relevance_score` must survive Chunk validation."""
+    results = await lancedb_store_with_data.search("learning", limit=2)
+
+    assert results
+    assert all(isinstance(chunk.score, float) for chunk in results)
+
+
+@pytest.mark.asyncio
+async def test_table_schema_excludes_score(lancedb_store_with_data):
+    """The search-only `score` field must not become a stored column."""
+    schema = await lancedb_store_with_data.table.schema()
+
+    assert "score" not in schema.names
 
 
 def _log_results(results):
@@ -476,6 +534,43 @@ async def test_search_tags_filter_excludes_mismatched_tags(lancedb_store_with_da
             f"Tags filter returned chunk {chunk.id!r} without 'nlp' tag "
             f"(tags={chunk.tags})"
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("query", ["", "   ", '""'])
+async def test_search_empty_query_without_filters_is_rejected(
+    lancedb_store_with_data,
+    query,
+):
+    """An empty query with no tags or file_path leaves nothing to search by."""
+    with pytest.raises(ValueError):
+        await lancedb_store_with_data.search(query)
+
+
+@pytest.mark.asyncio
+async def test_search_empty_query_with_tags_filters_without_embeddings(
+    store_with_query_spy,
+):
+    """Tag-only search must not request query embeddings."""
+    store, spy = store_with_query_spy
+
+    results = await store.search("", tags=["machine-learning"])
+
+    assert [chunk.id for chunk in results] == ["chunk_1"]
+    assert spy.query_embeddings_requests == []
+
+
+@pytest.mark.asyncio
+async def test_search_empty_query_with_file_path_filters_without_embeddings(
+    store_with_query_spy,
+):
+    """Path-only search must not request query embeddings."""
+    store, spy = store_with_query_spy
+
+    results = await store.search("", file_path="/test/doc2")
+
+    assert [chunk.id for chunk in results] == ["chunk_2"]
+    assert spy.query_embeddings_requests == []
 
 
 def make_chunk(source_path, modified_at, idx=0):

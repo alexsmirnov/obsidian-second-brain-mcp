@@ -103,6 +103,11 @@ class LanceDBStore(IVectorStore):
                 # Table doesn't exist, create it using Pydantic schema
                 # Append or replace embeddings field with correct dimension
                 schema: pa.Schema = pydantic_to_schema(Chunk)
+                # `score` is search-only; pydantic_to_schema ignores
+                # Field.exclude, so drop the column explicitly.
+                score_idx = schema.get_field_index("score")
+                if score_idx >= 0:
+                    schema = schema.remove(score_idx)
                 emb_field = pa.field(
                     "embeddings",
                     pa.list_(pa.float16(), self.embedding_service.ndims()),
@@ -243,66 +248,86 @@ class LanceDBStore(IVectorStore):
         """Search for chunks that match query and filters.
 
         Args:
-            query (str): The search query text.
+            query (str): The search query text. If empty, return chunks by
+                tags and file_path only, without vector or full-text search.
             hypotetical_document: Expected result document, if present used for
                 vector search instead of query.
             tags: List of tags to filter by. All must be present.
             file_path: Substring of source_path to filter results.
             scope: Where to search: content, title, description, or all.
             limit (int, optional): Maximum number of results to return. Defaults to 5.
+
+        Raises:
+            ValueError: If the query is empty and neither tags nor file_path
+                filters are provided.
         """
         if not self._initialized:
             raise NotInitializedError(
                 "LanceDBStore is not initialized. Call await store.initialize() first."
             )
 
-        # Calculate embedding for the query, stripping quotes
+        # Textual query with quotes stripped; empty means filter-only search
         cleaned_query = re.sub(r'["\']', " ", query).strip()
-        query_embedding = await self.embedding_service.query_embeddings(
-            hypotetical_document or cleaned_query or query
-        )
+        if not cleaned_query and not tags and not file_path:
+            raise ValueError(
+                "Search query is empty and no tags or file_path filters "
+                "are provided; nothing to search by."
+            )
 
-        fts_query = self._build_fts_query(query, scope)
+        # Apply filters: collect all predicates and issue a single .where()
+        # call, because chained .where() calls replace each other on the
+        # underlying async Rust query builder.
+        predicates: list[str] = []
+        if tags:
+            tags_array = ",".join(
+                [f"'{self._escape_sql_string(t)}'" for t in tags]
+            )
+            predicates.append(f"array_has_all(tags, [{tags_array}])")
+        if file_path:
+            escaped_file_path = self._escape_sql_string(file_path)
+            predicates.append(f"source_path LIKE '{escaped_file_path}%'")
 
         # Start the search query
         try:
-            query_builder = self.table.query()
-
-            query_builder = query_builder.nearest_to(query_embedding).column(
-                "embeddings"
-            )  # .distance_range(upper_bound=1000.0)
-
-            if isinstance(fts_query, str):
-                if scope == SearchScope.CONTENT:
-                    columns = ["content"]
-                elif scope == SearchScope.TITLE:
-                    columns = ["title"]
-                elif scope == SearchScope.DESCRIPTION:
-                    columns = ["description"]
-                else:
-                    columns = ["content", "title", "description"]
-                query_builder = query_builder.nearest_to_text(
-                    fts_query, columns=columns
-                )
+            if not cleaned_query:
+                # Filter-only search: no embedding request, no full-text
+                # query, no reranking.
+                query_builder = self.table.query()
+                if predicates:
+                    query_builder = query_builder.where(" AND ".join(predicates))
             else:
-                query_builder = query_builder.nearest_to_text(fts_query)
-
-            # Apply filters: collect all predicates and issue a single .where()
-            # call, because chained .where() calls replace each other on the
-            # underlying async Rust query builder.
-            predicates: list[str] = []
-            if tags:
-                tags_array = ",".join(
-                    [f"'{self._escape_sql_string(t)}'" for t in tags]
+                query_embedding = await self.embedding_service.query_embeddings(
+                    hypotetical_document or cleaned_query
                 )
-                predicates.append(f"array_has_all(tags, [{tags_array}])")
-            if file_path:
-                escaped_file_path = self._escape_sql_string(file_path)
-                predicates.append(f"source_path LIKE '{escaped_file_path}%'")
-            if predicates:
-                query_builder = query_builder.where(" AND ".join(predicates))
 
-            query_builder = query_builder.rerank(self.reranker)
+                fts_query = self._build_fts_query(query, scope)
+
+                query_builder = self.table.query()
+
+                query_builder = query_builder.nearest_to(query_embedding).column(
+                    "embeddings"
+                )  # .distance_range(upper_bound=1000.0)
+
+                if isinstance(fts_query, str):
+                    if scope == SearchScope.CONTENT:
+                        columns = ["content"]
+                    elif scope == SearchScope.TITLE:
+                        columns = ["title"]
+                    elif scope == SearchScope.DESCRIPTION:
+                        columns = ["description"]
+                    else:
+                        columns = ["content", "title", "description"]
+                    query_builder = query_builder.nearest_to_text(
+                        fts_query, columns=columns
+                    )
+                else:
+                    query_builder = query_builder.nearest_to_text(fts_query)
+
+                if predicates:
+                    query_builder = query_builder.where(" AND ".join(predicates))
+
+                query_builder = query_builder.rerank(self.reranker)
+
             # Go!
             results = await query_builder.limit(limit).to_list()
             logger.info(
@@ -380,15 +405,15 @@ class LanceDBStore(IVectorStore):
                 except Exception as e:
                     logger.error(f"Failed to create FTS index for column {column}: {e}")
                     raise
-            try:
-                pass
-                # await self.table.create_index(
-                #     column="embeddings",
-                #     config=IvfPq()
-                # )
-            except Exception as e:
-                logger.error(f"Failed to create IvPf index for embeddings: {e}")
-                raise
+            # try:
+            #     pass
+            #      await self.table.create_index(
+            #          column="embeddings",
+            #          config=IvfPq()
+            #      )
+            # except Exception as e:
+            #     logger.error(f"Failed to create IvPf index for embeddings: {e}")
+            #     raise
             try:
                 await self.table.create_index(
                     column="tags", config=LabelList(), wait_timeout=wait_time, replace=replace
