@@ -9,7 +9,7 @@ import httpx
 import pyarrow as pa
 import pyarrow.compute as pc
 import pytest
-from lancedb.rerankers import Reranker
+from lancedb.rerankers import RRFReranker, Reranker
 from langchain_core.embeddings import Embeddings
 
 from mcps.config import ServerConfig, create_config
@@ -374,8 +374,7 @@ class TestCreateRerankerEmbeddingOnly:
     ) -> None:
         reranker = create_reranker(embedding_only_config, async_client)
 
-        assert isinstance(reranker, LlmReranker)
-        assert reranker.chat_model is None
+        assert isinstance(reranker, RRFReranker)
 
     def test_factory_rerank_hybrid_uses_embeddings_only(
         self,

@@ -24,3 +24,4 @@ test_content
 /.claude-data/
 .roo
 .DS_Store
+/tmp/

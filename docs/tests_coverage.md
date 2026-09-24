@@ -118,7 +118,21 @@ Tests verifying document summary chunk injection during document processing.
 ### [tests/test_vault_summary_wiring.py](../tests/test_vault_summary_wiring.py)
 Tests ensuring proper wiring and optional fallback of document summary generation in the vault.
 
+### [tests/test_evaluation_scoring.py](../tests/test_evaluation_scoring.py)
+Tests for DRACO rubric scoring (positive/negative weights, normalization).
+
+### [tests/test_evaluation_runner.py](../tests/test_evaluation_runner.py)
+Tests for DRACO evaluation summary aggregation (averages, errors, per-domain scores).
+
+### [tests/test_evaluation_judge_integration.py](../tests/test_evaluation_judge_integration.py)
+Integration tests for the DRACO LLM criterion judge against a real router model. Skipped unless `ROUTER_API_BASE` and `ROUTER_API_KEY` are set.
+
 ## Evaluation Scripts
+
+### [tests/web_research_evaluation.py](../tests/web_research_evaluation.py)
+DRACO benchmark (`perplexity-ai/draco`, Technology + Academic domains) for the deep-research agent behind `web_research`. Each rubric criterion is scored by an LLM judge (`RESEARCH_EVAL_MODEL`, falling back to `RESEARCH_INFER_MODEL`). Support package: [tests/evaluation/](../tests/evaluation/).
+
+**Run**: `uv run python tests/web_research_evaluation.py` from the repository root. Log and HTML report are written to `tmp/`.
 
 ### [tests/vault_evaluation.py](../tests/vault_evaluation.py)
 Comprehensive evaluation test for vault search functionality measuring precision, recall, and F-score.

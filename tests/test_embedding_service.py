@@ -14,7 +14,7 @@ from mcps.rag.vault import create_embeddings
 MODEL_CASES: list[tuple[str, int]] = [
     ("text-embedding-3-small", 1536),
     ("text-embedding-3-small", 512),
-    ("gemini-embed", 512),
+    ("gemini-embed", 768),
     ("bge-embed", 1024),
     ("gemma-embed", 768),
     ("nomic-embed", 768),

@@ -187,6 +187,13 @@ Stronger chat model for web research reflection and final answer synthesis.
 **Environment**: `RESEARCH_INFER_MODEL`
 **Used by**: [src/mcps/config.py:96](../src/mcps/config.py#L96), [src/mcps/research/config.py](../src/mcps/research/config.py)
 
+#### `RESEARCH_EVAL_MODEL` (evaluation only)
+LLM-judge model for the DRACO web research evaluation. Read directly from the environment; not a `ServerConfig` field.
+**Type**: str
+**Default**: falls back to `RESEARCH_INFER_MODEL`
+**Environment**: `RESEARCH_EVAL_MODEL`
+**Used by**: [tests/evaluation/judge.py](../tests/evaluation/judge.py)
+
 #### `google_api_key` #config
 Google Custom Search API key. Required only when using Google instead of DuckDuckGo for web research.
 **Type**: str

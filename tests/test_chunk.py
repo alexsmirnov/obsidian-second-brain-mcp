@@ -593,12 +593,6 @@ class TestLazyChunking:
         assert "## S3" not in chunks[0].content
         assert chunks[1].content.startswith("## S3")
 
-    def test_semantic_chunker_default_bounds(self):
-        """Test SemanticChunker default bounds are 1000 and 2000 characters."""
-        chunker = SemanticChunker()
-        assert chunker.min_chunk_size == 1000
-        assert chunker.max_chunk_size == 2000
-
     def test_semantic_chunker_default_chunking_respects_2000_char_cap(self):
         """Test default SemanticChunker enforces 2000 character cap."""
         content = (

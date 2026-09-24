@@ -60,7 +60,7 @@ addopts = ["--import-mode=importlib","--durations=0"]
 # addopts = [] 
 # pythonpath = ["src"] # Add the src directory to Python's search path
 testpaths = ["tests"]  # Specify the directory where your tests are located
-pythonpath = ["src"]
+pythonpath = ["src", "tests"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 

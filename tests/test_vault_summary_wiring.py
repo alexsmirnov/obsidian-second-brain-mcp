@@ -20,7 +20,7 @@ def test_create_summary_generator_without_rag_infer_model_returns_none() -> None
 
 def test_create_summary_generator_with_rag_infer_model_wires_chat_model() -> None:
     config = ServerConfig(
-        rag_infer_model="summary-model",
+        rag_summary_model="summary-model",
         router_api_base="http://router",
         router_api_key="token",
     )
