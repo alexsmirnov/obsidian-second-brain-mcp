@@ -32,6 +32,11 @@ package = true
 [project.scripts]
 mcps = "mcps:main"
 
+[project.optional-dependencies]
+browser = [
+    "crawl4ai>=0.7",
+]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"

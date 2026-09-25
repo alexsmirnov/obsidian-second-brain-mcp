@@ -118,10 +118,22 @@ FastMCP lifespan handler that creates the shared HTTP client and builds the rese
 **Uses**: config, fastmcp, httpx, research.agent, research.config
 **Used by**: server
 
-### [src/mcps/research/tools.py](../src/mcps/research/tools.py) #module
-Async web search (DuckDuckGo, Google) and content fetching utilities.
-**Uses**: httpx, lxml, pydantic
-**Used by**: research.deep_research
+### [src/mcps/research/tools/](../src/mcps/research/tools/__init__.py) #package
+Async web search and content fetching. `__init__` re-exports `SearchResult`, `Fetch`, `create_google_search`, `create_duckduckgo_search`, `create_fetch`.
+**Uses**: httpx, lxml, pydantic, html2text, pymupdf, crawl4ai (optional)
+**Used by**: research.deep_research, research.config
+
+| Module | Responsibility |
+|---|---|
+| `models.py` | `SearchResult` |
+| `common.py` | Shared headers, `ERROR_*` strings, `is_escalatable`, `request_get`, output truncation |
+| `google.py`, `duckduckgo.py` | Search engines |
+| `extract.py` | HTML/PDF/plain-text to markdown by content type |
+| `default.py` | Generic httpx fetch |
+| `arxiv.py`, `wikipedia.py`, `reddit.py`, `github.py` | Site-specific fetchers |
+| `fetch.py` | `create_fetch`: site routing plus fallback chain on 401/403/429/empty |
+| `browser.py` | crawl4ai fallback over an external CDP browser |
+| `scrape_do.py`, `bright_data.py` | Commercial unblocking fallbacks |
 
 ## Sub-package: mcps.resources
 
@@ -165,6 +177,7 @@ Entry Point (server.main)
 │   │   │   └── research.deep_research
 │   │   │       └── research.tools
 │   │   └── research.config
+│   │       └── research.tools
 │   └── tools.obsidian_vault (conditional)
 │       └── rag.vault
 │           ├── interfaces

@@ -88,6 +88,12 @@ Tests for `ServerConfig` creation, environment variable precedence, CLI override
 ### [tests/test_deep_research.py](../tests/test_deep_research.py)
 Contract tests for the LangGraph deep research agent with mocked models and HTTP calls.
 
+### [tests/test_research_tools.py](../tests/test_research_tools.py)
+Contract tests for search parsing (Google, DuckDuckGo), site-routed fetching (arXiv, Wikipedia, GitHub, default), exact HTTP error codes, and the fallback escalation chain (HTTP mocked with pytest-httpx).
+
+### [tests/test_research_fallback_fetchers.py](../tests/test_research_fallback_fetchers.py)
+Contract tests for the browser (fake crawl4ai crawler), Scrape.do and Bright Data fallbacks: request shape, target vs. provider error mapping, and fallback assembly from `ServerConfig`.
+
 ### [tests/test_llm_reranker.py](../tests/test_llm_reranker.py)
 Integration tests for `LlmReranker` with different model pairs and embedding fusion.
 

@@ -199,14 +199,46 @@ Google Custom Search API key. Required only when using Google instead of DuckDuc
 **Type**: str
 **Default**: `""`
 **Environment**: `GOOGLE_API_KEY`
-**Used by**: [src/mcps/config.py:103](../src/mcps/config.py#L103), [src/mcps/research/tools.py](../src/mcps/research/tools.py)
+**Used by**: [src/mcps/config.py](../src/mcps/config.py), [src/mcps/research/tools/google.py](../src/mcps/research/tools/google.py)
 
 #### `google_search_id` #config
 Google Custom Search Engine ID. Required only when `GOOGLE_API_KEY` is set.
 **Type**: str
 **Default**: `""`
 **Environment**: `GOOGLE_SEARCH_ID`
-**Used by**: [src/mcps/config.py:104](../src/mcps/config.py#L104), [src/mcps/research/tools.py](../src/mcps/research/tools.py)
+**Used by**: [src/mcps/config.py](../src/mcps/config.py), [src/mcps/research/tools/google.py](../src/mcps/research/tools/google.py)
+
+### Web Fetch Fallbacks
+
+When a direct fetch returns `ERROR: http code 401|403|429` or `ERROR: empty response`, the fetch tool escalates to the configured fallbacks in order: browser, then commercial provider. A fallback that cannot run (browser unreachable, provider out of credits) is skipped and the target's original error is kept. Misconfigured fallbacks log a warning and are disabled; the server still starts.
+
+#### `browser_cdp_url` #config
+CDP endpoint of an externally running browser (e.g. Obscura, Chrome with `--remote-debugging-port`). Pages are rendered through crawl4ai. Requires the optional extra `uv sync --extra browser`.
+**Type**: str
+**Default**: `""` (disabled)
+**Environment**: `BROWSER_CDP_URL`
+**Used by**: [src/mcps/research/config.py](../src/mcps/research/config.py), [src/mcps/research/tools/browser.py](../src/mcps/research/tools/browser.py)
+
+#### `scraper_provider` #config
+Commercial unblocking provider used after the browser: `scrape_do`, `bright_data`, or empty.
+**Type**: str
+**Default**: `""` (disabled)
+**Environment**: `SCRAPER_PROVIDER`
+**Used by**: [src/mcps/research/config.py](../src/mcps/research/config.py)
+
+#### `scrape_do_token` #config
+Scrape.do API token. Required when `SCRAPER_PROVIDER=scrape_do`.
+**Type**: str
+**Default**: `""`
+**Environment**: `SCRAPE_DO_TOKEN`
+**Used by**: [src/mcps/research/tools/scrape_do.py](../src/mcps/research/tools/scrape_do.py)
+
+#### `bright_data_api_key`, `bright_data_zone` #config
+Bright Data API key and Web Unlocker zone name. Both required when `SCRAPER_PROVIDER=bright_data`.
+**Type**: str
+**Default**: `""`
+**Environment**: `BRIGHT_DATA_API_KEY`, `BRIGHT_DATA_ZONE`
+**Used by**: [src/mcps/research/tools/bright_data.py](../src/mcps/research/tools/bright_data.py)
 
 ## Environment File Loading
 

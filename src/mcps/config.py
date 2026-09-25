@@ -54,6 +54,14 @@ class ServerConfig:
     research_fast_model: str = ""
     # used for reflection and final result generation
     research_infer_model: str = ""
+    # Fetch fallbacks for blocked (401/403/429) or empty pages, tried in order:
+    # external browser over CDP (needs the `browser` extra), then a commercial
+    # unblocking provider: "scrape_do", "bright_data", or "" (disabled).
+    browser_cdp_url: str = ""
+    scraper_provider: str = ""
+    scrape_do_token: str = ""
+    bright_data_api_key: str = ""
+    bright_data_zone: str = ""
 
 def create_config(
     prompts_dir: Path = Path("./prompts"),
@@ -117,7 +125,12 @@ def create_config(
         max_chunk_size=int(os.environ.get("MAX_CHUNK_SIZE") or 1000),
         min_score=float(os.environ.get("MIN_SCORE") or 0.0),
         google_api_key=os.environ.get("GOOGLE_API_KEY", ""),
-        google_search_id=os.environ.get("GOOGLE_SEARCH_ID", "")
+        google_search_id=os.environ.get("GOOGLE_SEARCH_ID", ""),
+        browser_cdp_url=os.environ.get("BROWSER_CDP_URL", ""),
+        scraper_provider=os.environ.get("SCRAPER_PROVIDER", ""),
+        scrape_do_token=os.environ.get("SCRAPE_DO_TOKEN", ""),
+        bright_data_api_key=os.environ.get("BRIGHT_DATA_API_KEY", ""),
+        bright_data_zone=os.environ.get("BRIGHT_DATA_ZONE", ""),
     )
     validate_config(config)
     return config

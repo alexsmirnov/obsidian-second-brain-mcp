@@ -64,7 +64,7 @@ Converts HTML documents to clean markdown.
 ### lxml
 HTML/XML parsing for web research content extraction.
 **Version**: `>=5.0.0`
-**Used by**: [src/mcps/research/tools.py:16](../src/mcps/research/tools.py#L16)
+**Used by**: [src/mcps/research/tools/duckduckgo.py](../src/mcps/research/tools/duckduckgo.py)
 
 ### arxiv-to-prompt
 Formats arXiv papers for context-window use.
@@ -77,7 +77,12 @@ PDF text extraction.
 ### httpx
 Shared async HTTP client for model router and web requests.
 **Version**: `>=0.28.0`
-**Used by**: [src/mcps/server.py:7](../src/mcps/server.py#L7), [src/mcps/tools/obsidian_vault.py:9](../src/mcps/tools/obsidian_vault.py#L9), [src/mcps/research/tools.py:15](../src/mcps/research/tools.py#L15)
+**Used by**: [src/mcps/server.py:7](../src/mcps/server.py#L7), [src/mcps/tools/obsidian_vault.py:9](../src/mcps/tools/obsidian_vault.py#L9), [src/mcps/research/tools/](../src/mcps/research/tools/common.py)
+
+### crawl4ai (optional extra `browser`)
+Renders blocked/JS-heavy pages in an external browser over CDP (`BROWSER_CDP_URL`). Install with `uv sync --extra browser`; when absent the browser fallback is disabled with a warning.
+**Version**: `>=0.7`
+**Used by**: [src/mcps/research/tools/browser.py](../src/mcps/research/tools/browser.py)
 
 ### pydantic
 Data validation and modeling.

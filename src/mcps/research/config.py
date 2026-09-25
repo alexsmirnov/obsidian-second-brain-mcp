@@ -7,6 +7,7 @@ so the FastMCP lifespan owns the connection pool.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
@@ -18,17 +19,25 @@ from pydantic import SecretStr
 
 from mcps.config import ServerConfig
 from mcps.research.tools import (
+    Fetch,
     SearchResult,
     create_duckduckgo_search,
     create_fetch,
     create_google_search,
 )
+from mcps.research.tools.bright_data import create_bright_data_fetch
+from mcps.research.tools.browser import CRAWL4AI_AVAILABLE, create_browser_fetch
+from mcps.research.tools.scrape_do import create_scrape_do_fetch
 
 __all__ = [
     "ResearchConfig",
     "SearchResult",
     "build_research_config",
+    "create_fetch_fallbacks",
+    "create_fetch_tool",
 ]
+
+logger = logging.getLogger(__file__)
 
 
 @dataclass
@@ -91,11 +100,68 @@ def create_search_tool(
     return create_duckduckgo_search(http_client=http_client)
 
 
+def _create_browser_fallback(config: ServerConfig) -> Fetch | None:
+    if not config.browser_cdp_url:
+        return None
+    if not CRAWL4AI_AVAILABLE:
+        logger.warning(
+            "BROWSER_CDP_URL is set but crawl4ai is not installed "
+            "(uv sync --extra browser); browser fetch fallback disabled."
+        )
+        return None
+    return create_browser_fetch(config.browser_cdp_url)
+
+
+def _create_provider_fallback(
+    config: ServerConfig, http_client: httpx.AsyncClient
+) -> Fetch | None:
+    match config.scraper_provider:
+        case "":
+            return None
+        case "scrape_do" if config.scrape_do_token:
+            return create_scrape_do_fetch(
+                config.scrape_do_token, http_client=http_client
+            )
+        case "bright_data" if config.bright_data_api_key and config.bright_data_zone:
+            return create_bright_data_fetch(
+                config.bright_data_api_key,
+                config.bright_data_zone,
+                http_client=http_client,
+            )
+        case "scrape_do" | "bright_data":
+            logger.warning(
+                "SCRAPER_PROVIDER=%s is missing credentials; provider fallback "
+                "disabled.",
+                config.scraper_provider,
+            )
+        case _:
+            logger.warning(
+                "Unknown SCRAPER_PROVIDER=%s (expected scrape_do or bright_data); "
+                "provider fallback disabled.",
+                config.scraper_provider,
+            )
+    return None
+
+
+def create_fetch_fallbacks(
+    *, config: ServerConfig, http_client: httpx.AsyncClient
+) -> list[Fetch]:
+    """Return configured fallbacks in escalation order: browser, provider."""
+    candidates = (
+        _create_browser_fallback(config),
+        _create_provider_fallback(config, http_client),
+    )
+    return [fallback for fallback in candidates if fallback is not None]
+
+
 def create_fetch_tool(
-    *, http_client: httpx.AsyncClient | None = None
+    *, config: ServerConfig, http_client: httpx.AsyncClient
 ) -> Callable[[str], Awaitable[str]]:
-    """Return FetchTool for web content extraction."""
-    return create_fetch(http_client=http_client)
+    """Return FetchTool for web content extraction with configured fallbacks."""
+    return create_fetch(
+        http_client=http_client,
+        fallbacks=create_fetch_fallbacks(config=config, http_client=http_client),
+    )
 
 
 def build_research_config(
@@ -127,5 +193,5 @@ def build_research_config(
             http_client=http_client,
         ),
         search=create_search_tool(config=config, http_client=http_client),
-        fetch=create_fetch_tool(http_client=http_client),
+        fetch=create_fetch_tool(config=config, http_client=http_client),
     )
