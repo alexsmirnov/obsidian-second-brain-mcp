@@ -25,17 +25,13 @@ dependencies = [
     "pymupdf>=1.25.0",
     "langchain-google-genai>=4.2.5",
     "pandas>=3.0.3",
+    "crawl4ai>=0.7",
 ]
 [tool.uv]
 package = true
 
 [project.scripts]
 mcps = "mcps:main"
-
-[project.optional-dependencies]
-browser = [
-    "crawl4ai>=0.7",
-]
 
 [build-system]
 requires = ["hatchling"]
