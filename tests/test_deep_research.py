@@ -9,6 +9,11 @@ from typing import Any, cast
 
 import httpx
 import pytest
+from langchain_core.language_models.fake_chat_models import (
+    FakeMessagesListChatModel,
+)
+from langchain_core.messages import AIMessage
+from pydantic import Field
 
 from mcps.config import ServerConfig, create_config
 from mcps.research.agent import create_researcher
@@ -16,6 +21,8 @@ from mcps.research.config import (
     ResearchConfig,
     build_research_config,
 )
+from mcps.research.deep_research import ResearchAgent
+from mcps.research.tools import SearchResult
 
 # ---------------------------------------------------------------------------
 # Config contract tests
@@ -270,3 +277,127 @@ class TestToolContract:
         async with Client(server.mcp) as client:
             tools = await client.list_tools()
         assert "web_research" in [t.name for t in tools]
+
+
+# ---------------------------------------------------------------------------
+# Fetch query propagation and evidence filtering
+# ---------------------------------------------------------------------------
+
+_QUESTION = "How does quantum routing work?"
+_SEARCH_RESULTS = [
+    SearchResult(url=f"https://{name}.example", title=name.upper(), snippet="s")
+    for name in ("a", "b", "c")
+]
+
+
+class _RecordingModel(FakeMessagesListChatModel):
+    """Fake chat model that keeps every message list it was invoked with."""
+
+    calls: list[list[Any]] = Field(default_factory=list)
+
+    def _generate(self, messages, *args, **kwargs):
+        self.calls.append(messages)
+        return super()._generate(messages, *args, **kwargs)
+
+
+def _make_agent(fetch_results: dict[str, str] | None = None):
+    fetch_calls: list[tuple[str, str | None]] = []
+    results = fetch_results or {}
+
+    async def fake_fetch(url: str, query: str | None) -> str:
+        fetch_calls.append((url, query))
+        return results.get(url, "content")
+
+    async def fake_search(query: str) -> list[SearchResult]:
+        return _SEARCH_RESULTS
+
+    fast = _RecordingModel(responses=[AIMessage("CLEANED")] * 4)
+    small = FakeMessagesListChatModel(responses=[AIMessage("CLEANED")])
+    agent = ResearchAgent(
+        ResearchConfig(fast=fast, small=small, search=fake_search, fetch=fake_fetch)
+    )
+    return agent, fast, fetch_calls
+
+
+def _state(**overrides: Any) -> Any:
+    state = {"original_question": _QUESTION, "search_query": "quantum routing", "id": 0}
+    return {**state, **overrides}
+
+
+class TestWebResearchFetch:
+    async def test_initial_branch_uses_original_question(self):
+        agent, _, fetch_calls = _make_agent()
+
+        await agent.web_research(_state(), {})
+
+        assert [q for _, q in fetch_calls] == [_QUESTION] * 3
+
+    async def test_follow_up_uses_knowledge_gap(self):
+        agent, _, fetch_calls = _make_agent()
+
+        await agent.web_research(
+            _state(knowledge_gap="What are the latency limits?"), {}
+        )
+        await agent.web_research(_state(knowledge_gap="N/A"), {})
+        await agent.web_research(_state(knowledge_gap="  "), {})
+
+        queries = [q for _, q in fetch_calls]
+        assert queries == ["What are the latency limits?"] * 3 + [_QUESTION] * 6
+
+    async def test_direct_url_passes_query(self):
+        agent, _, fetch_calls = _make_agent()
+
+        await agent.web_research(
+            _state(search_query="https://source.example/page"), {}
+        )
+
+        assert fetch_calls == [("https://source.example/page", _QUESTION)]
+
+    async def test_failed_and_empty_fetches_are_not_evidence(self):
+        agent, fast, _ = _make_agent(
+            {
+                "https://a.example": "content A",
+                "https://b.example": "ERROR: http code 403",
+                "https://c.example": "",
+            }
+        )
+
+        result = await agent.web_research(_state(), {})
+
+        assert len(fast.calls) == 1
+        human_text = str(fast.calls[0][-1].content)
+        assert "https://a.example" in human_text
+        assert "b.example" not in human_text
+        assert "c.example" not in human_text
+        assert "CLEANED" in result["web_results"][0]
+
+    @pytest.mark.parametrize(
+        "state_extra", [{}, {"knowledge_gap": "N/A"}, {"knowledge_gap": " "}]
+    )
+    async def test_absent_knowledge_gap_is_skipped_in_prompt(self, state_extra):
+        agent, fast, _ = _make_agent()
+
+        await agent.web_research(_state(**state_extra), {})
+
+        assert "KNOWLEDGE GAP" not in str(fast.calls[0][-1].content)
+
+    async def test_present_knowledge_gap_is_in_prompt(self):
+        agent, fast, _ = _make_agent()
+
+        await agent.web_research(_state(knowledge_gap="latency limits"), {})
+
+        assert "KNOWLEDGE GAP: latency limits" in str(fast.calls[0][-1].content)
+
+    async def test_all_failed_fetches_yield_no_evidence_without_llm_call(self):
+        agent, fast, _ = _make_agent(
+            {
+                "https://a.example": "ERROR: http code 403",
+                "https://b.example": "",
+                "https://c.example": "   ",
+            }
+        )
+
+        result = await agent.web_research(_state(), {})
+
+        assert fast.calls == []
+        assert "NO_RELEVANT_EVIDENCE" in result["web_results"][0]

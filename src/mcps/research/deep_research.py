@@ -7,7 +7,7 @@ import asyncio
 import logging
 from datetime import datetime
 from operator import add
-from typing import TYPE_CHECKING, Annotated, Any, Literal, TypedDict, cast
+from typing import TYPE_CHECKING, Annotated, Any, Literal, NotRequired, TypedDict, cast
 from urllib.parse import urlparse
 
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -87,25 +87,6 @@ If relevant evidence exists, output one or more blocks in this exact format:
 
 If no relevant evidence exists in provided content, output exactly:
 NO_RELEVANT_EVIDENCE
-"""
-
-_FAILURE_RECOVERY_PROMPT = """You are an autonomous web research agent tasked to fill a specific information gap.
-
-You will be given the User's core Question and Knowledge Gap, along with a list of target URLs that may contain required information.
-
-CRITICAL INSTRUCTIONS:
-1. For each URL, read the web page and extract raw, verbatim evidence that answers or relates to the User's question and knowledge gap. Keep verbatim excerpts.
-2. If the URL is behind a hard login wall, completely blank, or returns an explicit error page even through your tool, omit it from the final result. Do not invent contents for a page you cannot see.
-
-OUTPUT FORMAT REQUIREMENTS:
-If relevant evidence present on web page, format your entire response into one or more blocks matching this exact schema:
-- Source URL: [insert exact fetched url]
-- Content: [verbatim relevant excerpt extracted from the tool's page payload]
-
-If no relevant evidence can be extracted from any of the recovered URLs, your entire final response must be exactly:
-NO_RELEVANT_EVIDENCE
-
-Important: Never output any conversational filler (e.g., "I have fetched the pages for you...", "According to the tool..."). Output only the matching evidence blocks or the exact fallback phrase.
 """
 
 _REFLECTION_PROMPT = f"""You are the core reasoning engine of an advanced web research agent. 
@@ -244,10 +225,21 @@ class OverallState(TypedDict):
     is_sufficient: bool
 
 
+def _knowledge_gap(state: WebSearchState) -> str | None:
+    """Stripped knowledge gap, or None when absent, blank or "N/A"."""
+    gap = state.get("knowledge_gap", "").strip()
+    return gap if gap and gap != "N/A" else None
+
+
+def _fetch_query(state: WebSearchState) -> str:
+    """Knowledge gap when meaningful, else the original question."""
+    return _knowledge_gap(state) or state["original_question"]
+
+
 class WebSearchState(TypedDict):
     """Minimal payload sent to each parallel web_research branch."""
     original_question: str
-    knowledge_gap: str
+    knowledge_gap: NotRequired[str]
 
     search_query: str
     id: int
@@ -393,29 +385,31 @@ class ResearchAgent:
         # If query is a direct URL, fetch it directly and clean up without searching
         if _is_valid_url(query):
             logger.info("Direct URL fetch for query: %s", query)
-            fetch_result = await self.config.fetch(query, None)
+            fetch_result = await self.config.fetch(query, _fetch_query(state))
             cleaned = await self.clean_result(
-                results=[SearchResult(url=query, title="", snippet="")],
+                search_results=[SearchResult(url=query, title="", snippet="")],
                 fetch_results=[fetch_result],
                 question=state['original_question'],
-                knowledge_gap=state.get('knowledge_gap', 'N/A'),
+                knowledge_gap=_knowledge_gap(state),
             )
             return {
                 "web_results": [f"Direct URL fetch: {query}\nResult:\n{cleaned}"],
             }
         logger.info("Performing web search for query: %s", query)
-        results = await self.config.search(query)
-        if not results:
+        search_results = await self.config.search(query)
+        if not search_results:
             logger.warning("No web search results found for query: %s", query)
             return {
                 "web_results": [f"Web search query: {query}\nNo results found."],
             }
-        fetch_tasks = [self.config.fetch(result.url, None) for result in results]
+        fetch_query = _fetch_query(state)
+        fetch_tasks = [self.config.fetch(result.url, fetch_query) for result in search_results]
         fetch_results = await asyncio.gather(*fetch_tasks)
         logger.info("Web search result: %d", len(fetch_results))
         question = state['original_question']
-        knowledge_gap = state.get('knowledge_gap', 'N/A')
-        clean_result = await self.clean_result(results, fetch_results, question, knowledge_gap)
+        clean_result = await self.clean_result(
+            search_results, fetch_results, question, _knowledge_gap(state)
+        )
         logger.info("Web search raw results: %s", clean_result[:50])
         return {
             "web_results": [f"Web search query: {query}\nResult:\n{clean_result}"],
@@ -423,23 +417,20 @@ class ResearchAgent:
 
     async def clean_result(
         self,
-        results: list[SearchResult],
+        search_results: list[SearchResult],
         fetch_results: list[str],
         question: str,
-        knowledge_gap: str,
+        knowledge_gap: str | None,
     ) -> str:
         success_results = [
             f"Source URL: {sr.url}\nTitle:{sr.title}\nPage Sippet: {sr.snippet}\nCONTENT: {fr}"
-            for sr, fr in zip(results, fetch_results, strict=False)
-            if not fr.startswith("ERROR")
-        ]
-        failed_fetches = [
-            sr for sr, fr in zip(results, fetch_results, strict=False) if fr.startswith("ERROR")
+            for sr, fr in zip(search_results, fetch_results, strict=False)
+            if fr.strip() and not fr.startswith("ERROR")
         ]
         logger.info(
             "Extract information from %d success and %d failed results. User question %.10s, knowledge gap: %.20s",
             len(success_results),
-            len(failed_fetches),
+            len(search_results) - len(success_results),
             question,
             knowledge_gap,
         )
@@ -461,49 +452,6 @@ class ResearchAgent:
             clean_fetch_result = extract_text(response.content)
         else:
             clean_fetch_result = "NO_RELEVANT_EVIDENCE"
-        if failed_fetches:
-            logger.info("Try to recover %d failed fetches", len(failed_fetches))
-            try:
-                grounded_model = self.config.fast.bind_tools(
-                    [{"url_context": {}}],
-                    tool_choice="any",
-                )
-                # Do not recover more than 4 failures, gemini model got confused
-                formatted_urls_block = "\n".join(
-                    [
-                        f"<target_url id='{i+1}'>{sr.url}</target_url>"
-                        for i, sr in enumerate(failed_fetches[:4])
-                    ]
-                )
-                user_payload = (
-                    f"USER QUESTION: {question}\n"
-                    f"{knowledge_gap_section}"
-                    f"<web_sources>\n{formatted_urls_block}\n</web_sources>"
-                )
-                response = await grounded_model.ainvoke(
-                    [
-                        SystemMessage(_FAILURE_RECOVERY_PROMPT),
-                        HumanMessage(user_payload),
-                    ],
-                    thinking_config= { "thinking_budget": 0 }
-                )
-                metadata = response.response_metadata.get("grounding_metadata", {})
-                requested_urls = [
-                    chunk["web"]["uri"]
-                    for chunk in metadata.get("grounding_chunks", [])
-                    if chunk.get("web") and chunk["web"].get("uri")
-                ]
-                logger.info("Fall back recovery requested urls: %s", requested_urls)
-                fallback_result = extract_text(response.content)
-                logger.info("Fallback result: %.100s", fallback_result)
-                if clean_fetch_result.startswith("NO_RELEVANT_EVIDENCE"):
-                    clean_fetch_result = fallback_result
-                elif not fallback_result.startswith("NO_RELEVANT_EVIDENCE"):
-                    clean_fetch_result += "\n\n" + fallback_result
-            except Exception:
-                # Model does not support web content grounded - throws exception on bind tools
-                pass
-
         return clean_fetch_result
 
 
