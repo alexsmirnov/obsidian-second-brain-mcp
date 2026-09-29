@@ -61,7 +61,7 @@ class FakeBrowser:
 
 
 class FakeProvider:
-    """Async provider stub returning Markdown/error and recording calls."""
+    """Async provider stub returning HTML/error and recording calls."""
 
     def __init__(self, result: str) -> None:
         self.result = result
@@ -195,7 +195,7 @@ async def test_generic_url_uses_browser_and_filters(bm25, httpx_mock: HTTPXMock)
 async def test_plain_text_url_via_browser_is_filtered(bm25):
     page = f"<html><body><pre>{html.escape(MARKDOWN_PAGE)}</pre></body></html>"
     browser = FakeBrowser(page)
-    provider = FakeProvider(MARKDOWN_PAGE)
+    provider = FakeProvider(TOPIC_HTML)
     fetch = create_fetch(
         http_client=None, browser=browser, provider=provider, page_filter=bm25
     )
@@ -282,7 +282,7 @@ async def test_pdf_uses_http_extractor(
 )
 async def test_blocked_page_escalates_to_provider_filtered(bm25, browser_error: str):
     browser = FakeBrowser(browser_error)
-    provider = FakeProvider(MARKDOWN_PAGE)
+    provider = FakeProvider(TOPIC_HTML)
     fetch = create_fetch(
         http_client=None, browser=browser, provider=provider, page_filter=bm25
     )
@@ -463,3 +463,136 @@ async def test_fetch_http_error_reports_exact_status(
     result = await fetch("https://site.example/", None)
 
     assert result == f"ERROR: http code {status_code}"
+
+
+PAGE_WITH_STYLE_TEXT = (
+    "<html><body><h1>Tags</h1><p>Use &lt;style&gt;alpha&lt;/style&gt; carefully "
+    '<img src="/fig.png" alt="Fig"></p></body></html>'
+)
+
+
+async def test_fetch_default_html_is_converted_once(
+    bm25, httpx_mock: HTTPXMock, client: httpx.AsyncClient
+):
+    httpx_mock.add_response(url="https://site.example/page", html=PAGE_WITH_STYLE_TEXT)
+    fetch = create_fetch(
+        http_client=client, browser=None, provider=None, page_filter=bm25
+    )
+
+    result = await fetch("https://site.example/page", None)
+
+    assert "Use <style>alpha</style> carefully" in result
+    assert "![Fig](https://site.example/fig.png)" in result
+
+
+async def test_arxiv_html_is_converted_once(
+    bm25, httpx_mock: HTTPXMock, client: httpx.AsyncClient
+):
+    httpx_mock.add_response(
+        url="https://arxiv.org/html/2401.00002", html=PAGE_WITH_STYLE_TEXT
+    )
+    fetch = create_fetch(
+        http_client=client, browser=None, provider=None, page_filter=bm25
+    )
+
+    result = await fetch("https://arxiv.org/abs/2401.00002", None)
+
+    assert "Use <style>alpha</style> carefully" in result
+    assert "![Fig](https://arxiv.org/fig.png)" in result
+
+
+async def test_pdf_keeps_line_breaks(
+    bm25,
+    httpx_mock: HTTPXMock,
+    client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(
+        "mcps.research.tools.extract._convert_pdf_to_text",
+        lambda _pdf: (
+            "Quantum routing results\ncol_a   col_b\n1       2\n\nbread flour baking"
+        ),
+    )
+    url = "https://source.example/paper.pdf"
+    for _ in range(2):
+        httpx_mock.add_response(
+            url=url, content=b"%PDF-1.4", headers={"content-type": "application/pdf"}
+        )
+    fetch = create_fetch(
+        http_client=client, browser=None, provider=None, page_filter=bm25
+    )
+
+    unfiltered = await fetch(url, None)
+    filtered = await fetch(url, "quantum routing")
+
+    assert "Quantum routing results  \ncol_a col_b  \n1 2" in unfiltered
+    assert "bread flour baking" in unfiltered
+    assert "col_a col_b" in filtered
+    assert "bread flour" not in filtered
+
+
+async def test_blank_html_is_empty_response(
+    bm25, httpx_mock: HTTPXMock, client: httpx.AsyncClient
+):
+    httpx_mock.add_response(
+        url="https://site.example/blank", html="<html><body>  </body></html>"
+    )
+    fetch = create_fetch(
+        http_client=client, browser=None, provider=None, page_filter=bm25
+    )
+
+    assert await fetch("https://site.example/blank", None) == "ERROR: empty response"
+
+
+async def test_github_repo_relative_link_resolves_in_repository(
+    bm25, httpx_mock: HTTPXMock, client: httpx.AsyncClient
+):
+    httpx_mock.add_response(
+        url="https://raw.githubusercontent.com/org/project/main/README.md",
+        text="See [guide](docs/guide.md) and [root](/paper).",
+    )
+    fetch = create_fetch(
+        http_client=client, browser=None, provider=None, page_filter=bm25
+    )
+
+    result = await fetch("https://github.com/org/project", None)
+
+    assert "https://github.com/org/project/blob/HEAD/docs/guide.md" in result
+    assert "https://github.com/paper" in result
+
+
+async def test_github_blob_relative_link_resolves_in_directory(
+    bm25, httpx_mock: HTTPXMock, client: httpx.AsyncClient
+):
+    httpx_mock.add_response(
+        url="https://raw.githubusercontent.com/o/r/main/docs/README.md",
+        text="See [guide](guide.md).",
+    )
+    fetch = create_fetch(
+        http_client=client, browser=None, provider=None, page_filter=bm25
+    )
+
+    result = await fetch("https://github.com/o/r/blob/main/docs/README.md", None)
+
+    assert "https://github.com/o/r/blob/main/docs/guide.md" in result
+
+
+async def test_provider_html_is_filtered_once(bm25):
+    provider_html = (
+        "<html><body><h2>Quantum optimization</h2><p>"
+        + "quantum optimization improves routing " * 30
+        + '<a href="/paper">paper</a></p><h2>Recipes</h2><p>'
+        + "bread flour baking kitchen " * 30
+        + "</p></body></html>"
+    )
+    fetch = create_fetch(
+        http_client=None,
+        browser=FakeBrowser("ERROR: http code 403"),
+        provider=FakeProvider(provider_html),
+        page_filter=bm25,
+    )
+
+    result = await fetch(GENERIC, "quantum optimization")
+
+    assert "https://source.example/paper" in result
+    assert "bread flour" not in result

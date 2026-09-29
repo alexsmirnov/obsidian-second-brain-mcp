@@ -1,4 +1,4 @@
-"""Fallback fetcher using the Scrape.do unblocking API (markdown output)."""
+"""Fallback fetcher using the Scrape.do unblocking API (rendered HTML output)."""
 
 from __future__ import annotations
 
@@ -65,7 +65,6 @@ def create_scrape_do_fetch(
             "url": url,
             "super": "true",
             "render": "true",
-            "output": "markdown",
         }
         try:
             response = await http_client.get(api_url, params=params)

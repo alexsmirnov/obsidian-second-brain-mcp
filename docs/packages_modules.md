@@ -120,7 +120,7 @@ FastMCP lifespan handler that creates the shared HTTP client and builds the rese
 
 ### [src/mcps/research/tools/](../src/mcps/research/tools/__init__.py) #package
 Async web search and content fetching. `__init__` re-exports `SearchResult`, `Fetch`, `create_google_search`, `create_duckduckgo_search`, `create_fetch`.
-**Uses**: httpx, lxml, pydantic, html2text, markdown, pymupdf, crawl4ai
+**Uses**: httpx, lxml, pydantic, markdown, pymupdf, crawl4ai
 **Used by**: research.deep_research, research.config
 
 | Module | Responsibility |
@@ -128,7 +128,7 @@ Async web search and content fetching. `__init__` re-exports `SearchResult`, `Fe
 | `models.py` | `SearchResult` |
 | `common.py` | Shared headers, `ERROR_*` strings, `is_escalatable`, `request_get`, output truncation |
 | `google.py`, `duckduckgo.py` | Search engines |
-| `extract.py` | HTML/PDF/plain-text to markdown by content type |
+| `extract.py` | HTML/PDF/plain-text to HTML by content type |
 | `default.py` | Generic httpx fetch |
 | `arxiv.py`, `github.py` | Site-specific fetchers (never fall back) |
 | `fetch.py` | `create_fetch`: `async fetch(url, query)`; restricted domains, GitHub/arXiv/PDF routing, browser rendering under a concurrency semaphore, provider fallback on 401/403/429/empty/timeout/browser-unavailable |

@@ -122,10 +122,10 @@ async def test_browser_fetch_blank_cleaned_html_is_empty(
 # ---------------------------------------------------------------------------
 
 
-async def test_scrape_do_requests_markdown_with_unblocking_and_rendering(
+async def test_scrape_do_requests_rendered_html_with_unblocking(
     httpx_mock: HTTPXMock, client: httpx.AsyncClient
 ):
-    httpx_mock.add_response(text="# Article")
+    httpx_mock.add_response(text="<h1>Article</h1>")
     fetch = create_scrape_do_fetch("tok", http_client=client)
 
     result = await fetch(TARGET)
@@ -138,9 +138,8 @@ async def test_scrape_do_requests_markdown_with_unblocking_and_rendering(
         "url": TARGET,
         "super": "true",
         "render": "true",
-        "output": "markdown",
     }
-    assert result == "# Article"
+    assert result == "<h1>Article</h1>"
 
 
 @pytest.mark.parametrize(
@@ -181,10 +180,10 @@ async def test_scrape_do_transport_error_is_unavailable(
 # ---------------------------------------------------------------------------
 
 
-async def test_bright_data_posts_zone_request_for_markdown(
+async def test_bright_data_posts_zone_request_for_html(
     httpx_mock: HTTPXMock, client: httpx.AsyncClient
 ):
-    httpx_mock.add_response(json={"status_code": 200, "body": "# Article"})
+    httpx_mock.add_response(json={"status_code": 200, "body": "<h1>Article</h1>"})
     fetch = create_bright_data_fetch("key", "unlocker", http_client=client)
 
     result = await fetch(TARGET)
@@ -200,9 +199,8 @@ async def test_bright_data_posts_zone_request_for_markdown(
         "zone": "unlocker",
         "url": TARGET,
         "format": "json",
-        "data_format": "markdown",
     }
-    assert result == "# Article"
+    assert result == "<h1>Article</h1>"
 
 
 @pytest.mark.parametrize(
@@ -245,10 +243,9 @@ async def test_fetch_tool_escalates_blocked_page_to_configured_provider(
                 "url": TARGET,
                 "super": "true",
                 "render": "true",
-                "output": "markdown",
             },
         ),
-        text="# Unblocked",
+        text="<html><body><h1>Unblocked</h1></body></html>",
     )
     config = ServerConfig(
         scraper_provider="scrape_do", scrape_do_token="t", browser_cdp_url=""

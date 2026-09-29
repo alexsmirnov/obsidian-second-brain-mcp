@@ -64,7 +64,6 @@ Core dependencies [pyproject.toml:10-26](../pyproject.toml#L10-L26):
 - rank_bm25
 - python-dotenv>=1.2.2
 - python-frontmatter>=1.3.0
-- html2text>=2025.4.15
 - langgraph>=1.1.6
 - langchain-openai>=1.1.11
 - langchain-community>=0.4.1

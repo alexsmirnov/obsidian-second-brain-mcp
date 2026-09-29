@@ -14,10 +14,12 @@ from mcps.research.tools.common import (
     format_source_output,
     request_get,
 )
+from mcps.research.tools.filtering import markdown_to_html
 
 __all__ = [
     "fetch_github_blob",
     "fetch_github_repo",
+    "github_link_base",
     "is_github_blob_url",
     "is_github_repo_url",
 ]
@@ -44,6 +46,11 @@ def is_github_blob_url(url: str) -> bool:
 def is_github_repo_url(url: str) -> bool:
     parts = _github_path_parts(url)
     return parts is not None and len(parts) == 2
+
+
+def github_link_base(url: str) -> str:
+    """Base URL for resolving relative links in a fetched GitHub source."""
+    return f"{url.rstrip('/')}/blob/HEAD/" if is_github_repo_url(url) else url
 
 
 def _github_blob_to_raw_url(url: str) -> str | None:
@@ -87,7 +94,10 @@ async def fetch_github_blob(
     if not content:
         logger.warning("GitHub blob fetch failed for %s: %s", url, ERROR_EMPTY_RESPONSE)
         return ERROR_EMPTY_RESPONSE
-    return format_source_output(url, content, max_chars)
+    # ponytail: source code becomes paragraphs (indentation lost); <pre> keeps
+    # layout but BM25 drops <pre> blocks for any query (verified 0.9.4) --
+    # per-language handling if code fidelity matters
+    return format_source_output(url, markdown_to_html(content), max_chars)
 
 
 async def fetch_github_repo(
@@ -109,6 +119,6 @@ async def fetch_github_repo(
             raise
         content = response.text.strip()
         if content:
-            return format_source_output(url, content, max_chars)
+            return format_source_output(url, markdown_to_html(content), max_chars)
     logger.warning("GitHub repo fetch failed for %s: %s", url, ERROR_EMPTY_RESPONSE)
     return ERROR_EMPTY_RESPONSE

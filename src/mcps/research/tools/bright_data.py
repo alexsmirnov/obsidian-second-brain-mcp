@@ -1,4 +1,4 @@
-"""Fallback fetcher using the Bright Data Web Unlocker API (markdown output)."""
+"""Fallback fetcher using the Bright Data Web Unlocker API (HTML output)."""
 
 from __future__ import annotations
 
@@ -55,7 +55,7 @@ def create_bright_data_fetch(
     headers = {"Authorization": f"Bearer {api_key}"}
 
     async def fetch(url: str) -> str:
-        body = {"zone": zone, "url": url, "format": "json", "data_format": "markdown"}
+        body = {"zone": zone, "url": url, "format": "json"}
         try:
             response = await http_client.post(api_url, headers=headers, json=body)
         except httpx.HTTPError as error:

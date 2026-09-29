@@ -41,7 +41,7 @@ async def fetch_default(
     http_client: httpx.AsyncClient | None,
     max_chars: int,
 ) -> str:
-    """Fetch ``url`` with browser-like headers and extract readable text.
+    """Fetch ``url`` with browser-like headers and return its HTML.
 
     HTTP and transport errors propagate as ``httpx`` exceptions.
     """

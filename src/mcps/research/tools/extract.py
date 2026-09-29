@@ -1,12 +1,15 @@
-"""Response body to markdown/text extractors keyed by content type."""
+"""Response body to HTML extractors keyed by content type."""
 
 from __future__ import annotations
 
+import html
 from collections.abc import Callable
 
-import html2text
 import httpx
 import pymupdf
+from lxml import html as lxml_html
+
+from mcps.research.tools.filtering import markdown_to_html
 
 __all__ = [
     "CONTENT_TYPE_EXTRACTORS",
@@ -17,14 +20,7 @@ __all__ = [
 _PDF_ANNOT_SCREEN = 21  # pymupdf.PDF_ANNOT_SCREEN
 
 
-def _convert_html_to_markdown(html: str) -> str:
-    converter = html2text.HTML2Text()
-    converter.ignore_images = True
-    converter.body_width = 0
-    return converter.handle(html).strip()
-
-
-def _convert_pdf_to_markdown(pdf_bytes: bytes) -> str:
+def _convert_pdf_to_text(pdf_bytes: bytes) -> str:
     page_text: list[str] = []
     # Open, clean, and reload the PDF to fix annotation errors
     with pymupdf.open(stream=pdf_bytes, filetype="pdf") as document:
@@ -53,20 +49,34 @@ def normalize_content_type(header_value: str) -> str:
 
 
 def _extract_html_response(response: httpx.Response) -> str | None:
-    return _convert_html_to_markdown(response.text) or None
+    # ponytail: <script>/<style> text counts as content; browser path handles JS shells
+    try:
+        text = lxml_html.document_fromstring(response.text).text_content()
+    except Exception:
+        return None
+    return response.text if text.strip() else None
 
 
 def _extract_pdf_response(response: httpx.Response) -> str | None:
     if not response.content:
         return None
-    return _convert_pdf_to_markdown(response.content) or None
+    blocks = [
+        block
+        for block in _convert_pdf_to_text(response.content).split("\n\n")
+        if block.strip()
+    ]
+    if not blocks:
+        return None
+    return "".join(
+        f"<p>{html.escape(block).replace(chr(10), '<br>')}</p>" for block in blocks
+    )
 
 
 def _extract_plain_text_response(response: httpx.Response) -> str | None:
     content = response.text
     if not content or not content.strip():
         return None
-    return content
+    return markdown_to_html(content)
 
 
 def _looks_like_pdf(content: bytes) -> bool:

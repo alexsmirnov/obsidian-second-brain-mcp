@@ -20,14 +20,11 @@ from mcps.research.tools.common import (
     to_error_message,
 )
 from mcps.research.tools.default import fetch_default
-from mcps.research.tools.filtering import (
-    PageFilter,
-    markdown_to_html,
-    text_page_to_html,
-)
+from mcps.research.tools.filtering import PageFilter, text_page_to_html
 from mcps.research.tools.github import (
     fetch_github_blob,
     fetch_github_repo,
+    github_link_base,
     is_github_blob_url,
     is_github_repo_url,
 )
@@ -96,11 +93,11 @@ def create_fetch(
     """
     semaphore = asyncio.Semaphore(concurrency)
 
-    async def _filter(html: str, url: str, query: str | None) -> str:
-        return format_source_output(url, await page_filter(html, url, query), max_chars)
-
-    async def _filter_markdown(markdown: str, url: str, query: str | None) -> str:
-        return await _filter(markdown_to_html(markdown), url, query)
+    async def _filter(
+        html: str, url: str, query: str | None, base_url: str | None = None
+    ) -> str:
+        filtered = await page_filter(html, base_url or url, query)
+        return format_source_output(url, filtered, max_chars)
 
     async def fetch(url: str, query: str | None = None) -> str:
         if _is_restricted(url, restricted_domains):
@@ -115,7 +112,7 @@ def create_fetch(
             )
             if result.startswith("ERROR"):
                 return result
-            return await _filter_markdown(result, url, query)
+            return await _filter(result, url, query, github_link_base(url))
 
         is_pdf = urlparse(url).path.lower().endswith(".pdf")
         if browser is None or is_pdf:
@@ -123,7 +120,7 @@ def create_fetch(
                 fetch_default, url, http_client=http_client, max_chars=_NO_TRUNCATION
             )
             if not result.startswith("ERROR"):
-                result = await _filter_markdown(result, url, query)
+                result = await _filter(result, url, query)
         else:
             async with semaphore:
                 rendered = await browser(url)
@@ -139,7 +136,7 @@ def create_fetch(
                 if candidate.startswith("ERROR"):
                     result = candidate
                 else:
-                    result = await _filter_markdown(candidate, url, query)
+                    result = await _filter(text_page_to_html(candidate), url, query)
         return result
 
     return fetch

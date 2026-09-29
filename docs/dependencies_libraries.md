@@ -57,10 +57,6 @@ YAML frontmatter parser for Obsidian markdown files.
 **Used by**: [src/mcps/rag/document_processing.py:12](../src/mcps/rag/document_processing.py#L12)
 **Docs**: [python-frontmatter.readthedocs.io](https://python-frontmatter.readthedocs.io/)
 
-### html2text
-Converts HTML documents to clean markdown.
-**Version**: `>=2025.4.15`
-
 ### lxml
 HTML/XML parsing for web research content extraction.
 **Version**: `>=5.0.0`
