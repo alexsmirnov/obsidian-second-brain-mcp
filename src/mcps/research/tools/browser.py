@@ -7,11 +7,12 @@ import asyncio
 import logging
 import shutil
 import time
-from collections.abc import AsyncIterator, Awaitable, Callable
-from contextlib import asynccontextmanager
-from typing import Any, AsyncGenerator
+from collections.abc import AsyncGenerator, Awaitable, Callable
+from contextlib import AsyncExitStack, asynccontextmanager
+from typing import Any, Protocol
 
 from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig
+
 from mcps.research.tools.common import (
     ERROR_EMPTY_RESPONSE,
     ERROR_FETCHER_UNAVAILABLE,
@@ -21,6 +22,10 @@ from mcps.research.tools.common import (
 
 __all__ = [
     "LOCAL_CDP_URL",
+    "Crawler",
+    "CrawlerContext",
+    "CrawlerFactory",
+    "browser_crawler",
     "browser_endpoint",
     "create_browser_fetch",
     "probe_cdp",
@@ -34,7 +39,32 @@ LOCAL_STARTUP_SECONDS = 30
 _LOCAL_POLL_SECONDS = 0.5
 _LOCAL_STOP_SECONDS = 5
 
-CrawlerFactory = Callable[[], Any]
+
+class Crawler(Protocol):
+    """Minimal crawl4ai crawler contract: one crawl call per URL."""
+
+    async def arun(
+        self,
+        url: str,
+        config: CrawlerRunConfig,
+        **kwargs: Any,
+    ) -> Any: ...
+
+
+class CrawlerContext(Protocol):
+    """Async context manager that starts a :class:`Crawler` on entry."""
+
+    async def __aenter__(self) -> Crawler: ...
+
+    async def __aexit__(
+        self, exc_type: Any, exc_val: Any, exc_tb: Any
+    ) -> None: ...
+
+
+class CrawlerFactory(Protocol):
+    """Builds a fresh crawler context; crawl4ai's ``AsyncWebCrawler`` fits."""
+
+    def __call__(self) -> CrawlerContext: ...
 
 
 def _default_crawler_factory(cdp_url: str) -> CrawlerFactory:
@@ -63,25 +93,61 @@ def _to_fetch_result(url: str, crawl: Any) -> str:
     return content
 
 
-def create_browser_fetch(
-    cdp_url: str,
-    *,
-    crawler_factory: CrawlerFactory | None = None,
-) -> Retrieve:
-    """Create a callable rendering pages to cleaned HTML in the CDP browser."""
-    factory = crawler_factory or _default_crawler_factory(cdp_url)
-    run_config = CrawlerRunConfig(verbose=False)
+def create_browser_fetch(crawler: Crawler) -> Retrieve:
+    """Create a callable that renders pages on an already-open crawler.
 
-    async def fetch(url: str) -> str:
+    The crawler's lifetime is owned by the caller (see :func:`browser_crawler`),
+    so fetches never start, close, or replace it. crawl4ai mutates the
+    ``CrawlerRunConfig`` it is given, so every call builds a fresh one.
+    """
+    return _BrowserFetch(crawler)
+
+
+class _BrowserFetch:
+    """Borrowed-crawler retrieval: run one URL, map the crawl to content."""
+
+    def __init__(self, crawler: Crawler) -> None:
+        self._crawler = crawler
+
+    async def __call__(self, url: str) -> str:
         try:
-            async with factory() as crawler:
-                crawl = await crawler.arun(url, config=run_config)
-            return _to_fetch_result(url, crawl)
+            crawl = await self._crawler.arun(
+                url, config=CrawlerRunConfig(verbose=False)
+            )
         except Exception as error:
             logger.warning("Browser fetch unavailable for %s: %r", url, error)
             return ERROR_FETCHER_UNAVAILABLE
+        return _to_fetch_result(url, crawl)
 
-    return fetch
+
+@asynccontextmanager
+async def browser_crawler(
+    cdp_url: str | None,
+    *,
+    crawler_factory: CrawlerFactory | None = None,
+) -> AsyncGenerator[Crawler | None]:
+    """Yield one open crawler for ``cdp_url``, or ``None`` when it cannot start.
+
+    The crawler is created and started once and closed on exit; fetches borrow
+    it for their whole lifetime so crawl4ai keeps a single CDP connection.
+    Initialization failures are logged and yield ``None`` so the caller can
+    degrade gracefully; failures while the crawler is in use propagate.
+    """
+    if not cdp_url:
+        yield None
+        return
+
+    factory = crawler_factory or _default_crawler_factory(cdp_url)
+    stack = AsyncExitStack()
+    try:
+        crawler = await stack.enter_async_context(factory())
+    except Exception as error:
+        logger.warning("Browser crawler unavailable for %s: %r", cdp_url, error)
+        await stack.aclose()
+        yield None
+        return
+    async with stack:
+        yield crawler
 
 
 async def probe_cdp(cdp_url: str) -> bool:

@@ -5,12 +5,14 @@ from __future__ import annotations
 import asyncio
 import shutil
 from contextlib import asynccontextmanager
-from typing import Any
+from types import SimpleNamespace
+from typing import Any, ClassVar
 
 import pytest
 from fastmcp import Client
 
 from mcps.config import create_config
+from mcps.research.lifespan import build_research_lifespan
 from mcps.research.tools import browser as browser_module
 from mcps.research.tools.browser import LOCAL_CDP_URL, browser_endpoint
 from mcps.server import create_server
@@ -66,6 +68,30 @@ def _endpoint_stub(endpoint: str | None) -> Any:
         yield endpoint
 
     return stub
+
+
+def _crawler_stub(crawler: Any) -> Any:
+    @asynccontextmanager
+    async def stub(cdp_url: str | None, *, crawler_factory: Any = None):
+        yield crawler
+
+    return stub
+
+
+class FakeServer:
+    """Minimal FastMCP stand-in recording tool enable/disable calls."""
+
+    def __init__(self) -> None:
+        self.enabled: set[str] = set()
+        self.disabled: set[str] = set()
+
+    def enable(self, *, names: set[str]) -> None:
+        self.enabled |= names
+        self.disabled -= names
+
+    def disable(self, *, names: set[str]) -> None:
+        self.disabled |= names
+        self.enabled -= names
 
 
 async def test_configured_endpoint_is_used(monkeypatch):
@@ -141,6 +167,10 @@ async def _list_tool_names(monkeypatch, endpoint: str | None) -> list[str]:
     monkeypatch.setattr(
         "mcps.research.lifespan.browser_endpoint", _endpoint_stub(endpoint)
     )
+    monkeypatch.setattr(
+        "mcps.research.lifespan.browser_crawler",
+        _crawler_stub(object() if endpoint else None),
+    )
     server = create_server(create_config())
     async with Client(server.mcp) as client:
         tools = await client.list_tools()
@@ -157,3 +187,129 @@ async def test_reachable_browser_keeps_web_research(monkeypatch):
     names = await _list_tool_names(monkeypatch, "ws://127.0.0.1:9222")
 
     assert "web_research" in names
+
+
+# ---------------------------------------------------------------------------
+# Research lifespan owns one browser connection
+# ---------------------------------------------------------------------------
+
+
+class FakeCrawl4aiCrawler:
+    """Stand-in for crawl4ai.AsyncWebCrawler tracking connection lifetime."""
+
+    started: ClassVar[list[FakeCrawl4aiCrawler]] = []
+    closed: ClassVar[list[FakeCrawl4aiCrawler]] = []
+
+    def __init__(self, config: Any = None):
+        self.config = config
+        self.urls: list[str] = []
+        self.is_open = False
+        FakeCrawl4aiCrawler.started.append(self)
+
+    async def __aenter__(self) -> FakeCrawl4aiCrawler:
+        self.is_open = True
+        return self
+
+    async def __aexit__(self, *_exc: object) -> None:
+        self.is_open = False
+        FakeCrawl4aiCrawler.closed.append(self)
+
+    async def arun(self, url: str, config: Any = None) -> Any:
+        assert self.is_open, "crawler used while closed"
+        self.urls.append(url)
+        return SimpleNamespace(
+            success=True,
+            status_code=200,
+            cleaned_html="<html><body><p>hello world</p></body></html>",
+            error_message="",
+        )
+
+
+async def test_research_lifespan_reuses_one_browser_connection(monkeypatch):
+    monkeypatch.setenv("ROUTER_API_BASE", "http://localhost:4000")
+    monkeypatch.setenv("ROUTER_API_KEY", "sk-test")
+    monkeypatch.delenv("VAULT", raising=False)
+    monkeypatch.setattr(
+        "mcps.research.lifespan.browser_endpoint",
+        _endpoint_stub("ws://127.0.0.1:9222"),
+    )
+    monkeypatch.setattr(
+        "mcps.research.tools.browser.AsyncWebCrawler", FakeCrawl4aiCrawler
+    )
+    FakeCrawl4aiCrawler.started = []
+    FakeCrawl4aiCrawler.closed = []
+
+    lifespan = build_research_lifespan(create_config())
+    async with lifespan(FakeServer()) as ctx:  # type: ignore[arg-type]
+        researcher = ctx["researcher"]
+        fetch = researcher.config.fetch
+        first = await fetch("https://a.example", None)
+        second = await fetch("https://b.example", None)
+        crawler = FakeCrawl4aiCrawler.started[0]
+        assert len(FakeCrawl4aiCrawler.started) == 1
+        assert crawler.is_open
+        assert crawler.urls == ["https://a.example", "https://b.example"]
+
+    assert first and second
+    assert FakeCrawl4aiCrawler.closed == [crawler]
+
+
+async def test_research_lifespan_crawler_failure_hides_web_research(monkeypatch):
+    monkeypatch.setenv("ROUTER_API_BASE", "http://localhost:4000")
+    monkeypatch.setenv("ROUTER_API_KEY", "sk-test")
+    monkeypatch.delenv("VAULT", raising=False)
+    monkeypatch.setattr(
+        "mcps.research.lifespan.browser_endpoint",
+        _endpoint_stub("ws://127.0.0.1:9222"),
+    )
+    monkeypatch.setattr(
+        "mcps.research.lifespan.browser_crawler", _crawler_stub(None)
+    )
+
+    server = FakeServer()
+    lifespan = build_research_lifespan(create_config())
+    async with lifespan(server) as ctx:  # type: ignore[arg-type]
+        assert ctx["researcher"] is None
+
+    assert server.disabled == {"web_research"}
+    assert server.enabled == set()
+
+
+async def test_research_lifespan_closes_crawler_before_local_process(monkeypatch):
+    events: list[str] = []
+    process = FakeProcess()
+
+    class OrderingCrawler(FakeCrawl4aiCrawler):
+        async def __aexit__(self, *_exc: object) -> None:
+            events.append("crawler_close")
+            await super().__aexit__(*_exc)
+
+    async def fake_wait(proc: FakeProcess, probe: Any) -> bool:
+        return True
+
+    monkeypatch.setattr(shutil, "which", lambda _name: "/test-bin/obscura")
+    _install_spawn(monkeypatch, process)
+    monkeypatch.setattr(browser_module, "_wait_for_local", fake_wait)
+    monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
+    monkeypatch.setattr(
+        "mcps.research.tools.browser.AsyncWebCrawler", OrderingCrawler
+    )
+    original_terminate = process.terminate
+
+    def terminate() -> None:
+        events.append("process_terminate")
+        original_terminate()
+
+    monkeypatch.setattr(process, "terminate", terminate)
+    OrderingCrawler.started = []
+    OrderingCrawler.closed = []
+
+    config = create_config()
+    config.browser_cdp_url = ""
+    lifespan = build_research_lifespan(config)
+    async with lifespan(FakeServer()) as ctx:  # type: ignore[arg-type]
+        assert ctx["researcher"] is not None
+
+    assert events[-1] == "process_terminate", events
+    assert "crawler_close" in events
+    assert events.index("crawler_close") < events.index("process_terminate")

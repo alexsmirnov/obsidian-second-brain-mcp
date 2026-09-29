@@ -92,13 +92,13 @@ Contract tests for the LangGraph deep research agent with mocked models and HTTP
 Contract tests for search parsing (Google, DuckDuckGo), site-routed fetching (arXiv, GitHub, default), exact HTTP error codes, and the fallback escalation chain (HTTP mocked with pytest-httpx).
 
 ### [tests/test_research_fallback_fetchers.py](../tests/test_research_fallback_fetchers.py)
-Contract tests for the browser (fake crawl4ai crawler), Scrape.do and Bright Data fallbacks: request shape, target vs. provider error mapping, and fallback assembly from `ServerConfig`.
+Contract tests for the browser (fake crawl4ai crawler), Scrape.do and Bright Data fallbacks: request shape, target vs. provider error mapping, fallback assembly from `ServerConfig`, and crawler connection lifetime (reuse across repeated and overlapping fetches, no replacement on failure, single open/close, startup failure yielding no crawler).
 
 ### [tests/test_fetch_filtering.py](../tests/test_fetch_filtering.py)
 Contract tests for query filtering (BM25 keyword guarantee, LLM filter with mocked completion), Markdown/plain-text to HTML conversion, and absolute link resolution.
 
 ### [tests/test_browser_runtime.py](../tests/test_browser_runtime.py)
-Tests for `browser_endpoint` (configured CDP, local Obscura spawn) and the lifespan enabling/disabling only `web_research`.
+Tests for `browser_endpoint` (configured CDP, local Obscura spawn), the lifespan enabling/disabling only `web_research`, and the research lifespan owning one browser crawler (reused across fetches, closed before the local Obscura process is terminated).
 
 ### [tests/test_web_fetch_evaluation.py](../tests/test_web_fetch_evaluation.py)
 Contract tests for `load_cases` and `summarize` of the fetch evaluation script, including loading the shipped case files.

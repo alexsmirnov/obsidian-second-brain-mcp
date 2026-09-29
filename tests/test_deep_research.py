@@ -271,6 +271,14 @@ class TestToolContract:
         monkeypatch.setattr(
             "mcps.research.lifespan.browser_endpoint", reachable_browser
         )
+
+        @asynccontextmanager
+        async def reachable_crawler(_cdp_url, *, crawler_factory=None):
+            yield object()
+
+        monkeypatch.setattr(
+            "mcps.research.lifespan.browser_crawler", reachable_crawler
+        )
         config = create_config()
         server = create_server(config)
 

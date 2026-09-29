@@ -109,13 +109,13 @@ Iterative deep research StateGraph: query generation, fetching, extraction, refl
 **Used by**: research.agent
 
 ### [src/mcps/research/config.py](../src/mcps/research/config.py) #module
-Research model configuration factory for LangChain chat models and the shared HTTP client.
-**Uses**: config, httpx, langchain_core, langchain_openai, langchain_google_genai, pydantic
+Research model configuration factory for LangChain chat models, the shared HTTP client, and the injected browser crawler.
+**Uses**: config, httpx, langchain_core, langchain_openai, langchain_google_genai, pydantic, research.tools.browser
 **Used by**: research.lifespan
 
 ### [src/mcps/research/lifespan.py](../src/mcps/research/lifespan.py) #module
-FastMCP lifespan handler that creates the shared HTTP client and builds the researcher.
-**Uses**: config, fastmcp, httpx, research.agent, research.config
+FastMCP lifespan handler that creates the shared HTTP client and browser crawler and builds the researcher.
+**Uses**: config, fastmcp, httpx, research.agent, research.config, research.tools.browser
 **Used by**: server
 
 ### [src/mcps/research/tools/](../src/mcps/research/tools/__init__.py) #package
@@ -133,7 +133,7 @@ Async web search and content fetching. `__init__` re-exports `SearchResult`, `Fe
 | `arxiv.py`, `github.py` | Site-specific fetchers (never fall back) |
 | `fetch.py` | `create_fetch`: `async fetch(url, query)`; restricted domains, GitHub/arXiv/PDF routing, browser rendering under a concurrency semaphore, provider fallback on 401/403/429/empty/timeout/browser-unavailable |
 | `filtering.py` | Post-retrieval query filter (`BM25ContentFilter`, or `LLMContentFilter` when `FETCH_MODEL` is set), Markdown-to-HTML conversion, absolute links |
-| `browser.py` | crawl4ai rendering over a CDP browser; `browser_endpoint` connects to `BROWSER_CDP_URL` or spawns a local Obscura |
+| `browser.py` | crawl4ai rendering over a CDP browser; `browser_endpoint` connects to `BROWSER_CDP_URL` or spawns a local Obscura, and `browser_crawler` owns one crawler for the lifespan so fetches never reconnect |
 | `scrape_do.py`, `bright_data.py` | Commercial unblocking fallbacks |
 
 ## Sub-package: mcps.resources

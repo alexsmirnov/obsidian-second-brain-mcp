@@ -12,7 +12,7 @@ import asyncio
 import json
 import logging
 import time
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 from statistics import mean
 
@@ -21,7 +21,7 @@ from dotenv import load_dotenv
 
 from mcps.config import create_config
 from mcps.research.config import create_fetch_tool
-from mcps.research.tools.browser import browser_endpoint
+from mcps.research.tools.browser import browser_crawler, browser_endpoint
 
 CASES_DIR = Path(__file__).parent / "evaluation" / "data"
 
@@ -132,34 +132,36 @@ async def main(argv: list[str] | None = None) -> None:
     rows: list[dict[str, object]] = []
     async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as http_client:
         async with browser_endpoint(server_config.browser_cdp_url) as cdp_url:
-            fetch = create_fetch_tool(
-                config=replace(server_config, browser_cdp_url=cdp_url),
-                http_client=http_client,
-            )
-            for number, case in enumerate(cases, start=1):
-                started = time.perf_counter()
-                content = await fetch(case.url, case.query)
-                elapsed_ms = (time.perf_counter() - started) * 1000
-                logger.info(
-                    "[%d/%d] %s %s: %d chars in %.0f ms",
-                    number,
-                    len(cases),
-                    case.case_id,
-                    case.url,
-                    len(content),
-                    elapsed_ms,
+            async with browser_crawler(cdp_url) as crawler:
+                fetch = create_fetch_tool(
+                    config=server_config,
+                    http_client=http_client,
+                    browser_crawler=crawler,
                 )
-                rows.append(
-                    {
-                        "case_id": case.case_id,
-                        "url": case.url,
-                        "query": case.query,
-                        "response_size": len(content),
-                        "response_time_ms": round(elapsed_ms),
-                        "error": content if content.startswith("ERROR") else None,
-                        "content": content,
-                    }
-                )
+                for number, case in enumerate(cases, start=1):
+                    started = time.perf_counter()
+                    content = await fetch(case.url, case.query)
+                    elapsed_ms = (time.perf_counter() - started) * 1000
+                    logger.info(
+                        "[%d/%d] %s %s: %d chars in %.0f ms",
+                        number,
+                        len(cases),
+                        case.case_id,
+                        case.url,
+                        len(content),
+                        elapsed_ms,
+                    )
+                    rows.append(
+                        {
+                            "case_id": case.case_id,
+                            "url": case.url,
+                            "query": case.query,
+                            "response_size": len(content),
+                            "response_time_ms": round(elapsed_ms),
+                            "error": content if content.startswith("ERROR") else None,
+                            "content": content,
+                        }
+                    )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(
         "".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8"

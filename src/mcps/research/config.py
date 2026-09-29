@@ -27,7 +27,7 @@ from mcps.research.tools import (
     create_google_search,
 )
 from mcps.research.tools.bright_data import create_bright_data_fetch
-from mcps.research.tools.browser import create_browser_fetch
+from mcps.research.tools.browser import Crawler, create_browser_fetch
 from mcps.research.tools.filtering import create_page_filter
 from mcps.research.tools.scrape_do import create_scrape_do_fetch
 
@@ -143,19 +143,20 @@ def _create_provider_fallback(
     return None
 
 
-def _create_browser(config: ServerConfig) -> Retrieve | None:
-    if not config.browser_cdp_url:
-        return None
-    return create_browser_fetch(config.browser_cdp_url)
-
-
 def create_fetch_tool(
-    *, config: ServerConfig, http_client: httpx.AsyncClient
+    *,
+    config: ServerConfig,
+    http_client: httpx.AsyncClient,
+    browser_crawler: Crawler | None = None,
 ) -> Fetch:
-    """Return the web fetch callable with browser, filtering, and fallback."""
+    """Return the web fetch callable with browser, filtering, and fallback.
+
+    ``browser_crawler`` is an already-open crawler owned by the caller; when
+    ``None`` the browser path is disabled and generic pages use plain httpx.
+    """
     return create_fetch(
         http_client=http_client,
-        browser=_create_browser(config),
+        browser=create_browser_fetch(browser_crawler) if browser_crawler else None,
         provider=_create_provider_fallback(config, http_client),
         page_filter=create_page_filter(
             fetch_model=config.fetch_model,
@@ -171,16 +172,19 @@ def build_research_config(
     config: ServerConfig,
     *,
     http_client: httpx.AsyncClient,
+    browser_crawler: Crawler | None = None,
 ) -> ResearchConfig:
     """Build a ResearchConfig using injected ServerConfig and HTTP client.
 
     The FastMCP lifespan is expected to provide a pooled
     ``httpx.AsyncClient``. It is threaded through to models and the
-    HTTP-speaking tools so they reuse a single connection pool.
+    HTTP-speaking tools so they reuse a single connection pool. The lifespan
+    also owns the browser crawler and injects it the same way.
 
     Args:
         config: Populated ServerConfig instance.
         http_client: Shared httpx.AsyncClient for connection pooling.
+        browser_crawler: Open crawl4ai crawler for browser rendering, if any.
     """
     return ResearchConfig(
         fast=_create_chat_model(
@@ -196,5 +200,9 @@ def build_research_config(
             http_client=http_client,
         ),
         search=create_search_tool(config=config, http_client=http_client),
-        fetch=create_fetch_tool(config=config, http_client=http_client),
+        fetch=create_fetch_tool(
+            config=config,
+            http_client=http_client,
+            browser_crawler=browser_crawler,
+        ),
     )

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
@@ -15,7 +16,7 @@ from pytest_httpx import HTTPXMock
 from mcps.config import ServerConfig
 from mcps.research.config import create_fetch_tool
 from mcps.research.tools.bright_data import create_bright_data_fetch
-from mcps.research.tools.browser import create_browser_fetch
+from mcps.research.tools.browser import browser_crawler, create_browser_fetch
 from mcps.research.tools.scrape_do import create_scrape_do_fetch
 
 TARGET = "https://blocked.example/article"
@@ -34,23 +35,47 @@ async def client() -> AsyncIterator[httpx.AsyncClient]:
 
 @dataclass
 class FakeCrawler:
-    """Async-context crawler stub returning a canned crawl result."""
+    """Crawler stub over a connection that can be opened/closed."""
 
     result: Any = None
     error: Exception | None = None
+    open: bool = True
+    opens: int = 0
+    closes: int = 0
     urls: list[str] = field(default_factory=list)
+    configs: list[Any] = field(default_factory=list)
 
-    async def __aenter__(self) -> FakeCrawler:
+    async def arun(self, url: str, config: Any = None, **_kwargs: Any) -> Any:
+        if not self.open:
+            raise RuntimeError("crawler used while its connection is closed")
+        self.urls.append(url)
+        self.configs.append(config)
         if self.error is not None:
             raise self.error
-        return self
-
-    async def __aexit__(self, *_exc: object) -> None:
-        return None
-
-    async def arun(self, url: str, **_kwargs: Any) -> Any:
-        self.urls.append(url)
         return self.result
+
+
+@dataclass
+class FakeCrawlerContext:
+    """Async context manager starting and closing a :class:`FakeCrawler`."""
+
+    crawler: FakeCrawler
+    enter_error: Exception | None = None
+    entered: bool = False
+    exited: bool = False
+
+    async def __aenter__(self) -> FakeCrawler:
+        if self.enter_error is not None:
+            raise self.enter_error
+        self.entered = True
+        self.crawler.open = True
+        self.crawler.opens += 1
+        return self.crawler
+
+    async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        self.exited = True
+        self.crawler.open = False
+        self.crawler.closes += 1
 
 
 def crawl_result(
@@ -67,9 +92,26 @@ def crawl_result(
     )
 
 
+class GatedCrawler:
+    """Crawler whose per-URL waits overlap until released, recording configs."""
+
+    def __init__(self, gates: dict[str, asyncio.Event]):
+        self.gates = gates
+        self.entered = {url: asyncio.Event() for url in gates}
+        self.configs: list[Any] = []
+
+    async def arun(self, url: str, config: Any = None, **_kwargs: Any) -> Any:
+        config.url = url
+        self.configs.append(config)
+        self.entered[url].set()
+        async with asyncio.timeout(5):
+            await self.gates[url].wait()
+        return crawl_result(cleaned_html=f"<h1>{config.url}</h1>")
+
+
 async def test_browser_fetch_returns_cleaned_html():
     crawler = FakeCrawler(result=crawl_result(cleaned_html="<h1>Rendered</h1>"))
-    fetch = create_browser_fetch("ws://cdp", crawler_factory=lambda: crawler)
+    fetch = create_browser_fetch(crawler)
 
     result = await fetch(TARGET)
 
@@ -87,16 +129,14 @@ async def test_browser_fetch_returns_cleaned_html():
     ],
 )
 async def test_browser_fetch_maps_crawl_outcomes(result: Any, expected: str):
-    fetch = create_browser_fetch(
-        "ws://cdp", crawler_factory=lambda: FakeCrawler(result=result)
-    )
+    fetch = create_browser_fetch(FakeCrawler(result=result))
 
     assert await fetch(TARGET) == expected
 
 
-async def test_browser_fetch_connection_failure_is_unavailable():
+async def test_browser_fetch_crawl_failure_is_unavailable():
     crawler = FakeCrawler(error=ConnectionError("cdp down"))
-    fetch = create_browser_fetch("ws://cdp", crawler_factory=lambda: crawler)
+    fetch = create_browser_fetch(crawler)
 
     assert await fetch(TARGET) == "ERROR: fetcher unavailable"
 
@@ -111,10 +151,131 @@ async def test_browser_fetch_connection_failure_is_unavailable():
 async def test_browser_fetch_blank_cleaned_html_is_empty(
     cleaned_html: str, expected: str
 ):
-    crawler = FakeCrawler(result=crawl_result(cleaned_html=cleaned_html))
-    fetch = create_browser_fetch("ws://cdp", crawler_factory=lambda: crawler)
+    fetch = create_browser_fetch(
+        FakeCrawler(result=crawl_result(cleaned_html=cleaned_html))
+    )
 
     assert await fetch(TARGET) == expected
+
+
+# ---------------------------------------------------------------------------
+# Browser crawler connection lifetime
+# ---------------------------------------------------------------------------
+
+
+async def test_browser_fetch_repeated_requests_reuse_open_connection():
+    crawler = FakeCrawler(result=crawl_result(cleaned_html="<h1>X</h1>"))
+    context = FakeCrawlerContext(crawler)
+
+    async with browser_crawler(
+        "ws://cdp", crawler_factory=lambda: context
+    ) as open_crawler:
+        assert open_crawler is not None
+        assert open_crawler is crawler
+        fetch = create_browser_fetch(open_crawler)
+        first = await fetch("https://a.example")
+        second = await fetch("https://b.example")
+        assert crawler.opens == 1 and crawler.closes == 0 and crawler.open
+
+    assert first == second == "<h1>X</h1>"
+    assert crawler.urls == ["https://a.example", "https://b.example"]
+    assert crawler.closes == 1 and crawler.open is False
+
+
+async def test_browser_fetch_overlapping_requests_share_connection():
+    gates = {"https://a.example": asyncio.Event(), "https://b.example": asyncio.Event()}
+    crawler = GatedCrawler(gates)
+    fetch = create_browser_fetch(crawler)
+
+    tasks = [asyncio.ensure_future(fetch(url)) for url in gates]
+    async with asyncio.timeout(5):
+        await asyncio.gather(*(crawler.entered[url].wait() for url in gates))
+    assert len(crawler.configs) == 2
+    assert crawler.configs[0] is not crawler.configs[1]
+    for gate in gates.values():
+        gate.set()
+    results = await asyncio.gather(*tasks)
+
+    assert results == ["<h1>https://a.example</h1>", "<h1>https://b.example</h1>"]
+
+
+async def test_browser_fetch_failure_keeps_connection_for_next_request():
+    crawler = FakeCrawler(error=ConnectionError("cdp hiccup"))
+    context = FakeCrawlerContext(crawler)
+
+    async with browser_crawler(
+        "ws://cdp", crawler_factory=lambda: context
+    ) as open_crawler:
+        assert open_crawler is not None
+        fetch = create_browser_fetch(open_crawler)
+        assert await fetch("https://a.example") == "ERROR: fetcher unavailable"
+        crawler.error = None
+        crawler.result = crawl_result(cleaned_html="<h1>Recovered</h1>")
+        assert await fetch("https://b.example") == "<h1>Recovered</h1>"
+        assert crawler.opens == 1 and crawler.closes == 0
+
+    assert crawler.closes == 1
+
+
+def _entering_failure() -> FakeCrawlerContext:
+    return FakeCrawlerContext(FakeCrawler(), enter_error=ConnectionError("cdp down"))
+
+
+def _constructing_failure() -> FakeCrawlerContext:
+    raise ConnectionError("bad config")
+
+
+def _missing_endpoint_factory() -> FakeCrawlerContext:
+    raise AssertionError("factory must not be called without a CDP URL")
+
+
+@pytest.mark.parametrize(
+    "factory",
+    [
+        pytest.param(_entering_failure, id="enter"),
+        pytest.param(_constructing_failure, id="construct"),
+    ],
+)
+async def test_browser_crawler_startup_failure_yields_none(factory: Any):
+    async with browser_crawler("ws://cdp", crawler_factory=factory) as crawler:
+        assert crawler is None
+
+
+async def test_browser_crawler_without_endpoint_opens_no_connection():
+    async with browser_crawler(
+        None, crawler_factory=_missing_endpoint_factory
+    ) as crawler:
+        assert crawler is None
+
+
+async def test_browser_crawler_exceptional_exit_closes_connection():
+    crawler = FakeCrawler()
+    context = FakeCrawlerContext(crawler)
+
+    with pytest.raises(ValueError, match="body boom"):
+        async with browser_crawler("ws://cdp", crawler_factory=lambda: context):
+            raise ValueError("body boom")
+
+    assert context.exited and crawler.open is False and crawler.closes == 1
+
+
+async def test_browser_crawler_cancellation_closes_connection():
+    crawler = FakeCrawler()
+    context = FakeCrawlerContext(crawler)
+    entered = asyncio.Event()
+
+    async def consume() -> None:
+        async with browser_crawler("ws://cdp", crawler_factory=lambda: context):
+            entered.set()
+            await asyncio.Event().wait()
+
+    task = asyncio.create_task(consume())
+    await entered.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert context.exited and crawler.open is False and crawler.closes == 1
 
 
 # ---------------------------------------------------------------------------
