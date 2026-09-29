@@ -208,19 +208,19 @@ Google Custom Search Engine ID. Required only when `GOOGLE_API_KEY` is set.
 **Environment**: `GOOGLE_SEARCH_ID`
 **Used by**: [src/mcps/config.py](../src/mcps/config.py), [src/mcps/research/tools/google.py](../src/mcps/research/tools/google.py)
 
-### Web Fetch Fallbacks
+### Web Fetch
 
-When a direct fetch returns `ERROR: http code 401|403|429` or `ERROR: empty response`, the fetch tool escalates to the configured fallbacks in order: browser, then commercial provider. A fallback that cannot run (browser unreachable, provider out of credits) is skipped and the target's original error is kept. Misconfigured fallbacks log a warning and are disabled; the server still starts.
+`fetch(url, query)` routing: restricted domains return `""` without I/O; GitHub and arXiv use specialized fetchers (no fallback); `.pdf` paths use the httpx + PyMuPDF extractor; all other URLs render in the CDP browser via crawl4ai. With a nonblank query the result is filtered to query-relevant Markdown (links absolute) and truncated to 15,000 chars. When the browser or PDF result is 401/403/429, empty, timeout, or browser-unavailable, the configured `SCRAPER_PROVIDER` is used; if the provider is unavailable the original error is kept.
 
 #### `browser_cdp_url` #config
-CDP endpoint of an externally running browser (e.g. Obscura, Chrome with `--remote-debugging-port`). Pages are rendered through crawl4ai. Requires the optional extra `uv sync --extra browser`.
+CDP endpoint of a running browser (e.g. `ws://127.0.0.1:9222`). Must be unauthenticated. If unset or unreachable (10 s), the server starts `obscura serve --stealth --allow-private-network` from `PATH` and connects to `ws://127.0.0.1:9222` (30 s). If neither works, only the `web_research` tool is disabled.
 **Type**: str
-**Default**: `""` (disabled)
+**Default**: `""`
 **Environment**: `BROWSER_CDP_URL`
 **Used by**: [src/mcps/research/config.py](../src/mcps/research/config.py), [src/mcps/research/tools/browser.py](../src/mcps/research/tools/browser.py)
 
 #### `scraper_provider` #config
-Commercial unblocking provider used after the browser: `scrape_do`, `bright_data`, or empty.
+Commercial unblocking provider used for blocked, empty, timed-out, or browser-unavailable pages: `scrape_do`, `bright_data`, or empty.
 **Type**: str
 **Default**: `""` (disabled)
 **Environment**: `SCRAPER_PROVIDER`
@@ -239,6 +239,27 @@ Bright Data API key and Web Unlocker zone name. Both required when `SCRAPER_PROV
 **Default**: `""`
 **Environment**: `BRIGHT_DATA_API_KEY`, `BRIGHT_DATA_ZONE`
 **Used by**: [src/mcps/research/tools/bright_data.py](../src/mcps/research/tools/bright_data.py)
+
+#### `fetch_model` #config
+Model for crawl4ai `LLMContentFilter` (via the router). Empty selects `BM25ContentFilter`.
+**Type**: str
+**Default**: `""`
+**Environment**: `FETCH_MODEL`
+**Used by**: [src/mcps/research/config.py](../src/mcps/research/config.py), [src/mcps/research/tools/filtering.py](../src/mcps/research/tools/filtering.py)
+
+#### `fetch_restricted_domains` #config
+Comma-separated hostnames; the hostname itself and its subdomains are never fetched (result `""`).
+**Type**: tuple[str, ...]
+**Default**: `()`
+**Environment**: `FETCH_RESTRICTED_DOMAINS`
+**Used by**: [src/mcps/research/tools/fetch.py](../src/mcps/research/tools/fetch.py)
+
+#### `fetch_concurrency` #config
+Maximum concurrent browser fetches across all research branches.
+**Type**: int
+**Default**: `2`
+**Environment**: `FETCH_CONCURRENCY`
+**Used by**: [src/mcps/research/tools/fetch.py](../src/mcps/research/tools/fetch.py)
 
 ## Environment File Loading
 

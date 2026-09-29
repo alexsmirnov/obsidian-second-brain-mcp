@@ -211,6 +211,12 @@ docker build -t mcps:local .
 docker run --rm --env-file .env -e VAULT=/vault -v <host-vault-path>:/vault -p 8000:8000 mcps:local
 ```
 
+**Compose** [docker-compose.yaml](../docker-compose.yaml) runs an Obscura `browser` container and the `mcps` container in one shared network namespace (`network_mode: "service:browser"`):
+- Obscura serves CDP on `127.0.0.1:9222`; `mcps` reaches it over loopback via `BROWSER_CDP_URL=ws://127.0.0.1:9222`, so CDP is never exposed to the host network (no CDP auth is used; a remote `BROWSER_CDP_URL` must be unauthenticated).
+- The MCP port is published as `127.0.0.1:8000:8000` on the `browser` service because of the shared namespace.
+- `.env` is optional; `VAULT` is empty by default (no vault tools). If the browser is unreachable at startup, only `web_research` is disabled.
+- Run: `docker compose up -d --build`.
+
 **`.dockerignore`** [.dockerignore:1](../.dockerignore) excludes VCS metadata, `.venv`, Python/test caches, and local tool/agent config directories from the build context.
 
 ## Logging Configuration

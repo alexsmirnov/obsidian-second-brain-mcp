@@ -79,10 +79,10 @@ Shared async HTTP client for model router and web requests.
 **Version**: `>=0.28.0`
 **Used by**: [src/mcps/server.py:7](../src/mcps/server.py#L7), [src/mcps/tools/obsidian_vault.py:9](../src/mcps/tools/obsidian_vault.py#L9), [src/mcps/research/tools/](../src/mcps/research/tools/common.py)
 
-### crawl4ai (optional extra `browser`)
-Renders blocked/JS-heavy pages in an external browser over CDP (`BROWSER_CDP_URL`). Install with `uv sync --extra browser`; when absent the browser fallback is disabled with a warning.
+### crawl4ai
+Mandatory dependency. Renders generic pages in a CDP browser (Obscura) and provides `BM25ContentFilter` / `LLMContentFilter` and the HTML-to-Markdown generator used for query-relevant filtering.
 **Version**: `>=0.7`
-**Used by**: [src/mcps/research/tools/browser.py](../src/mcps/research/tools/browser.py)
+**Used by**: [src/mcps/research/tools/browser.py](../src/mcps/research/tools/browser.py), [src/mcps/research/tools/filtering.py](../src/mcps/research/tools/filtering.py)
 
 ### pydantic
 Data validation and modeling.

@@ -1,0 +1,26 @@
+# Obscura CDP browser + MCP server fleet.
+#
+# The two services share one network namespace: Obscura binds CDP on
+# 127.0.0.1:9222 and the MCP container reaches it over loopback, so CDP is
+# never exposed outside the host. The MCP port is published on the browser
+# service because of `network_mode: service:browser`.
+services:
+  browser:
+    image: h4ckf0r0day/obscura:0.2.3@sha256:475def3ddf1ec513b3d1bc36e8ad15f0d192538cb15f814c77215aa70c418ca2
+    command: ["serve", "--stealth", "--allow-private-network"]
+    ports:
+      - "127.0.0.1:8000:8000"
+    restart: unless-stopped
+
+  mcps:
+    build: .
+    network_mode: "service:browser"
+    depends_on:
+      - browser
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      BROWSER_CDP_URL: "ws://127.0.0.1:9222"
+      VAULT: ""
+    restart: unless-stopped

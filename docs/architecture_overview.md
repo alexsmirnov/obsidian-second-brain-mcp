@@ -152,7 +152,7 @@ The RAG pipeline in [src/mcps/rag/vault.py:252-556](../src/mcps/rag/vault.py#L25
 
 ### Registered Tools
 
-**web_research** [src/mcps/server.py:110-118](../src/mcps/server.py#L110-L118) - Always registered. Runs the LangGraph deep-research agent through the shared lifespan context `researcher`.
+**web_research** [src/mcps/server.py:110-118](../src/mcps/server.py#L110-L118) - Registered, but enabled by the research lifespan only when a CDP browser is available (`BROWSER_CDP_URL`, else a local `obscura serve`); otherwise it is disabled while other tools stay available. Runs the LangGraph deep-research agent through the shared lifespan context `researcher`.
 
 **ObsidianTools** [src/mcps/tools/obsidian_vault.py:208-244](../src/mcps/tools/obsidian_vault.py#L208-L244) - Registered only when `config.vault_dir` is set:
 - `obsidian_list_files` - List files and subfolders in a vault folder
