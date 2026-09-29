@@ -68,7 +68,7 @@ asyncio_default_fixture_loop_scope = "function"
 where = ["src","tests"]
 
 [tool.pyright]
-include = ["src"]
+include = ["src","tests"]
 exclude = ["**/node_modules", "**/__pycache__",".*", ".venv"]
 defineConstant = { DEBUG = true }
 typeCheckingMode = "basic"

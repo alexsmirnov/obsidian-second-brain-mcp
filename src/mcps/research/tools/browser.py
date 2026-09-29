@@ -1,7 +1,4 @@
 """Fallback fetcher rendering pages in an external browser over CDP (crawl4ai).
-
-crawl4ai is an optional extra (``uv sync --extra browser``); when it is not
-installed ``CRAWL4AI_AVAILABLE`` is False and the caller skips this fetcher.
 """
 
 from __future__ import annotations
@@ -12,8 +9,9 @@ import shutil
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import Any, AsyncGenerator
 
+from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig
 from mcps.research.tools.common import (
     ERROR_EMPTY_RESPONSE,
     ERROR_FETCHER_UNAVAILABLE,
@@ -21,15 +19,7 @@ from mcps.research.tools.common import (
     http_status_error,
 )
 
-try:
-    from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig
-
-    CRAWL4AI_AVAILABLE = True
-except ImportError:  # optional extra not installed
-    CRAWL4AI_AVAILABLE = False
-
 __all__ = [
-    "CRAWL4AI_AVAILABLE",
     "LOCAL_CDP_URL",
     "browser_endpoint",
     "create_browser_fetch",
@@ -80,16 +70,16 @@ def create_browser_fetch(
 ) -> Retrieve:
     """Create a callable rendering pages to cleaned HTML in the CDP browser."""
     factory = crawler_factory or _default_crawler_factory(cdp_url)
-    run_config = CrawlerRunConfig(verbose=False) if CRAWL4AI_AVAILABLE else None
+    run_config = CrawlerRunConfig(verbose=False)
 
     async def fetch(url: str) -> str:
         try:
             async with factory() as crawler:
                 crawl = await crawler.arun(url, config=run_config)
+            return _to_fetch_result(url, crawl)
         except Exception as error:
             logger.warning("Browser fetch unavailable for %s: %r", url, error)
             return ERROR_FETCHER_UNAVAILABLE
-        return _to_fetch_result(url, crawl)
 
     return fetch
 
@@ -139,7 +129,7 @@ async def browser_endpoint(
     cdp_url: str,
     *,
     probe: Callable[[str], Awaitable[bool]] = probe_cdp,
-) -> AsyncIterator[str | None]:
+) -> AsyncGenerator[str | None]:
     """Yield a reachable CDP URL, starting a local Obscura if needed.
 
     Prefers a configured ``cdp_url`` (probed within ``REMOTE_CONNECT_SECONDS``).

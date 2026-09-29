@@ -27,7 +27,7 @@ from mcps.research.tools import (
     create_google_search,
 )
 from mcps.research.tools.bright_data import create_bright_data_fetch
-from mcps.research.tools.browser import CRAWL4AI_AVAILABLE, create_browser_fetch
+from mcps.research.tools.browser import create_browser_fetch
 from mcps.research.tools.filtering import create_page_filter
 from mcps.research.tools.scrape_do import create_scrape_do_fetch
 
@@ -145,12 +145,6 @@ def _create_provider_fallback(
 
 def _create_browser(config: ServerConfig) -> Retrieve | None:
     if not config.browser_cdp_url:
-        return None
-    if not CRAWL4AI_AVAILABLE:
-        logger.warning(
-            "BROWSER_CDP_URL is set but crawl4ai is not installed; "
-            "browser fetch disabled."
-        )
         return None
     return create_browser_fetch(config.browser_cdp_url)
 
