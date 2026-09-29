@@ -393,7 +393,7 @@ class ResearchAgent:
         # If query is a direct URL, fetch it directly and clean up without searching
         if _is_valid_url(query):
             logger.info("Direct URL fetch for query: %s", query)
-            fetch_result = await self.config.fetch(query)
+            fetch_result = await self.config.fetch(query, None)
             cleaned = await self.clean_result(
                 results=[SearchResult(url=query, title="", snippet="")],
                 fetch_results=[fetch_result],
@@ -410,7 +410,7 @@ class ResearchAgent:
             return {
                 "web_results": [f"Web search query: {query}\nNo results found."],
             }
-        fetch_tasks = [self.config.fetch(result.url) for result in results]
+        fetch_tasks = [self.config.fetch(result.url, None) for result in results]
         fetch_results = await asyncio.gather(*fetch_tasks)
         logger.info("Web search result: %d", len(fetch_results))
         question = state['original_question']

@@ -12,9 +12,11 @@ __all__ = [
     "CHROME_HEADERS",
     "ERROR_EMPTY_RESPONSE",
     "ERROR_FETCHER_UNAVAILABLE",
+    "ERROR_FILTERING",
     "ERROR_REQUEST_TIMEOUT",
     "ERROR_UNSUPPORTED_CONTENT",
     "Fetch",
+    "Retrieve",
     "extract_hostname",
     "format_source_output",
     "http_status_error",
@@ -25,7 +27,9 @@ __all__ = [
 
 logger = logging.getLogger(__file__)
 
-Fetch = Callable[[str], Awaitable[str]]
+Fetch = Callable[[str, str | None], Awaitable[str]]
+# A single-URL source callable (browser render or commercial provider).
+Retrieve = Callable[[str], Awaitable[str]]
 
 # Collected from actual Chrome request headers
 CHROME_HEADERS = {
@@ -63,6 +67,8 @@ ERROR_EMPTY_RESPONSE = "ERROR: empty response"
 # A fallback fetcher could not run (browser down, provider out of credits).
 # Says nothing about the target page, so the chain keeps the previous error.
 ERROR_FETCHER_UNAVAILABLE = "ERROR: fetcher unavailable"
+# The post-retrieval content filter itself failed (not the target page).
+ERROR_FILTERING = "ERROR: content filtering failed"
 
 # Blocked, auth-walled, rate-limited, or JS-rendered (empty) pages: a
 # browser or unblocking provider may succeed where plain httpx did not.
@@ -75,8 +81,12 @@ def http_status_error(status_code: int) -> str:
 
 
 _ESCALATABLE_ERRORS = frozenset(
-    [*(http_status_error(code) for code in _ESCALATABLE_STATUS_CODES),
-     ERROR_EMPTY_RESPONSE]
+    [
+        *(http_status_error(code) for code in _ESCALATABLE_STATUS_CODES),
+        ERROR_EMPTY_RESPONSE,
+        ERROR_REQUEST_TIMEOUT,
+        ERROR_FETCHER_UNAVAILABLE,
+    ]
 )
 
 

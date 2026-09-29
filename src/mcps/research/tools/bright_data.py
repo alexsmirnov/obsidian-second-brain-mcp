@@ -9,7 +9,7 @@ import httpx
 from mcps.research.tools.common import (
     ERROR_EMPTY_RESPONSE,
     ERROR_FETCHER_UNAVAILABLE,
-    Fetch,
+    Retrieve,
     format_source_output,
     http_status_error,
 )
@@ -50,7 +50,7 @@ def create_bright_data_fetch(
     http_client: httpx.AsyncClient,
     max_chars: int = 15000,
     api_url: str = BRIGHT_DATA_URL,
-) -> Fetch:
+) -> Retrieve:
     """Create a fetch callable routing requests through a Web Unlocker zone."""
     headers = {"Authorization": f"Bearer {api_key}"}
 

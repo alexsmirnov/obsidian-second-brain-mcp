@@ -1,9 +1,11 @@
-"""Fetch callable: site-specific routing with an escalation fallback chain."""
+"""Fetch callable: site routing, restrictions, browser render, fallback."""
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Awaitable, Callable, Sequence
+from urllib.parse import urlparse
 
 import httpx
 
@@ -12,18 +14,23 @@ from mcps.research.tools.common import (
     ERROR_FETCHER_UNAVAILABLE,
     ERROR_UNSUPPORTED_CONTENT,
     Fetch,
+    Retrieve,
+    format_source_output,
     is_escalatable,
     to_error_message,
 )
 from mcps.research.tools.default import fetch_default
+from mcps.research.tools.filtering import (
+    PageFilter,
+    markdown_to_html,
+    text_page_to_html,
+)
 from mcps.research.tools.github import (
     fetch_github_blob,
     fetch_github_repo,
     is_github_blob_url,
     is_github_repo_url,
 )
-from mcps.research.tools.reddit import fetch_reddit, is_reddit_url
-from mcps.research.tools.wikipedia import fetch_wikipedia, is_wikipedia_url
 
 __all__ = ["create_fetch"]
 
@@ -31,27 +38,24 @@ logger = logging.getLogger(__file__)
 
 SiteFetcher = Callable[..., Awaitable[str]]
 
-# First matching predicate wins; fetch_default handles everything else.
-_SITE_ROUTES: tuple[tuple[Callable[[str], bool], SiteFetcher], ...] = (
+# GitHub and arXiv keep their specialized HTTP fetcher and never fall back.
+_SPECIALIZED_ROUTES: tuple[tuple[Callable[[str], bool], SiteFetcher], ...] = (
     (is_arxiv_url, fetch_arxiv),
-    (is_wikipedia_url, fetch_wikipedia),
-    (is_reddit_url, fetch_reddit),
     (is_github_blob_url, fetch_github_blob),
     (is_github_repo_url, fetch_github_repo),
 )
 
-
-def _select_fetcher(url: str) -> SiteFetcher:
-    return next(
-        (fetcher for matches, fetcher in _SITE_ROUTES if matches(url)),
-        fetch_default,
-    )
+# Intermediate content is not truncated: the caller filters, then truncates.
+_NO_TRUNCATION = 10**9
 
 
-async def _fetch_direct(
-    url: str, *, http_client: httpx.AsyncClient | None, max_chars: int
+async def _call_fetcher(
+    fetcher: SiteFetcher,
+    url: str,
+    *,
+    http_client: httpx.AsyncClient | None,
+    max_chars: int,
 ) -> str:
-    fetcher = _select_fetcher(url)
     try:
         return await fetcher(url, http_client=http_client, max_chars=max_chars)
     except httpx.HTTPError as error:
@@ -62,29 +66,80 @@ async def _fetch_direct(
     return message
 
 
+def _is_restricted(url: str, domains: Sequence[str]) -> bool:
+    """True when the hostname equals or is a subdomain of a blocked domain."""
+    hostname = urlparse(url).hostname or ""
+    return any(
+        hostname == domain or hostname.endswith(f".{domain}") for domain in domains
+    )
+
+
 def create_fetch(
     *,
     http_client: httpx.AsyncClient | None = None,
+    browser: Retrieve | None = None,
+    provider: Retrieve | None = None,
+    page_filter: PageFilter,
+    restricted_domains: Sequence[str] = (),
+    concurrency: int = 2,
     max_chars: int = 15000,
-    fallbacks: Sequence[Fetch] = (),
 ) -> Fetch:
-    """Create an async webpage fetch callable with markdown extraction.
+    """Create an async page fetch returning query-relevant Markdown.
 
-    When the direct fetch is blocked (401/403/429) or returns an empty
-    page, each fallback is tried in order until one yields a result that
-    is not escalatable. A fallback reporting itself unavailable is skipped
-    and keeps the previous result, so the caller sees the target's error.
+    A restricted host returns ``""`` without I/O. GitHub/arXiv use their
+    specialized fetcher and never fall back. ``.pdf`` and (when no browser is
+    available) every other URL use the httpx extractor; all remaining URLs are
+    rendered in the CDP browser. Every successful source is filtered by
+    ``page_filter`` and truncated. A blocked, empty, timed-out, or
+    browser-unavailable result escalates once to ``provider`` when configured.
+    Concurrent browser renders are capped at ``concurrency``.
     """
+    semaphore = asyncio.Semaphore(concurrency)
 
-    async def fetch(url: str) -> str:
-        result = await _fetch_direct(url, http_client=http_client, max_chars=max_chars)
-        for fallback in fallbacks:
-            if not is_escalatable(result):
-                break
+    async def _filter(html: str, url: str, query: str | None) -> str:
+        return format_source_output(url, await page_filter(html, url, query), max_chars)
+
+    async def _filter_markdown(markdown: str, url: str, query: str | None) -> str:
+        return await _filter(markdown_to_html(markdown), url, query)
+
+    async def fetch(url: str, query: str | None = None) -> str:
+        if _is_restricted(url, restricted_domains):
+            return ""
+
+        fetcher = next(
+            (route for matches, route in _SPECIALIZED_ROUTES if matches(url)), None
+        )
+        if fetcher is not None:
+            result = await _call_fetcher(
+                fetcher, url, http_client=http_client, max_chars=_NO_TRUNCATION
+            )
+            if result.startswith("ERROR"):
+                return result
+            return await _filter_markdown(result, url, query)
+
+        is_pdf = urlparse(url).path.lower().endswith(".pdf")
+        if browser is None or is_pdf:
+            result = await _call_fetcher(
+                fetch_default, url, http_client=http_client, max_chars=_NO_TRUNCATION
+            )
+            if not result.startswith("ERROR"):
+                result = await _filter_markdown(result, url, query)
+        else:
+            async with semaphore:
+                rendered = await browser(url)
+            if rendered.startswith("ERROR"):
+                result = rendered
+            else:
+                result = await _filter(text_page_to_html(rendered), url, query)
+
+        if provider is not None and is_escalatable(result):
             logger.info("Escalating %s after %s", url, result)
-            candidate = await fallback(url)
+            candidate = await provider(url)
             if candidate != ERROR_FETCHER_UNAVAILABLE:
-                result = candidate
+                if candidate.startswith("ERROR"):
+                    result = candidate
+                else:
+                    result = await _filter_markdown(candidate, url, query)
         return result
 
     return fetch

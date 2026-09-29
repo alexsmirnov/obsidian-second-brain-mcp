@@ -247,14 +247,26 @@ class TestProgressReporterContract:
 class TestToolContract:
     @pytest.mark.asyncio
     async def test_tool_is_registered(self, monkeypatch):
-        """aiswe_research tool appears in server's registered tools."""
+        """web_research tool appears in the server's registered tools."""
+        from contextlib import asynccontextmanager
+
+        from fastmcp import Client
+
         from mcps.server import create_server
+
+        @asynccontextmanager
+        async def reachable_browser(_cdp_url, *, probe=None):
+            yield "ws://127.0.0.1:9222"
 
         monkeypatch.setenv("ROUTER_API_BASE", "http://localhost:4000")
         monkeypatch.setenv("ROUTER_API_KEY", "sk-test")
+        monkeypatch.delenv("VAULT", raising=False)
+        monkeypatch.setattr(
+            "mcps.research.lifespan.browser_endpoint", reachable_browser
+        )
         config = create_config()
         server = create_server(config)
 
-        tools = await server.mcp.list_tools()
-        tool_names = [t.name for t in tools]
-        assert "web_research" in tool_names
+        async with Client(server.mcp) as client:
+            tools = await client.list_tools()
+        assert "web_research" in [t.name for t in tools]

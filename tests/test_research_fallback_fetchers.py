@@ -13,9 +13,9 @@ import pytest
 from pytest_httpx import HTTPXMock
 
 from mcps.config import ServerConfig
-from mcps.research.config import create_fetch_fallbacks, create_fetch_tool
-from mcps.research.tools.browser import create_browser_fetch
+from mcps.research.config import create_fetch_tool
 from mcps.research.tools.bright_data import create_bright_data_fetch
+from mcps.research.tools.browser import create_browser_fetch
 from mcps.research.tools.scrape_do import create_scrape_do_fetch
 
 TARGET = "https://blocked.example/article"
@@ -54,41 +54,35 @@ class FakeCrawler:
 
 
 def crawl_result(
-    *, success: bool = True, status_code: int | None = 200, markdown: str = ""
+    *,
+    success: bool = True,
+    status_code: int | None = 200,
+    cleaned_html: str = "",
 ) -> SimpleNamespace:
     return SimpleNamespace(
         success=success,
         status_code=status_code,
-        markdown=SimpleNamespace(raw_markdown=markdown),
+        cleaned_html=cleaned_html,
         error_message="" if success else "boom",
     )
 
 
-async def test_browser_fetch_returns_rendered_markdown():
-    crawler = FakeCrawler(result=crawl_result(markdown="# Rendered"))
+async def test_browser_fetch_returns_cleaned_html():
+    crawler = FakeCrawler(result=crawl_result(cleaned_html="<h1>Rendered</h1>"))
     fetch = create_browser_fetch("ws://cdp", crawler_factory=lambda: crawler)
 
     result = await fetch(TARGET)
 
-    assert result == "# Rendered"
+    assert result == "<h1>Rendered</h1>"
     assert crawler.urls == [TARGET]
-
-
-async def test_browser_fetch_truncates_to_max_chars():
-    crawler = FakeCrawler(result=crawl_result(markdown="y" * 20))
-    fetch = create_browser_fetch(
-        "ws://cdp", max_chars=5, crawler_factory=lambda: crawler
-    )
-
-    assert await fetch(TARGET) == "yyyyy\n\n[Content truncated]"
 
 
 @pytest.mark.parametrize(
     ("result", "expected"),
     [
-        (crawl_result(status_code=403, markdown="Access denied"), "ERROR: http code 403"),
-        (crawl_result(status_code=404, markdown="Not found"), "ERROR: http code 404"),
-        (crawl_result(markdown="   "), "ERROR: empty response"),
+        (crawl_result(status_code=403, cleaned_html="denied"), "ERROR: http code 403"),
+        (crawl_result(status_code=404, cleaned_html="gone"), "ERROR: http code 404"),
+        (crawl_result(cleaned_html="   "), "ERROR: empty response"),
         (crawl_result(success=False, status_code=None), "ERROR: fetcher unavailable"),
     ],
 )
@@ -105,6 +99,22 @@ async def test_browser_fetch_connection_failure_is_unavailable():
     fetch = create_browser_fetch("ws://cdp", crawler_factory=lambda: crawler)
 
     assert await fetch(TARGET) == "ERROR: fetcher unavailable"
+
+
+@pytest.mark.parametrize(
+    ("cleaned_html", "expected"),
+    [
+        ("", "ERROR: empty response"),
+        ("   ", "ERROR: empty response"),
+    ],
+)
+async def test_browser_fetch_blank_cleaned_html_is_empty(
+    cleaned_html: str, expected: str
+):
+    crawler = FakeCrawler(result=crawl_result(cleaned_html=cleaned_html))
+    fetch = create_browser_fetch("ws://cdp", crawler_factory=lambda: crawler)
+
+    assert await fetch(TARGET) == expected
 
 
 # ---------------------------------------------------------------------------
@@ -223,41 +233,6 @@ async def test_bright_data_maps_outcomes(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    ("config", "expected_count"),
-    [
-        (ServerConfig(), 0),
-        (ServerConfig(browser_cdp_url="ws://cdp:9222"), 1),
-        (ServerConfig(scraper_provider="scrape_do", scrape_do_token="t"), 1),
-        (
-            ServerConfig(
-                scraper_provider="bright_data",
-                bright_data_api_key="k",
-                bright_data_zone="z",
-            ),
-            1,
-        ),
-        (
-            ServerConfig(
-                browser_cdp_url="ws://cdp:9222",
-                scraper_provider="scrape_do",
-                scrape_do_token="t",
-            ),
-            2,
-        ),
-        (ServerConfig(scraper_provider="scrape_do"), 0),
-        (ServerConfig(scraper_provider="bright_data", bright_data_api_key="k"), 0),
-        (ServerConfig(scraper_provider="unknown"), 0),
-    ],
-)
-def test_create_fetch_fallbacks_from_config(
-    config: ServerConfig, expected_count: int, client: httpx.AsyncClient
-):
-    fallbacks = create_fetch_fallbacks(config=config, http_client=client)
-
-    assert len(fallbacks) == expected_count
-
-
 async def test_fetch_tool_escalates_blocked_page_to_configured_provider(
     httpx_mock: HTTPXMock, client: httpx.AsyncClient
 ):
@@ -275,7 +250,9 @@ async def test_fetch_tool_escalates_blocked_page_to_configured_provider(
         ),
         text="# Unblocked",
     )
-    config = ServerConfig(scraper_provider="scrape_do", scrape_do_token="t")
+    config = ServerConfig(
+        scraper_provider="scrape_do", scrape_do_token="t", browser_cdp_url=""
+    )
     fetch = create_fetch_tool(config=config, http_client=client)
 
-    assert await fetch(TARGET) == "# Unblocked"
+    assert await fetch(TARGET, None) == "# Unblocked"

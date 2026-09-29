@@ -279,3 +279,34 @@ class TestCreateConfigMinScore:
 
         assert "MIN_SCORE" in caplog.text
 
+
+class TestCreateConfigFetch:
+    def test_fetch_settings_defaults(self, monkeypatch):
+        monkeypatch.delenv("FETCH_MODEL", raising=False)
+        monkeypatch.delenv("FETCH_RESTRICTED_DOMAINS", raising=False)
+        monkeypatch.delenv("FETCH_CONCURRENCY", raising=False)
+
+        config = create_config()
+
+        assert config.fetch_model == ""
+        assert config.fetch_restricted_domains == ()
+        assert config.fetch_concurrency == 2
+
+    def test_fetch_settings_read_env_vars(self, monkeypatch):
+        monkeypatch.setenv("FETCH_MODEL", "anthropic/claude-haiku-4.5")
+        monkeypatch.setenv("FETCH_RESTRICTED_DOMAINS", " A.com, b.org ,")
+        monkeypatch.setenv("FETCH_CONCURRENCY", "3")
+
+        config = create_config()
+
+        assert config.fetch_model == "anthropic/claude-haiku-4.5"
+        assert config.fetch_restricted_domains == ("a.com", "b.org")
+        assert config.fetch_concurrency == 3
+
+    def test_empty_fetch_concurrency_env_var_falls_back_to_default(self, monkeypatch):
+        monkeypatch.setenv("FETCH_CONCURRENCY", "")
+
+        config = create_config()
+
+        assert config.fetch_concurrency == 2
+

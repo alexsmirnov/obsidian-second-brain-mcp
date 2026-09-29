@@ -55,13 +55,25 @@ class ServerConfig:
     # used for reflection and final result generation
     research_infer_model: str = ""
     # Fetch fallbacks for blocked (401/403/429) or empty pages, tried in order:
-    # external browser over CDP (needs the `browser` extra), then a commercial
-    # unblocking provider: "scrape_do", "bright_data", or "" (disabled).
+    # external browser over CDP, then a commercial unblocking provider:
+    # "scrape_do", "bright_data", or "" (disabled).
     browser_cdp_url: str = ""
     scraper_provider: str = ""
     scrape_do_token: str = ""
     bright_data_api_key: str = ""
     bright_data_zone: str = ""
+    # Content filtering and fetch routing
+    # LLM model used by LLMContentFilter; empty selects BM25 filtering.
+    fetch_model: str = ""
+    # Hostnames (and their subdomains) fetch must never visit.
+    fetch_restricted_domains: tuple[str, ...] = ()
+    # Max parallel browser renders across all research branches.
+    fetch_concurrency: int = 2
+
+def _parse_restricted_domains(raw: str) -> tuple[str, ...]:
+    """Parse a comma-separated domain list into lowercase, trimmed entries."""
+    return tuple(domain.strip().lower() for domain in raw.split(",") if domain.strip())
+
 
 def create_config(
     prompts_dir: Path = Path("./prompts"),
@@ -131,6 +143,11 @@ def create_config(
         scrape_do_token=os.environ.get("SCRAPE_DO_TOKEN", ""),
         bright_data_api_key=os.environ.get("BRIGHT_DATA_API_KEY", ""),
         bright_data_zone=os.environ.get("BRIGHT_DATA_ZONE", ""),
+        fetch_model=os.environ.get("FETCH_MODEL", ""),
+        fetch_restricted_domains=_parse_restricted_domains(
+            os.environ.get("FETCH_RESTRICTED_DOMAINS", "")
+        ),
+        fetch_concurrency=int(os.environ.get("FETCH_CONCURRENCY") or 2),
     )
     validate_config(config)
     return config

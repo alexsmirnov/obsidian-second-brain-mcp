@@ -8,6 +8,7 @@ Judge model: ``RESEARCH_EVAL_MODEL`` (falls back to ``RESEARCH_INFER_MODEL``).
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import datetime
 import logging
 
@@ -21,6 +22,7 @@ from evaluation.report import REPORT_DIR, generate_html_report, save_report
 from mcps.config import create_config
 from mcps.research.agent import create_researcher
 from mcps.research.config import build_research_config
+from mcps.research.tools.browser import browser_endpoint
 
 timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 REPORT_DIR.mkdir(exist_ok=True)
@@ -41,18 +43,27 @@ async def main():
     load_dotenv()
     server_config = create_config()
     async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as http_client:
-        logger.info("Creating research configuration...")
-        config = build_research_config(server_config, http_client=http_client)
-        judge = create_judge_model(server_config, http_client=http_client)
+        async with browser_endpoint(server_config.browser_cdp_url) as cdp_url:
+            if cdp_url is None:
+                raise RuntimeError(
+                    "No browser available: set BROWSER_CDP_URL or install Obscura "
+                    "on PATH before running the evaluation."
+                )
+            logger.info("Creating research configuration...")
+            config = build_research_config(
+                dataclasses.replace(server_config, browser_cdp_url=cdp_url),
+                http_client=http_client,
+            )
+            judge = create_judge_model(server_config, http_client=http_client)
 
-        logger.info("Creating research agent...")
-        agent = create_researcher(config, implementation="deep_research")
+            logger.info("Creating research agent...")
+            agent = create_researcher(config, implementation="deep_research")
 
-        logger.info("Loading DRACO questions (Technology + Academic)...")
-        questions = load_draco_questions()[:3]
+            logger.info("Loading DRACO questions (Technology + Academic)...")
+            questions = load_draco_questions()[:3]
 
-        logger.info("Running evaluation on %d questions...", len(questions))
-        summary, results = await run_evaluation(agent, judge, questions)
+            logger.info("Running evaluation on %d questions...", len(questions))
+            summary, results = await run_evaluation(agent, judge, questions)
 
     print("\n" + "=" * 60)
     print("DRACO EVALUATION RESULTS")
