@@ -16,7 +16,7 @@ from mcps.research.tools.common import (
 
 __all__ = ["BRIGHT_DATA_URL", "create_bright_data_fetch"]
 
-logger = logging.getLogger(__file__)
+logger = logging.getLogger(__name__)
 
 BRIGHT_DATA_URL = "https://api.brightdata.com/request"
 
@@ -57,7 +57,7 @@ def create_bright_data_fetch(
     async def fetch(url: str) -> str:
         body = {"zone": zone, "url": url, "format": "json"}
         try:
-            response = await http_client.post(api_url, headers=headers, json=body)
+            response = await http_client.post(api_url, headers=headers, json=body, timeout=60.0)
         except httpx.HTTPError as error:
             logger.warning("Bright Data unavailable for %s: %r", url, error)
             return ERROR_FETCHER_UNAVAILABLE

@@ -31,7 +31,7 @@ from mcps.research.tools.github import (
 
 __all__ = ["create_fetch"]
 
-logger = logging.getLogger(__file__)
+logger = logging.getLogger(__name__)
 
 SiteFetcher = Callable[..., Awaitable[str]]
 

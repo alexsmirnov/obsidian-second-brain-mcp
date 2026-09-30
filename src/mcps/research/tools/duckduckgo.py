@@ -12,7 +12,7 @@ from mcps.research.tools.models import SearchResult
 
 __all__ = ["create_duckduckgo_search"]
 
-logger = logging.getLogger(__file__)
+logger = logging.getLogger(__name__)
 
 DDG_URL = "https://html.duckduckgo.com/html/"
 

@@ -16,7 +16,7 @@ from mcps.research.tools.common import (
 
 __all__ = ["SCRAPE_DO_URL", "create_scrape_do_fetch"]
 
-logger = logging.getLogger(__file__)
+logger = logging.getLogger(__name__)
 
 SCRAPE_DO_URL = "https://api.scrape.do/"
 

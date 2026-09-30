@@ -31,7 +31,7 @@ __all__ = [
     "probe_cdp",
 ]
 
-logger = logging.getLogger(__file__)
+logger = logging.getLogger(__name__)
 
 LOCAL_CDP_URL = "ws://127.0.0.1:9222"
 REMOTE_CONNECT_SECONDS = 10
@@ -75,7 +75,16 @@ def _default_crawler_factory(cdp_url: str) -> CrawlerFactory:
         # give each crawl its own context so concurrent fetches don't collide.
         cache_cdp_connection=True,
         create_isolated_context=True,
+        enable_stealth=True,
         verbose=False,
+        # user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        # headers={
+        #     "Accept-Language": "en-US,en;q=0.9",
+        #     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+        #     "Sec-Ch-Ua": '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
+        #     "Sec-Ch-Ua-Mobile": "?0",
+        #     "Sec-Ch-Ua-Platform": '"Windows"',
+        # }
     )
     return lambda: AsyncWebCrawler(config=browser_config)
 
@@ -111,8 +120,15 @@ class _BrowserFetch:
 
     async def __call__(self, url: str) -> str:
         try:
+            crawler_config = CrawlerRunConfig(
+            simulate_user=True,  # Add user simulation
+            magic=True,  # Enable magic mode
+            wait_until="networkidle", 
+            # Give complex SPA/React apps a moment to render the DOM elements
+            delay_before_return_html=0.8, 
+            )
             crawl = await self._crawler.arun(
-                url, config=CrawlerRunConfig(verbose=False)
+                url, config=crawler_config
             )
         except Exception as error:
             logger.warning("Browser fetch unavailable for %s: %r", url, error)

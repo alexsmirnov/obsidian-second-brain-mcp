@@ -25,7 +25,7 @@ __all__ = [
     "to_error_message",
 ]
 
-logger = logging.getLogger(__file__)
+logger = logging.getLogger(__name__)
 
 Fetch = Callable[[str, str | None], Awaitable[str]]
 # A single-URL source callable (browser render or commercial provider).

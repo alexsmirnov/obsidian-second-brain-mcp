@@ -24,7 +24,7 @@ __all__ = [
     "is_github_repo_url",
 ]
 
-logger = logging.getLogger(__file__)
+logger = logging.getLogger(__name__)
 
 _RAW_BASE = "https://raw.githubusercontent.com"
 _README_BRANCHES = ("main", "master")

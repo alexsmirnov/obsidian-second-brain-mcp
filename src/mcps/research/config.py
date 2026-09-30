@@ -38,7 +38,7 @@ __all__ = [
     "create_fetch_tool",
 ]
 
-logger = logging.getLogger(__file__)
+logger = logging.getLogger(__name__)
 
 # The provider returns untruncated Markdown; fetch filters then truncates once.
 _NO_TRUNCATION = 10**9

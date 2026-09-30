@@ -30,7 +30,7 @@ from mcps.research.tools.common import ERROR_FILTERING
 
 __all__ = ["PageFilter", "create_page_filter", "markdown_to_html", "text_page_to_html"]
 
-logger = logging.getLogger(__file__)
+logger = logging.getLogger(__name__)
 
 # (html, base_url, query) -> filtered Markdown
 PageFilter = Callable[[str, str, str | None], Awaitable[str]]

@@ -86,6 +86,10 @@ Baseline data (current location, gitignored via `.gitignore:23` `/tasks/`): `tas
 
 - **Phase 5/6 — rubber-duck hardening.** Review verified `summarize()` and the Compose loopback/CDP isolation; it noted `load_cases` could keep a non-string `case_id` and then fail the `by_id.get(str(...))` lookup. All shipped case files use string ids, but `case_id` is now normalized with `str(...)`; tests, lint, and compile re-run clean.
 
+- **Phase 7 — manual smoke run pending.** `uv run tests/web_fetch_evaluation.py --output tmp/fetch-smoke-p7.jsonl` needs user permission and a reachable browser; not run. Automated: `tests/test_research_tools.py` (34), `tests/test_research_fallback_fetchers.py` (23), `tests/test_fetch_filtering.py` (6), `tests/test_web_fetch_evaluation.py` (3) pass; `rg html2text src pyproject.toml` is empty.
+- **Phase 7 — pre-existing pyright error.** `tests/test_research_tools.py` `asyncio.create_task(fetch(...))` in `test_browser_concurrency_is_limited` (`Awaitable[str]` vs `Coroutine`) predates this phase and was left untouched.
+- **Phase 7 — `text_page_to_html` on provider output.** Provider results pass through `text_page_to_html` before filtering (as the plan specifies), so a provider returning a sole `<pre>` page is treated as plain text.
+
 ## Implementation Research Findings
 
 - **Filtering location** — considered filter inside `arun` vs one post-retrieval filter; chosen: browser returns `cleaned_html`, every source goes through one `filter_page` that runs `DefaultMarkdownGenerator(content_filter=...).generate_markdown` in `asyncio.to_thread`; why: `arun` runs `generate_markdown` on the event loop (`async_webcrawler.py:873`), so an LLM filter there would stall the MCP server; one path serves browser, GitHub, arXiv, PDF, provider.
@@ -119,7 +123,7 @@ Each phase file holds the full RED / CONFIRM_RED / GREEN / VERIFY_GREEN instruct
 4. [x] [Phase 4: Query propagation and removal of url_context recovery](implementation-phase-4.md) — research agent passes knowledge gap / original question as fetch query, blank results are not evidence, Gemini recovery removed.
 5. [x] [Phase 5: Fetch evaluation script](implementation-phase-5.md) — `tests/web_fetch_evaluation.py` replaying JSONL cases, baseline data moved into `tests/evaluation/data/`.
 6. [x] [Phase 6: Compose deployment and docs](implementation-phase-6.md) — Compose with shared network namespace Obscura container, `env.example`, documentation updates.
-7. [ ] [Phase 7: Single HTML-to-Markdown conversion per source](implementation-phase-7.md) — extractors return HTML, providers request HTML, `_filter_markdown` removed, PDF `<p>`/`<br>` blocks, GitHub repo link base, `html2text` dependency removed.
+7. [x] [Phase 7: Single HTML-to-Markdown conversion per source](implementation-phase-7.md) — extractors return HTML, providers request HTML, `_filter_markdown` removed, PDF `<p>`/`<br>` blocks, GitHub repo link base, `html2text` dependency removed.
 
 ## Final Verification
 

@@ -12,7 +12,7 @@ from mcps.research.tools.models import SearchResult
 
 __all__ = ["create_google_search"]
 
-logger = logging.getLogger(__file__)
+logger = logging.getLogger(__name__)
 
 GOOGLE_CSE_URL = "https://www.googleapis.com/customsearch/v1"
 

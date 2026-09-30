@@ -21,7 +21,7 @@ from mcps.research.tools.extract import (
 
 __all__ = ["fetch_default"]
 
-logger = logging.getLogger(__file__)
+logger = logging.getLogger(__name__)
 
 
 def _extract(response: httpx.Response) -> str | None:

@@ -16,7 +16,7 @@ from mcps.research.tools.default import fetch_default
 
 __all__ = ["fetch_arxiv", "is_arxiv_url"]
 
-logger = logging.getLogger(__file__)
+logger = logging.getLogger(__name__)
 
 
 def is_arxiv_url(url: str) -> bool:
