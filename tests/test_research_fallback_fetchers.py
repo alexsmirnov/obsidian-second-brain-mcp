@@ -4,19 +4,22 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shutil
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, ClassVar, cast
 
 import httpx
 import pytest
+from crawl4ai import AsyncWebCrawler
 from pytest_httpx import HTTPXMock
 
 from mcps.config import ServerConfig
-from mcps.research.config import create_fetch_tool
+from mcps.research.tools import browser as browser_module
 from mcps.research.tools.bright_data import BrightDataFetch
-from mcps.research.tools.browser import BrowserFetch, browser_crawler
+from mcps.research.tools.browser import BrowserFetch, create_browser_fetch
+from mcps.research.tools.fetch import build_fetch_tool
 from mcps.research.tools.models import FetchResult, FetchStatus
 from mcps.research.tools.scrape_do import ScrapeDoFetch
 
@@ -60,29 +63,6 @@ class FakeCrawler:
         return self.result
 
 
-@dataclass
-class FakeCrawlerContext:
-    """Async context manager starting and closing a :class:`FakeCrawler`."""
-
-    crawler: FakeCrawler
-    enter_error: Exception | None = None
-    entered: bool = False
-    exited: bool = False
-
-    async def __aenter__(self) -> FakeCrawler:
-        if self.enter_error is not None:
-            raise self.enter_error
-        self.entered = True
-        self.crawler.open = True
-        self.crawler.opens += 1
-        return self.crawler
-
-    async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
-        self.exited = True
-        self.crawler.open = False
-        self.crawler.closes += 1
-
-
 def crawl_result(
     *,
     success: bool = True,
@@ -114,9 +94,69 @@ class GatedCrawler:
         return crawl_result(cleaned_html=f"<h1>{config.url}</h1>")
 
 
+@dataclass
+class _ConstructFailure:
+    """Script item making ``FakeAsyncWebCrawler`` raise while constructing."""
+
+    error: Exception
+
+
+class FakeAsyncWebCrawler:
+    """Boundary fake for ``crawl4ai.AsyncWebCrawler``.
+
+    Each construction consumes the next item of :attr:`script`: ``None`` uses a
+    fresh successful :class:`FakeCrawler`; a :class:`FakeCrawler` is used as-is;
+    a :class:`_ConstructFailure` raises while constructing; any exception is
+    raised from ``__aenter__``. This lets a test script the probe (first
+    construction) separately from the persistent crawler.
+    """
+
+    script: ClassVar[list[Any]] = []
+    constructed: ClassVar[list[FakeAsyncWebCrawler]] = []
+
+    def __init__(self, config: Any = None) -> None:
+        self.config = config
+        self.crawler = FakeCrawler()
+        item = type(self).script.pop(0) if type(self).script else None
+        if isinstance(item, _ConstructFailure):
+            raise item.error
+        if isinstance(item, FakeCrawler):
+            self.crawler = item
+        self.enter_error = item if isinstance(item, BaseException) else None
+        type(self).constructed.append(self)
+
+    async def __aenter__(self) -> FakeAsyncWebCrawler:
+        if self.enter_error is not None:
+            raise self.enter_error
+        self.crawler.open = True
+        self.crawler.opens += 1
+        return self
+
+    async def __aexit__(self, *_exc: object) -> None:
+        self.crawler.open = False
+        self.crawler.closes += 1
+
+    async def arun(self, url: str, config: Any = None, **_kwargs: Any) -> Any:
+        return await self.crawler.arun(url, config=config, **_kwargs)
+
+
+def _script_crawlers(monkeypatch, *items: Any) -> None:
+    monkeypatch.setattr(browser_module, "AsyncWebCrawler", FakeAsyncWebCrawler)
+    FakeAsyncWebCrawler.script = list(items)
+    FakeAsyncWebCrawler.constructed = []
+
+
+def _browser_config(**overrides: Any) -> ServerConfig:
+    return ServerConfig(browser_cdp_url="ws://cdp", **overrides)
+
+
+def _browser(crawler: FakeCrawler) -> BrowserFetch:
+    return BrowserFetch(cast(AsyncWebCrawler, crawler))
+
+
 async def test_browser_fetch_returns_cleaned_html():
     crawler = FakeCrawler(result=crawl_result(cleaned_html="<h1>Rendered</h1>"))
-    fetch = BrowserFetch(crawler)
+    fetch = _browser(crawler)
 
     result = await fetch(TARGET)
 
@@ -146,21 +186,21 @@ async def test_browser_fetch_returns_cleaned_html():
 async def test_browser_fetch_maps_crawl_outcomes(
     result: Any, expected: tuple[FetchStatus, int | None]
 ):
-    fetch = BrowserFetch(FakeCrawler(result=result))
+    fetch = _browser(FakeCrawler(result=result))
 
     assert outcome(await fetch(TARGET)) == expected
 
 
 async def test_browser_fetch_crawl_failure_is_unavailable():
     crawler = FakeCrawler(error=ConnectionError("cdp down"))
-    fetch = BrowserFetch(crawler)
+    fetch = _browser(crawler)
 
     assert outcome(await fetch(TARGET)) == (FetchStatus.UNAVAILABLE, None)
 
 
 @pytest.mark.parametrize("cleaned_html", ["", "   "])
 async def test_browser_fetch_blank_cleaned_html_is_empty(cleaned_html: str):
-    fetch = BrowserFetch(FakeCrawler(result=crawl_result(cleaned_html=cleaned_html)))
+    fetch = _browser(FakeCrawler(result=crawl_result(cleaned_html=cleaned_html)))
 
     assert outcome(await fetch(TARGET)) == (FetchStatus.EMPTY, None)
 
@@ -170,18 +210,14 @@ async def test_browser_fetch_blank_cleaned_html_is_empty(cleaned_html: str):
 # ---------------------------------------------------------------------------
 
 
-async def test_browser_fetch_repeated_requests_reuse_open_connection():
+async def test_browser_fetch_repeated_requests_reuse_open_connection(monkeypatch):
     crawler = FakeCrawler(result=crawl_result(cleaned_html="<h1>X</h1>"))
-    context = FakeCrawlerContext(crawler)
+    _script_crawlers(monkeypatch, None, crawler)
 
-    async with browser_crawler(
-        "ws://cdp", crawler_factory=lambda: context
-    ) as open_crawler:
-        assert open_crawler is not None
-        assert open_crawler is crawler
-        fetch = BrowserFetch(open_crawler)
-        first = await fetch("https://a.example")
-        second = await fetch("https://b.example")
+    async with create_browser_fetch(_browser_config()) as browser:
+        assert browser is not None
+        first = await browser("https://a.example")
+        second = await browser("https://b.example")
         assert crawler.opens == 1 and crawler.closes == 0 and crawler.open
 
     assert first.ok and second.ok
@@ -193,7 +229,7 @@ async def test_browser_fetch_repeated_requests_reuse_open_connection():
 async def test_browser_fetch_overlapping_requests_share_connection():
     gates = {"https://a.example": asyncio.Event(), "https://b.example": asyncio.Event()}
     crawler = GatedCrawler(gates)
-    fetch = BrowserFetch(crawler)
+    fetch = _browser(cast(FakeCrawler, crawler))
 
     tasks = [asyncio.ensure_future(fetch(url)) for url in gates]
     async with asyncio.timeout(5):
@@ -210,19 +246,16 @@ async def test_browser_fetch_overlapping_requests_share_connection():
     ]
 
 
-async def test_browser_fetch_failure_keeps_connection_for_next_request():
+async def test_browser_fetch_failure_keeps_connection_for_next_request(monkeypatch):
     crawler = FakeCrawler(error=ConnectionError("cdp hiccup"))
-    context = FakeCrawlerContext(crawler)
+    _script_crawlers(monkeypatch, None, crawler)
 
-    async with browser_crawler(
-        "ws://cdp", crawler_factory=lambda: context
-    ) as open_crawler:
-        assert open_crawler is not None
-        fetch = BrowserFetch(open_crawler)
-        failure = await fetch("https://a.example")
+    async with create_browser_fetch(_browser_config()) as browser:
+        assert browser is not None
+        failure = await browser("https://a.example")
         crawler.error = None
         crawler.result = crawl_result(cleaned_html="<h1>Recovered</h1>")
-        recovered = await fetch("https://b.example")
+        recovered = await browser("https://b.example")
         assert outcome(failure) == (FetchStatus.UNAVAILABLE, None)
         assert recovered.content == "<h1>Recovered</h1>"
         assert crawler.opens == 1 and crawler.closes == 0
@@ -230,55 +263,48 @@ async def test_browser_fetch_failure_keeps_connection_for_next_request():
     assert crawler.closes == 1
 
 
-def _entering_failure() -> FakeCrawlerContext:
-    return FakeCrawlerContext(FakeCrawler(), enter_error=ConnectionError("cdp down"))
-
-
-def _constructing_failure() -> FakeCrawlerContext:
-    raise ConnectionError("bad config")
-
-
-def _missing_endpoint_factory() -> FakeCrawlerContext:
-    raise AssertionError("factory must not be called without a CDP URL")
-
-
 @pytest.mark.parametrize(
-    "factory",
+    "item",
     [
-        pytest.param(_entering_failure, id="enter"),
-        pytest.param(_constructing_failure, id="construct"),
+        pytest.param(ConnectionError("cdp down"), id="enter"),
+        pytest.param(_ConstructFailure(ConnectionError("bad config")), id="construct"),
     ],
 )
-async def test_browser_crawler_startup_failure_yields_none(factory: Any):
-    async with browser_crawler("ws://cdp", crawler_factory=factory) as crawler:
-        assert crawler is None
+async def test_browser_fetch_startup_failure_yields_none(monkeypatch, item: Any):
+    _script_crawlers(monkeypatch, None, item)
+
+    async with create_browser_fetch(_browser_config()) as browser:
+        assert browser is None
 
 
-async def test_browser_crawler_without_endpoint_opens_no_connection():
-    async with browser_crawler(
-        None, crawler_factory=_missing_endpoint_factory
-    ) as crawler:
-        assert crawler is None
+async def test_browser_fetch_without_endpoint_opens_no_connection(monkeypatch):
+    monkeypatch.setattr(shutil, "which", lambda _name: None)
+    _script_crawlers(monkeypatch)
+
+    async with create_browser_fetch(ServerConfig(browser_cdp_url="")) as browser:
+        assert browser is None
+
+    assert FakeAsyncWebCrawler.constructed == []
 
 
-async def test_browser_crawler_exceptional_exit_closes_connection():
+async def test_browser_fetch_exceptional_exit_closes_connection(monkeypatch):
     crawler = FakeCrawler()
-    context = FakeCrawlerContext(crawler)
+    _script_crawlers(monkeypatch, None, crawler)
 
     with pytest.raises(ValueError, match="body boom"):
-        async with browser_crawler("ws://cdp", crawler_factory=lambda: context):
+        async with create_browser_fetch(_browser_config()):
             raise ValueError("body boom")
 
-    assert context.exited and crawler.open is False and crawler.closes == 1
+    assert crawler.open is False and crawler.closes == 1
 
 
-async def test_browser_crawler_cancellation_closes_connection():
+async def test_browser_fetch_cancellation_closes_connection(monkeypatch):
     crawler = FakeCrawler()
-    context = FakeCrawlerContext(crawler)
+    _script_crawlers(monkeypatch, None, crawler)
     entered = asyncio.Event()
 
     async def consume() -> None:
-        async with browser_crawler("ws://cdp", crawler_factory=lambda: context):
+        async with create_browser_fetch(_browser_config()):
             entered.set()
             await asyncio.Event().wait()
 
@@ -288,7 +314,7 @@ async def test_browser_crawler_cancellation_closes_connection():
     with pytest.raises(asyncio.CancelledError):
         await task
 
-    assert context.exited and crawler.open is False and crawler.closes == 1
+    assert crawler.open is False and crawler.closes == 1
 
 
 # ---------------------------------------------------------------------------
@@ -412,8 +438,9 @@ async def test_bright_data_maps_outcomes(
 
 
 async def test_fetch_tool_escalates_blocked_page_to_configured_provider(
-    httpx_mock: HTTPXMock, client: httpx.AsyncClient
+    monkeypatch, httpx_mock: HTTPXMock, client: httpx.AsyncClient
 ):
+    monkeypatch.setattr(shutil, "which", lambda _name: None)
     httpx_mock.add_response(url=TARGET, status_code=403)
     httpx_mock.add_response(
         url=httpx.URL(
@@ -430,9 +457,72 @@ async def test_fetch_tool_escalates_blocked_page_to_configured_provider(
     config = ServerConfig(
         scraper_provider="scrape_do", scrape_do_token="t", browser_cdp_url=""
     )
-    fetch = create_fetch_tool(config=config, http_client=client)
 
-    result = await fetch(TARGET, None)
+    async with build_fetch_tool(config, client) as fetch:
+        assert fetch is not None
+        result = await fetch(TARGET, None)
 
     assert result.ok
     assert result.content == "# Unblocked"
+
+
+async def test_fetch_tool_escalates_blocked_page_to_bright_data(
+    monkeypatch, httpx_mock: HTTPXMock, client: httpx.AsyncClient
+):
+    monkeypatch.setattr(shutil, "which", lambda _name: None)
+    httpx_mock.add_response(url=TARGET, status_code=403)
+    httpx_mock.add_response(
+        url="https://api.brightdata.com/request",
+        json={
+            "status_code": 200,
+            "body": "<html><body><h1>Unblocked</h1></body></html>",
+        },
+    )
+    config = ServerConfig(
+        scraper_provider="bright_data",
+        bright_data_api_key="key",
+        bright_data_zone="unlocker",
+        browser_cdp_url="",
+    )
+
+    async with build_fetch_tool(config, client) as fetch:
+        assert fetch is not None
+        result = await fetch(TARGET, None)
+
+    assert result.ok
+    assert result.content == "# Unblocked"
+
+
+@pytest.mark.parametrize(
+    "config_kwargs",
+    [
+        pytest.param({}, id="unset"),
+        pytest.param(
+            {"scraper_provider": "unknown", "scrape_do_token": "t"}, id="unknown"
+        ),
+        pytest.param({"scraper_provider": "scrape_do"}, id="scrape-do-no-token"),
+        pytest.param(
+            {"scraper_provider": "bright_data", "bright_data_api_key": "k"},
+            id="bright-data-no-zone",
+        ),
+        pytest.param(
+            {"scraper_provider": "bright_data", "bright_data_zone": "z"},
+            id="bright-data-no-key",
+        ),
+    ],
+)
+async def test_unusable_provider_config_keeps_target_failure(
+    monkeypatch,
+    httpx_mock: HTTPXMock,
+    client: httpx.AsyncClient,
+    config_kwargs: dict[str, Any],
+):
+    monkeypatch.setattr(shutil, "which", lambda _name: None)
+    httpx_mock.add_response(url=TARGET, status_code=403)
+    config = ServerConfig(browser_cdp_url="", **config_kwargs)
+
+    async with build_fetch_tool(config, client) as fetch:
+        assert fetch is not None
+        result = await fetch(TARGET, None)
+
+    assert outcome(result) == (FetchStatus.HTTP_ERROR, 403)

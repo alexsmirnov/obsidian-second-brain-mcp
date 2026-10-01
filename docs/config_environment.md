@@ -217,14 +217,14 @@ CDP endpoint of a running browser (e.g. `ws://127.0.0.1:9222`). Must be unauthen
 **Type**: str
 **Default**: `""`
 **Environment**: `BROWSER_CDP_URL`
-**Used by**: [src/mcps/research/config.py](../src/mcps/research/config.py), [src/mcps/research/tools/browser.py](../src/mcps/research/tools/browser.py)
+**Used by**: [src/mcps/research/tools/fetch.py](../src/mcps/research/tools/fetch.py), [src/mcps/research/tools/browser.py](../src/mcps/research/tools/browser.py)
 
 #### `scraper_provider` #config
 Commercial unblocking provider used for blocked, empty, timed-out, or browser-unavailable pages: `scrape_do`, `bright_data`, or empty.
 **Type**: str
 **Default**: `""` (disabled)
 **Environment**: `SCRAPER_PROVIDER`
-**Used by**: [src/mcps/research/config.py](../src/mcps/research/config.py)
+**Used by**: [src/mcps/research/tools/fetch.py](../src/mcps/research/tools/fetch.py)
 
 #### `scrape_do_token` #config
 Scrape.do API token. Required when `SCRAPER_PROVIDER=scrape_do`.
@@ -245,7 +245,7 @@ Model for crawl4ai `LLMContentFilter` (via the router). Empty selects `BM25Conte
 **Type**: str
 **Default**: `""`
 **Environment**: `FETCH_MODEL`
-**Used by**: [src/mcps/research/config.py](../src/mcps/research/config.py), [src/mcps/research/tools/filtering.py](../src/mcps/research/tools/filtering.py)
+**Used by**: [src/mcps/research/tools/fetch.py](../src/mcps/research/tools/fetch.py), [src/mcps/research/tools/filtering.py](../src/mcps/research/tools/filtering.py)
 
 #### `fetch_restricted_domains` #config
 Comma-separated hostnames; the hostname itself and its subdomains are never fetched (status `RESTRICTED`).

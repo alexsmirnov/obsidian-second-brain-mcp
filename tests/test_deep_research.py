@@ -5,6 +5,7 @@ All tests mock LLM and HTTP calls — no real network access.
 
 from __future__ import annotations
 
+import shutil
 from typing import Any, cast
 
 import httpx
@@ -22,7 +23,7 @@ from mcps.research.config import (
     build_research_config,
 )
 from mcps.research.deep_research import ResearchAgent
-from mcps.research.tools import Fetch, Search, SearchResult
+from mcps.research.tools import SearchResult
 from mcps.research.tools.models import FetchResult, FetchStatus
 
 # ---------------------------------------------------------------------------
@@ -58,37 +59,78 @@ class TestServerConfigContract:
 # ---------------------------------------------------------------------------
 
 
-class TestResearchConfigContract:
-    def test_build_research_config_returns_valid_config(self):
-        server_config = ServerConfig(
-            router_api_base="http://localhost:4000",
-            router_api_key="sk-test",
-            research_fast_model="gemini-flash-lite",
-            research_infer_model="gemini-flash",
-        )
-        config = build_research_config(
-            server_config,
-            http_client=httpx.AsyncClient(),
-        )
-        assert isinstance(config, ResearchConfig)
-        assert config.fast is not None
-        assert config.small is not None
-        assert callable(config.search)
-        assert callable(config.fetch)
+class _ReachableCrawler:
+    """Minimal crawl4ai crawler stub that always opens successfully."""
 
-    def test_research_config_fields_are_callables(self):
-        server_config = ServerConfig(
+    def __init__(self, config: Any = None) -> None:
+        self.config = config
+
+    async def __aenter__(self) -> _ReachableCrawler:
+        return self
+
+    async def __aexit__(self, *_exc: object) -> None:
+        return None
+
+    async def arun(self, url: str, config: Any = None, **_kwargs: Any) -> Any:
+        raise AssertionError("test crawler must not fetch")
+
+
+def _fake_research_config() -> ResearchConfig:
+    """Build a ResearchConfig backed by fakes for graph-level tests."""
+
+    async def search(_query: str) -> list[SearchResult]:
+        return []
+
+    async def fetch(_url: str, _query: str | None = None, /) -> FetchResult:
+        return FetchResult("", FetchStatus.OK, "text/markdown", "content")
+
+    return ResearchConfig(
+        fast=FakeMessagesListChatModel(responses=[AIMessage("x")]),
+        small=FakeMessagesListChatModel(responses=[AIMessage("x")]),
+        search=search,
+        fetch=fetch,
+    )
+
+
+class TestResearchConfigContract:
+    @pytest.fixture
+    def browser_config(self, monkeypatch):
+        monkeypatch.setattr(
+            "mcps.research.tools.browser.AsyncWebCrawler", _ReachableCrawler
+        )
+        return ServerConfig(
             router_api_base="http://localhost:4000",
             router_api_key="sk-test",
-            research_fast_model="gemini-flash-lite",
-            research_infer_model="gemini-flash",
+            research_fast_model="fast-model",
+            research_infer_model="small-model",
+            browser_cdp_url="ws://127.0.0.1:9222",
         )
-        config = build_research_config(
-            server_config,
-            http_client=httpx.AsyncClient(),
+
+    @pytest.mark.asyncio
+    async def test_build_research_config_returns_valid_config(self, browser_config):
+        async with httpx.AsyncClient() as http_client:
+            async with build_research_config(
+                browser_config, http_client
+            ) as config:
+                assert isinstance(config, ResearchConfig)
+                assert config.fast is not None
+                assert config.small is not None
+                assert callable(config.search)
+                assert callable(config.fetch)
+
+    @pytest.mark.asyncio
+    async def test_build_research_config_yields_none_without_browser(
+        self, monkeypatch
+    ):
+        monkeypatch.setattr(shutil, "which", lambda _name: None)
+        monkeypatch.setattr(
+            "mcps.research.tools.browser.AsyncWebCrawler", _ReachableCrawler
         )
-        assert isinstance(config.search, Search)
-        assert isinstance(config.fetch, Fetch)
+        server_config = ServerConfig(browser_cdp_url="")
+
+        async with httpx.AsyncClient() as http_client:
+            async with build_research_config(server_config, http_client) as config:
+                assert config is None
 
 
 # ---------------------------------------------------------------------------
@@ -99,16 +141,7 @@ class TestResearchConfigContract:
 class TestAgentContract:
     @pytest.fixture
     def mock_config(self):
-        server_config = ServerConfig(
-            router_api_base="http://localhost:4000",
-            router_api_key="sk-test",
-            research_fast_model="gemini-flash-lite",
-            research_infer_model="gemini-flash",
-        )
-        return build_research_config(
-            server_config,
-            http_client=httpx.AsyncClient(),
-        )
+        return _fake_research_config()
 
     def test_create_researcher_returns_callable(self, mock_config):
         researcher = create_researcher(mock_config, implementation="deep_research")
@@ -185,20 +218,11 @@ class TestAgentContract:
 class TestProgressReporterContract:
     @pytest.fixture
     def mock_config(self):
-        server_config = ServerConfig(
-            router_api_base="http://localhost:4000",
-            router_api_key="sk-test",
-            research_fast_model="gemini-flash-lite",
-            research_infer_model="gemini-flash",
-        )
-        return build_research_config(
-            server_config,
-            http_client=httpx.AsyncClient(),
-        )
+        return _fake_research_config()
 
     @pytest.mark.asyncio
     async def test_agent_wraps_progress_in_config_for_ainvoke(self, mock_config):
-        """__call__ builds config dict from progress callback and forwards it to graph.ainvoke."""
+        """__call__ forwards the progress callback to graph.ainvoke."""
         from unittest.mock import patch
 
         researcher = create_researcher(mock_config, implementation="deep_research")
@@ -214,7 +238,9 @@ class TestProgressReporterContract:
                 "sources_gathered": [],
             }
 
-        async def mock_reporter(message: str, progress: float, total: float | None) -> None:
+        async def mock_reporter(
+            message: str, progress: float, total: float | None
+        ) -> None:
             pass
 
         with patch.object(agent_graph, "ainvoke", side_effect=mock_invoke):
@@ -254,29 +280,17 @@ class TestToolContract:
     @pytest.mark.asyncio
     async def test_tool_is_registered(self, monkeypatch):
         """web_research tool appears in the server's registered tools."""
-        from contextlib import asynccontextmanager
-
         from fastmcp import Client
 
         from mcps.server import create_server
 
-        @asynccontextmanager
-        async def reachable_browser(_cdp_url, *, probe=None):
-            yield "ws://127.0.0.1:9222"
-
         monkeypatch.setenv("ROUTER_API_BASE", "http://localhost:4000")
         monkeypatch.setenv("ROUTER_API_KEY", "sk-test")
+        monkeypatch.setenv("BROWSER_CDP_URL", "ws://127.0.0.1:9222")
         monkeypatch.delenv("VAULT", raising=False)
+        monkeypatch.setattr(shutil, "which", lambda _name: None)
         monkeypatch.setattr(
-            "mcps.research.lifespan.browser_endpoint", reachable_browser
-        )
-
-        @asynccontextmanager
-        async def reachable_crawler(_cdp_url, *, crawler_factory=None):
-            yield object()
-
-        monkeypatch.setattr(
-            "mcps.research.lifespan.browser_crawler", reachable_crawler
+            "mcps.research.tools.browser.AsyncWebCrawler", _ReachableCrawler
         )
         config = create_config()
         server = create_server(config)

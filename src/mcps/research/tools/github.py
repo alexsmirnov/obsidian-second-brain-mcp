@@ -12,7 +12,6 @@ from mcps.research.tools.models import Fetch, FetchResult, FetchStatus
 __all__ = [
     "GitHubBlobFetch",
     "GitHubRepoFetch",
-    "github_link_base",
     "is_github_blob_url",
     "is_github_repo_url",
 ]
@@ -41,11 +40,6 @@ def is_github_repo_url(url: str) -> bool:
     return parts is not None and len(parts) == 2
 
 
-def github_link_base(url: str) -> str:
-    """Base URL for resolving relative links in a fetched GitHub source."""
-    return f"{url.rstrip('/')}/blob/HEAD/" if is_github_repo_url(url) else url
-
-
 def _github_blob_to_raw_url(url: str) -> str | None:
     parts = _github_path_parts(url) or []
     if len(parts) < 5 or parts[2] != "blob":
@@ -72,8 +66,8 @@ def _as_requested_url(url: str, result: FetchResult) -> FetchResult:
 
 
 def _as_github_content(url: str, result: FetchResult, content: str) -> FetchResult:
-    """Retarget a successful result and give it the GitHub link base."""
-    return replace(result, url=url, content=content, base_url=github_link_base(url))
+    """Retarget a successful result at the requested GitHub URL."""
+    return replace(result, url=url, content=content)
 
 
 class GitHubBlobFetch:

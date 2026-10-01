@@ -593,7 +593,7 @@ async def test_blank_html_is_empty_response(
     assert result.status is FetchStatus.EMPTY
 
 
-async def test_github_repo_relative_link_resolves_in_repository(
+async def test_github_repo_links_resolve_against_requested_url(
     bm25, httpx_mock: HTTPXMock, client: httpx.AsyncClient
 ):
     httpx_mock.add_response(
@@ -606,7 +606,8 @@ async def test_github_repo_relative_link_resolves_in_repository(
 
     result = await fetch("https://github.com/org/project", None)
 
-    assert "https://github.com/org/project/blob/HEAD/docs/guide.md" in result.content
+    assert result.url == "https://github.com/org/project"
+    assert "https://github.com/org/docs/guide.md" in result.content
     assert "https://github.com/paper" in result.content
 
 
@@ -769,10 +770,10 @@ async def test_http_source_declares_mime_and_native_content(
 
     assert result.ok
     assert (result.mime, result.content) == (expected_mime, expected_content)
-    assert result.base_url is None
+    assert result.url == url
 
 
-async def test_github_blob_is_markdown_with_its_own_link_base(
+async def test_github_blob_returns_markdown_at_requested_url(
     httpx_mock: HTTPXMock, client: httpx.AsyncClient
 ):
     httpx_mock.add_response(
@@ -783,21 +784,22 @@ async def test_github_blob_is_markdown_with_its_own_link_base(
     result = await GitHubBlobFetch(HttpFetch(client))(url)
 
     assert (result.mime, result.content) == ("text/markdown", "# Doc")
-    assert result.base_url == url
+    assert result.url == url
 
 
-async def test_github_repo_readme_is_markdown_with_repo_link_base(
+async def test_github_repo_readme_is_markdown_at_requested_url(
     httpx_mock: HTTPXMock, client: httpx.AsyncClient
 ):
     httpx_mock.add_response(
         url="https://raw.githubusercontent.com/org/project/main/README.md",
         text="# Readme",
     )
+    url = "https://github.com/org/project"
 
-    result = await GitHubRepoFetch(HttpFetch(client))("https://github.com/org/project")
+    result = await GitHubRepoFetch(HttpFetch(client))(url)
 
     assert (result.mime, result.content) == ("text/markdown", "# Readme")
-    assert result.base_url == "https://github.com/org/project/blob/HEAD/"
+    assert result.url == url
 
 
 async def test_github_blob_strips_surrounding_whitespace(
@@ -884,7 +886,7 @@ async def test_github_blob_html_body_keeps_html_mime(
     result = await GitHubBlobFetch(HttpFetch(client))(url)
 
     assert (result.status, result.mime) == (FetchStatus.OK, "text/html")
-    assert result.base_url == url
+    assert result.url == url
 
 
 async def test_github_blob_unrecognized_content_type_is_unsupported(
@@ -923,7 +925,7 @@ async def test_github_repo_skips_missing_and_blank_readmes(
     result = await GitHubRepoFetch(HttpFetch(client))("https://github.com/org/project")
 
     assert (result.status, result.content) == (FetchStatus.OK, "# Readme")
-    assert result.base_url == "https://github.com/org/project/blob/HEAD/"
+    assert result.url == "https://github.com/org/project"
 
 
 async def test_github_repo_all_candidates_missing_is_empty(

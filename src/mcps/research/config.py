@@ -1,14 +1,19 @@
 """Research configuration factory for LangChain models and tools.
 
-The module exposes a lifespan-friendly builder `build_research_config` that
-accepts a pre-constructed `ServerConfig` instance and an ``httpx.AsyncClient``
-so the FastMCP lifespan owns the connection pool.
+The module exposes a lifespan-friendly async context manager
+``build_research_config`` that accepts a pre-constructed ``ServerConfig`` and an
+``httpx.AsyncClient`` so the FastMCP lifespan owns the connection pool. It
+enters the fetch tool (which owns the browser) and yields ``None`` when no
+browser is available.
 """
 
 from __future__ import annotations
 
 import logging
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from typing import AsyncGenerator
 
 import httpx
 from langchain_core.language_models import BaseChatModel
@@ -22,19 +27,14 @@ from mcps.research.tools import (
     Search,
     SearchResult,
     create_duckduckgo_search,
-    create_fetch,
     create_google_search,
 )
-from mcps.research.tools.bright_data import BrightDataFetch
-from mcps.research.tools.browser import BrowserFetch, Crawler
-from mcps.research.tools.filtering import RelevanceFilter
-from mcps.research.tools.scrape_do import ScrapeDoFetch
+from mcps.research.tools.fetch import build_fetch_tool
 
 __all__ = [
     "ResearchConfig",
     "SearchResult",
     "build_research_config",
-    "create_fetch_tool",
 ]
 
 logger = logging.getLogger(__name__)
@@ -100,102 +100,38 @@ def create_search_tool(
     return create_duckduckgo_search(http_client=http_client)
 
 
-def _create_provider_fallback(
-    config: ServerConfig, http_client: httpx.AsyncClient
-) -> Fetch | None:
-    """Build the commercial unblocking provider, or None when unconfigured.
-
-    The fetch callable filters and truncates the result once, on the shared path.
-    """
-    match config.scraper_provider:
-        case "":
-            return None
-        case "scrape_do" if config.scrape_do_token:
-            return ScrapeDoFetch(
-                config.scrape_do_token,
-                http_client=http_client,
-            )
-        case "bright_data" if config.bright_data_api_key and config.bright_data_zone:
-            return BrightDataFetch(
-                config.bright_data_api_key,
-                config.bright_data_zone,
-                http_client=http_client,
-            )
-        case "scrape_do" | "bright_data":
-            logger.warning(
-                "SCRAPER_PROVIDER=%s is missing credentials; provider fallback "
-                "disabled.",
-                config.scraper_provider,
-            )
-        case _:
-            logger.warning(
-                "Unknown SCRAPER_PROVIDER=%s (expected scrape_do or bright_data); "
-                "provider fallback disabled.",
-                config.scraper_provider,
-            )
-    return None
-
-
-def create_fetch_tool(
-    *,
+@asynccontextmanager
+async def build_research_config(
     config: ServerConfig,
     http_client: httpx.AsyncClient,
-    browser_crawler: Crawler | None = None,
-) -> Fetch:
-    """Return the web fetch callable with browser, filtering, and fallback.
+) -> AsyncGenerator[ResearchConfig | None]:
+    """Build a ResearchConfig for the duration of the context, or ``None``.
 
-    ``browser_crawler`` is an already-open crawler owned by the caller; when
-    ``None`` the browser path is disabled and generic pages use plain httpx.
+    Enters :func:`build_fetch_tool` in required-browser mode first: when no
+    browser is available the context yields ``None`` without constructing any
+    models. Otherwise the models and search tool are built once and yielded for
+    the lifetime of the context. The lifespan provides the pooled
+    ``httpx.AsyncClient``; it is borrowed and never closed here.
     """
-    return create_fetch(
-        http_client=http_client,
-        browser=BrowserFetch(browser_crawler) if browser_crawler else None,
-        provider=_create_provider_fallback(config, http_client),
-        page_filter=RelevanceFilter(
-            fetch_model=config.fetch_model,
-            router_url=config.router_api_base,
-            router_key=config.router_api_key,
-        ),
-        restricted_domains=config.fetch_restricted_domains,
-        concurrency=config.fetch_concurrency,
-    )
-
-
-def build_research_config(
-    config: ServerConfig,
-    *,
-    http_client: httpx.AsyncClient,
-    browser_crawler: Crawler | None = None,
-) -> ResearchConfig:
-    """Build a ResearchConfig using injected ServerConfig and HTTP client.
-
-    The FastMCP lifespan is expected to provide a pooled
-    ``httpx.AsyncClient``. It is threaded through to models and the
-    HTTP-speaking tools so they reuse a single connection pool. The lifespan
-    also owns the browser crawler and injects it the same way.
-
-    Args:
-        config: Populated ServerConfig instance.
-        http_client: Shared httpx.AsyncClient for connection pooling.
-        browser_crawler: Open crawl4ai crawler for browser rendering, if any.
-    """
-    return ResearchConfig(
-        fast=_create_chat_model(
-            model_name=config.research_fast_model,
-            router_url=config.router_api_base,
-            router_key=config.router_api_key,
-            http_client=http_client,
-        ),
-        small=_create_chat_model(
-            model_name=config.research_infer_model,
-            router_url=config.router_api_base,
-            router_key=config.router_api_key,
-            http_client=http_client,
-        ),
-        search=create_search_tool(config=config, http_client=http_client),
-        fetch=create_fetch_tool(
-            config=config,
-            http_client=http_client,
-            browser_crawler=browser_crawler,
-        ),
-    )
+    async with build_fetch_tool(
+        config, http_client, require_browser=True
+    ) as fetch:
+        if fetch is None:
+            yield None
+            return
+        yield ResearchConfig(
+            fast=_create_chat_model(
+                model_name=config.research_fast_model,
+                router_url=config.router_api_base,
+                router_key=config.router_api_key,
+                http_client=http_client,
+            ),
+            small=_create_chat_model(
+                model_name=config.research_infer_model,
+                router_url=config.router_api_base,
+                router_key=config.router_api_key,
+                http_client=http_client,
+            ),
+            search=create_search_tool(config=config, http_client=http_client),
+            fetch=fetch,
+        )

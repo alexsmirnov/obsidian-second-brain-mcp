@@ -25,9 +25,11 @@ TOPIC_HTML = (
 BASE = "https://source.example/articles/page"
 
 
-def page(content: str, mime: str = "text/html", **fields: Any) -> FetchResult:
+def page(
+    content: str, mime: str = "text/html", url: str = BASE, **fields: Any
+) -> FetchResult:
     return FetchResult(
-        url=BASE, status=FetchStatus.OK, mime=mime, content=content, **fields
+        url=url, status=FetchStatus.OK, mime=mime, content=content, **fields
     )
 
 
@@ -109,8 +111,8 @@ async def test_bm25_keeps_relevant_block_and_absolute_link():
     assert "bread flour" not in result.content
 
 
-async def test_links_resolve_against_base_url_when_set():
-    source = page(TOPIC_HTML, base_url="https://other.example/dir/")
+async def test_links_resolve_against_requested_url():
+    source = page(TOPIC_HTML, url="https://other.example/dir/page")
 
     result = await bm25()(source, "quantum optimization")
 

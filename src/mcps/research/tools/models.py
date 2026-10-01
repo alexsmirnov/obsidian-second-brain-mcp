@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pydantic import BaseModel, Field
 from enum import StrEnum
 from typing import Protocol, runtime_checkable
+
+from pydantic import BaseModel, Field
 
 
 class SearchResult(BaseModel):
@@ -43,7 +44,6 @@ class FetchResult:
     status: FetchStatus
     mime: str
     content: str = ""
-    base_url: str | None = None
     http_status: int | None = None
 
     @property

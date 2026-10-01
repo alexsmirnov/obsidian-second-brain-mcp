@@ -178,7 +178,7 @@ All components implement specific interfaces enabling:
 - Multiple chunking strategies (FixedSize, Semantic)
 
 ### Async Context Managers
-Lifespans use async context managers for connection lifecycle management: the Obsidian lifespan owns the HTTP client and vault [src/mcps/tools/obsidian_vault.py:181-203](../src/mcps/tools/obsidian_vault.py#L181-L203), and the research lifespan owns the HTTP client and a single browser crawler (`browser_endpoint` → `browser_crawler`) so fetches reuse one CDP connection [src/mcps/research/lifespan.py:14](../src/mcps/research/lifespan.py#L14).
+Lifespans use async context managers for connection lifecycle management: the Obsidian lifespan owns the HTTP client and vault [src/mcps/tools/obsidian_vault.py:181-203](../src/mcps/tools/obsidian_vault.py#L181-L203), and the research lifespan owns the HTTP client and the whole browser stack through nested context managers (`build_research_config` → `build_fetch_tool` → `create_browser_fetch`) so fetches reuse one CDP connection [src/mcps/research/lifespan.py:14](../src/mcps/research/lifespan.py#L14).
 
 ### Factory Pattern
 Component creation isolated in factory functions:

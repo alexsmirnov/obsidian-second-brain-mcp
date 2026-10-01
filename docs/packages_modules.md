@@ -109,13 +109,13 @@ Iterative deep research StateGraph: query generation, fetching, extraction, refl
 **Used by**: research.agent
 
 ### [src/mcps/research/config.py](../src/mcps/research/config.py) #module
-Research model configuration factory for LangChain chat models, the shared HTTP client, and the injected browser crawler.
-**Uses**: config, httpx, langchain_core, langchain_openai, langchain_google_genai, pydantic, research.tools.browser
+Research configuration factory. `build_research_config` is an async context manager that builds the LangChain chat models and search tool and enters the fetch tool (which owns the browser), yielding `None` when no browser is available.
+**Uses**: config, httpx, langchain_core, langchain_openai, langchain_google_genai, pydantic, research.tools, research.tools.fetch
 **Used by**: research.lifespan
 
 ### [src/mcps/research/lifespan.py](../src/mcps/research/lifespan.py) #module
-FastMCP lifespan handler that creates the shared HTTP client and browser crawler and builds the researcher.
-**Uses**: config, fastmcp, httpx, research.agent, research.config, research.tools.browser
+FastMCP lifespan handler that creates the shared HTTP client, enters `build_research_config` (which owns the browser stack) and builds the researcher.
+**Uses**: config, fastmcp, httpx, research.agent, research.config
 **Used by**: server
 
 ### [src/mcps/research/tools/](../src/mcps/research/tools/__init__.py) #package
@@ -127,7 +127,7 @@ Async web search and content fetching. The fetch tool is a chain of small classe
 - `Fetch`: `async (url, query=None) -> FetchResult`. Expected failures are returned, never raised.
 - `Filter`: `async (FetchResult, query=None) -> FetchResult`.
 - `Search`: `async (query) -> list[SearchResult]`.
-- `FetchResult`: frozen dataclass with `url` (always the requested URL), `status`, `mime`, `content`, `base_url` (link base, defaults to `url`), `http_status`. `ok` is true for `FetchStatus.OK`; `is_retryable()` is true for `TIMEOUT`, `EMPTY`, `UNAVAILABLE`, and `HTTP_ERROR` with 401/403/429.
+- `FetchResult`: frozen dataclass with `url` (always the requested URL), `status`, `mime`, `content`, `http_status`. `ok` is true for `FetchStatus.OK`; `is_retryable()` is true for `TIMEOUT`, `EMPTY`, `UNAVAILABLE`, and `HTTP_ERROR` with 401/403/429.
 - `FetchStatus` (`StrEnum`): `OK`, `RESTRICTED`, `HTTP_ERROR`, `TIMEOUT`, `EMPTY`, `UNSUPPORTED`, `UNAVAILABLE` (a fetcher could not run; says nothing about the page), `FILTER_FAILED`.
 
 #### Combinators ([combinators.py](../src/mcps/research/tools/combinators.py)) #architecture
@@ -150,11 +150,11 @@ Async web search and content fetching. The fetch tool is a chain of small classe
 | `common.py` | `MIME_HTML`/`MIME_MARKDOWN` constants, the `failure` result builder, and `extract_hostname` |
 | `google.py`, `duckduckgo.py` | `Search` factories |
 | `default.py` | `HttpFetch`: the single owner of page GETs (shared or owned client, browser-like Chrome headers) and of content-type extraction; HTML and PDF paragraphs are `text/html`, plain text and Markdown are `text/markdown` |
-| `arxiv.py`, `github.py` | `ArxivFetch` (HTML, then PDF, then abstract), `GitHubBlobFetch`, `GitHubRepoFetch` (README): thin wrappers over an injected `Fetch`; GitHub results carry their own `base_url` |
-| `browser.py` | `BrowserFetch` renders pages on an open crawl4ai crawler; `browser_endpoint` connects to `BROWSER_CDP_URL` or spawns a local Obscura, and `browser_crawler` owns one crawler for the lifespan so fetches never reconnect |
+| `arxiv.py`, `github.py` | `ArxivFetch` (HTML, then PDF, then abstract), `GitHubBlobFetch`, `GitHubRepoFetch` (README): thin wrappers over an injected `Fetch`; results are retargeted at the requested GitHub URL |
+| `browser.py` | `BrowserFetch` renders pages on an open crawl4ai crawler; `create_browser_fetch` owns the whole browser lifecycle (connects to `BROWSER_CDP_URL` or spawns a local Obscura, starts one crawler, closes both on exit) so fetches never reconnect |
 | `scrape_do.py`, `bright_data.py` | `ScrapeDoFetch`, `BrightDataFetch`: commercial unblocking fallbacks |
 | `filtering.py` | `MarkdownToHtml`, `PreTextToHtml` (normalize sources to HTML), `RelevanceFilter` (`BM25ContentFilter`, or `LLMContentFilter` when `FETCH_MODEL` is set; Markdown output, absolute links) |
-| `fetch.py` | `create_fetch`: the composition root |
+| `fetch.py` | `create_fetch`: the composition root; `build_fetch_tool`: lifespan-friendly context manager that owns the browser via `create_browser_fetch` and assembles the fetch |
 
 #### Composition ([fetch.py](../src/mcps/research/tools/fetch.py)) #architecture
 ```
@@ -166,7 +166,7 @@ fetch   = Filtered(routed, FilterChain(normalize, RelevanceFilter, Truncate))
 `normalize` is a `FilterSelector` that renders `text/markdown` results to HTML and unwraps a sole `<pre>` page in `text/html` results. The arXiv and GitHub routes sit outside the `Fallback`, so they never escalate.
 
 #### Adding a provider
-- **Fetch provider**: write a class with `async __call__(url, query=None, /) -> FetchResult` that returns `failure(url, FetchStatus.UNAVAILABLE)` when the service itself fails and declares its `mime`. Add it as a route in `create_fetch` (site-specific) or build it in `research.config._create_provider_fallback` (unblocking fallback).
+- **Fetch provider**: write a class with `async __call__(url, query=None, /) -> FetchResult` that returns `failure(url, FetchStatus.UNAVAILABLE)` when the service itself fails and declares its `mime`. Add it as a route in `create_fetch` (site-specific) or build it in `research.tools.fetch._create_provider_fallback` (unblocking fallback).
 - **Search provider**: write a factory returning a `Search` and add a branch in `research.config.create_search_tool`.
 
 ## Sub-package: mcps.resources

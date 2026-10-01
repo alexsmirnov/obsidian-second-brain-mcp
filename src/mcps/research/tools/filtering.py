@@ -164,7 +164,7 @@ class RelevanceFilter:
 
     A blank query returns the whole page. Otherwise an LLM filter is used when
     ``fetch_model`` is set, BM25 when it is not. Links resolve against
-    ``result.base_url`` or, when unset, ``result.url``.
+    ``result.url``, the original requested URL.
     """
 
     def __init__(self, *, fetch_model: str, router_url: str, router_key: str) -> None:
@@ -188,15 +188,14 @@ class RelevanceFilter:
                 else None
             )
         )
-        base_url = result.base_url or result.url
         generated = await asyncio.to_thread(
-            generator.generate_markdown, result.content, base_url
+            generator.generate_markdown, result.content, result.url
         )
         markdown = (
             generated.fit_markdown if nonblank else generated.raw_markdown
         ) or ""
         markdown = markdown.strip()
         if nonblank and markdown.startswith("Error generating fit markdown"):
-            logger.warning("Content filtering failed for %s", base_url)
+            logger.warning("Content filtering failed for %s", result.url)
             return failure(result.url, FetchStatus.FILTER_FAILED)
         return replace(result, content=markdown, mime=MIME_MARKDOWN)

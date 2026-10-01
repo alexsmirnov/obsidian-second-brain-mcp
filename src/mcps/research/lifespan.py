@@ -8,7 +8,6 @@ from fastmcp.server.lifespan import Lifespan, lifespan
 from mcps.config import ServerConfig
 from mcps.research.agent import create_researcher
 from mcps.research.config import build_research_config
-from mcps.research.tools.browser import browser_crawler, browser_endpoint
 
 
 def build_research_lifespan(config: ServerConfig) -> Lifespan:
@@ -17,23 +16,17 @@ def build_research_lifespan(config: ServerConfig) -> Lifespan:
         async with httpx.AsyncClient(
             timeout=30.0, follow_redirects=True
         ) as http_client:
-            async with browser_endpoint(config.browser_cdp_url) as cdp_url:
-                async with browser_crawler(cdp_url) as crawler:
-                    if crawler is None:
-                        # Only web_research depends on a browser; keep every
-                        # other tool available.
-                        server.disable(names={"web_research"})
-                        yield {"researcher": None, "http_client": http_client}
-                        return
-                    server.enable(names={"web_research"})
-                    research_config = build_research_config(
-                        config,
-                        http_client=http_client,
-                        browser_crawler=crawler,
-                    )
-                    researcher = create_researcher(
-                        research_config, implementation="deep_research"
-                    )
-                    yield {"researcher": researcher, "http_client": http_client}
+            async with build_research_config(config, http_client) as research_config:
+                if research_config is None:
+                    # Only web_research depends on a browser; keep every other
+                    # tool available.
+                    server.disable(names={"web_research"})
+                    yield {"researcher": None, "http_client": http_client}
+                    return
+                server.enable(names={"web_research"})
+                researcher = create_researcher(
+                    research_config, implementation="deep_research"
+                )
+                yield {"researcher": researcher, "http_client": http_client}
 
     return research_lifespan

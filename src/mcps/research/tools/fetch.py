@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+import logging
+from collections.abc import AsyncIterator, Sequence
+from contextlib import asynccontextmanager
+from typing import AsyncGenerator
 from urllib.parse import urlparse
 
 import httpx
 
+from mcps.config import ServerConfig
 from mcps.research.tools.arxiv import ArxivFetch, is_arxiv_url
+from mcps.research.tools.bright_data import BrightDataFetch
+from mcps.research.tools.browser import create_browser_fetch
 from mcps.research.tools.combinators import (
     Blocked,
     Fallback,
@@ -20,7 +26,7 @@ from mcps.research.tools.combinators import (
 )
 from mcps.research.tools.common import MIME_HTML, MIME_MARKDOWN
 from mcps.research.tools.default import HttpFetch
-from mcps.research.tools.filtering import MarkdownToHtml, PreTextToHtml
+from mcps.research.tools.filtering import MarkdownToHtml, PreTextToHtml, RelevanceFilter
 from mcps.research.tools.github import (
     GitHubBlobFetch,
     GitHubRepoFetch,
@@ -28,8 +34,11 @@ from mcps.research.tools.github import (
     is_github_repo_url,
 )
 from mcps.research.tools.models import Fetch, FetchResult, Filter
+from mcps.research.tools.scrape_do import ScrapeDoFetch
 
-__all__ = ["create_fetch"]
+__all__ = ["build_fetch_tool", "create_fetch"]
+
+logger = logging.getLogger(__name__)
 
 
 def _is_restricted(domains: Sequence[str]):
@@ -101,3 +110,69 @@ def create_fetch(
     return Filtered(
         routed, FilterChain(normalize, page_filter, Truncate(max_chars))
     )
+
+
+def _create_provider_fallback(
+    config: ServerConfig, http_client: httpx.AsyncClient
+) -> Fetch | None:
+    """Build the commercial unblocking provider, or None when unconfigured."""
+    match config.scraper_provider:
+        case "":
+            return None
+        case "scrape_do" if config.scrape_do_token:
+            return ScrapeDoFetch(
+                config.scrape_do_token,
+                http_client=http_client,
+            )
+        case "bright_data" if config.bright_data_api_key and config.bright_data_zone:
+            return BrightDataFetch(
+                config.bright_data_api_key,
+                config.bright_data_zone,
+                http_client=http_client,
+            )
+        case "scrape_do" | "bright_data":
+            logger.warning(
+                "SCRAPER_PROVIDER=%s is missing credentials; provider fallback "
+                "disabled.",
+                config.scraper_provider,
+            )
+        case _:
+            logger.warning(
+                "Unknown SCRAPER_PROVIDER=%s (expected scrape_do or bright_data); "
+                "provider fallback disabled.",
+                config.scraper_provider,
+            )
+    return None
+
+
+@asynccontextmanager
+async def build_fetch_tool(
+    config: ServerConfig,
+    http_client: httpx.AsyncClient,
+    *,
+    require_browser: bool = False,
+) -> AsyncGenerator[Fetch | None]:
+    """Compose the page fetch for ``config`` for the duration of the context.
+
+    Owns the browser lifecycle (see :func:`create_browser_fetch`) so the caller
+    only enters a single context manager. With ``require_browser`` the context
+    yields ``None`` when no browser is available; otherwise it falls back to
+    plain httpx for generic pages. The supplied ``http_client`` is borrowed and
+    never closed here.
+    """
+    async with create_browser_fetch(config) as browser:
+        if browser is None and require_browser:
+            yield None
+            return
+        yield create_fetch(
+            http_client=http_client,
+            browser=browser,
+            provider=_create_provider_fallback(config, http_client),
+            page_filter=RelevanceFilter(
+                fetch_model=config.fetch_model,
+                router_url=config.router_api_base,
+                router_key=config.router_api_key,
+            ),
+            restricted_domains=config.fetch_restricted_domains,
+            concurrency=config.fetch_concurrency,
+        )
