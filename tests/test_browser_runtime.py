@@ -15,6 +15,7 @@ from mcps.config import create_config
 from mcps.research.lifespan import build_research_lifespan
 from mcps.research.tools import browser as browser_module
 from mcps.research.tools.browser import LOCAL_CDP_URL, browser_endpoint
+from mcps.research.tools.result import FetchStatus
 from mcps.server import create_server
 
 
@@ -250,7 +251,9 @@ async def test_research_lifespan_reuses_one_browser_connection(monkeypatch):
         assert crawler.is_open
         assert crawler.urls == ["https://a.example", "https://b.example"]
 
-    assert first and second
+    assert (first.status, second.status) == (FetchStatus.OK, FetchStatus.OK)
+    assert "hello world" in first.content
+    assert "hello world" in second.content
     assert FakeCrawl4aiCrawler.closed == [crawler]
 
 

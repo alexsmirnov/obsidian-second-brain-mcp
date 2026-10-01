@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Awaitable, Callable
 from typing import Any
 
 import httpx
 
 from mcps.research.tools.models import SearchResult
+from mcps.research.tools.result import Search
 
 __all__ = ["create_google_search"]
 
@@ -48,10 +48,10 @@ def create_google_search(
     cse_id: str,
     *,
     http_client: httpx.AsyncClient | None = None,
-) -> Callable[[str], Awaitable[list[SearchResult]]]:
+) -> Search:
     """Create an async Google CSE search callable."""
 
-    async def search(query: str) -> list[SearchResult]:
+    async def search(query: str, /) -> list[SearchResult]:
         if not api_key or not cse_id:
             return []
         try:

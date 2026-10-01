@@ -432,4 +432,7 @@ async def test_fetch_tool_escalates_blocked_page_to_configured_provider(
     )
     fetch = create_fetch_tool(config=config, http_client=client)
 
-    assert await fetch(TARGET, None) == "# Unblocked"
+    result = await fetch(TARGET, None)
+
+    assert result.ok
+    assert result.content == "# Unblocked"

@@ -18,7 +18,7 @@ from mcps.research.tools import (
 )
 from mcps.research.tools.arxiv import ArxivFetch
 from mcps.research.tools.default import HttpFetch
-from mcps.research.tools.filtering import create_page_filter
+from mcps.research.tools.filtering import RelevanceFilter
 from mcps.research.tools.github import GitHubBlobFetch, GitHubRepoFetch
 from mcps.research.tools.result import FetchResult, FetchStatus
 
@@ -102,7 +102,7 @@ async def client() -> AsyncIterator[httpx.AsyncClient]:
 
 @pytest.fixture
 def bm25():
-    return create_page_filter(fetch_model="", router_url="", router_key="")
+    return RelevanceFilter(fetch_model="", router_url="", router_key="")
 
 
 def _pdf_bytes(text: str) -> bytes:
@@ -183,21 +183,26 @@ async def test_duckduckgo_search_http_error_returns_empty(
 # ---------------------------------------------------------------------------
 
 
-async def test_restricted_domain_returns_empty_without_io(bm25):
+async def test_restricted_domain_is_restricted_without_io(bm25):
     browser = FakeBrowser(TOPIC_HTML)
+    provider = FakeProvider(TOPIC_HTML)
     fetch = create_fetch(
         http_client=None,
         browser=browser,
-        provider=None,
+        provider=provider,
         page_filter=bm25,
         restricted_domains=("blocked.example",),
     )
 
-    assert await fetch("https://blocked.example/a", "q") == ""
-    assert await fetch("https://Sub.Blocked.Example/a", "q") == ""
-    await fetch("https://notblocked.example/a", "q")
+    exact = await fetch("https://blocked.example/a", "q")
+    subdomain = await fetch("https://Sub.Blocked.Example/a", "q")
+    allowed = await fetch("https://notblocked.example/a", "q")
 
+    assert (exact.status, exact.content) == (FetchStatus.RESTRICTED, "")
+    assert subdomain.status is FetchStatus.RESTRICTED
+    assert allowed.ok
     assert browser.calls == ["https://notblocked.example/a"]
+    assert provider.calls == []
 
 
 async def test_generic_url_uses_browser_and_filters(bm25, httpx_mock: HTTPXMock):
@@ -208,8 +213,8 @@ async def test_generic_url_uses_browser_and_filters(bm25, httpx_mock: HTTPXMock)
 
     result = await fetch(GENERIC, "quantum optimization")
 
-    assert "https://source.example/paper" in result
-    assert "bread flour" not in result
+    assert "https://source.example/paper" in result.content
+    assert "bread flour" not in result.content
     assert browser.calls == [GENERIC]
     assert httpx_mock.get_requests() == []
 
@@ -224,8 +229,8 @@ async def test_plain_text_url_via_browser_is_filtered(bm25):
 
     result = await fetch("https://source.example/notes.md", "quantum optimization")
 
-    assert "https://source.example/paper" in result
-    assert "bread flour" not in result
+    assert "https://source.example/paper" in result.content
+    assert "bread flour" not in result.content
     assert provider.calls == []
 
 
@@ -267,9 +272,9 @@ async def test_specialized_sources_filter_and_never_escalate(
     github = await fetch("https://github.com/org/project", "quantum optimization")
     arxiv = await fetch("https://arxiv.org/abs/2406.02530", "quantum optimization")
 
-    assert "https://github.com/paper" in github
-    assert "bread flour" not in github
-    assert arxiv == "ERROR: http code 403"
+    assert "https://github.com/paper" in github.content
+    assert "bread flour" not in github.content
+    assert (arxiv.status, arxiv.http_status) == (FetchStatus.HTTP_ERROR, 403)
     assert browser.calls == []
     assert provider.calls == []
 
@@ -289,7 +294,7 @@ async def test_pdf_uses_http_extractor(
 
     result = await fetch("https://source.example/paper.pdf", None)
 
-    assert "Quantum routing results" in result
+    assert "Quantum routing results" in result.content
     assert browser.calls == []
 
 
@@ -311,8 +316,8 @@ async def test_blocked_page_escalates_to_provider_filtered(bm25, browser_error: 
 
     result = await fetch(GENERIC, "quantum optimization")
 
-    assert "https://source.example/paper" in result
-    assert "bread flour" not in result
+    assert "https://source.example/paper" in result.content
+    assert "bread flour" not in result.content
     assert provider.calls == [GENERIC]
 
 
@@ -324,7 +329,11 @@ async def test_non_blocking_errors_do_not_escalate(bm25):
         provider=provider,
         page_filter=bm25,
     )
-    assert await doomed(GENERIC, None) == "ERROR: http code 404"
+    doomed_result = await doomed(GENERIC, None)
+    assert (doomed_result.status, doomed_result.http_status) == (
+        FetchStatus.HTTP_ERROR,
+        404,
+    )
     assert provider.calls == []
 
     no_provider = create_fetch(
@@ -333,7 +342,11 @@ async def test_non_blocking_errors_do_not_escalate(bm25):
         provider=None,
         page_filter=bm25,
     )
-    assert await no_provider(GENERIC, None) == "ERROR: http code 403"
+    no_provider_result = await no_provider(GENERIC, None)
+    assert (no_provider_result.status, no_provider_result.http_status) == (
+        FetchStatus.HTTP_ERROR,
+        403,
+    )
 
     unavailable = FakeProvider("ERROR: fetcher unavailable")
     keeps_error = create_fetch(
@@ -342,7 +355,8 @@ async def test_non_blocking_errors_do_not_escalate(bm25):
         provider=unavailable,
         page_filter=bm25,
     )
-    assert await keeps_error(GENERIC, None) == "ERROR: http code 403"
+    kept = await keeps_error(GENERIC, None)
+    assert (kept.status, kept.http_status) == (FetchStatus.HTTP_ERROR, 403)
     assert unavailable.calls == [GENERIC]
 
 
@@ -357,8 +371,8 @@ async def test_output_truncated_after_filter(bm25):
 
     result = await fetch(GENERIC, None)
 
-    assert len(result) <= 15000 + len("\n\n[Content truncated]")
-    assert result.endswith("[Content truncated]")
+    assert len(result.content) <= 15000 + len("\n\n[Content truncated]")
+    assert result.content.endswith("[Content truncated]")
 
 
 async def test_browser_concurrency_is_limited(bm25):
@@ -410,8 +424,8 @@ async def test_fetch_default_html_returns_markdown(
 
     result = await fetch("https://site.example/page", None)
 
-    assert "# Hello" in result
-    assert "World" in result
+    assert "# Hello" in result.content
+    assert "World" in result.content
 
 
 async def test_fetch_github_blob_uses_raw_url(
@@ -427,7 +441,7 @@ async def test_fetch_github_blob_uses_raw_url(
 
     result = await fetch("https://github.com/o/r/blob/main/src/a.py", None)
 
-    assert result == "print(1)"
+    assert result.content == "print(1)"
 
 
 async def test_fetch_arxiv_falls_back_from_html_to_pdf_to_abs(
@@ -445,7 +459,7 @@ async def test_fetch_arxiv_falls_back_from_html_to_pdf_to_abs(
 
     result = await fetch("https://arxiv.org/abs/2401.00001", None)
 
-    assert result == "Abstract text"
+    assert result.content == "Abstract text"
 
 
 async def test_fetch_timeout_returns_timeout_error(
@@ -456,7 +470,9 @@ async def test_fetch_timeout_returns_timeout_error(
         http_client=client, browser=None, provider=None, page_filter=bm25
     )
 
-    assert await fetch("https://site.example/", None) == "ERROR: request timeout"
+    result = await fetch("https://site.example/", None)
+
+    assert result.status is FetchStatus.TIMEOUT
 
 
 async def test_fetch_unknown_content_type_is_unsupported(
@@ -467,10 +483,9 @@ async def test_fetch_unknown_content_type_is_unsupported(
         http_client=client, browser=None, provider=None, page_filter=bm25
     )
 
-    assert (
-        await fetch("https://site.example/a.png", None)
-        == "ERROR: unsupported content"
-    )
+    result = await fetch("https://site.example/a.png", None)
+
+    assert result.status is FetchStatus.UNSUPPORTED
 
 
 @pytest.mark.parametrize("status_code", [401, 403, 404, 429, 500])
@@ -484,7 +499,10 @@ async def test_fetch_http_error_reports_exact_status(
 
     result = await fetch("https://site.example/", None)
 
-    assert result == f"ERROR: http code {status_code}"
+    assert (result.status, result.http_status) == (
+        FetchStatus.HTTP_ERROR,
+        status_code,
+    )
 
 
 PAGE_WITH_STYLE_TEXT = (
@@ -503,8 +521,8 @@ async def test_fetch_default_html_is_converted_once(
 
     result = await fetch("https://site.example/page", None)
 
-    assert "Use <style>alpha</style> carefully" in result
-    assert "![Fig](https://site.example/fig.png)" in result
+    assert "Use <style>alpha</style> carefully" in result.content
+    assert "![Fig](https://site.example/fig.png)" in result.content
 
 
 async def test_arxiv_html_is_converted_once(
@@ -519,8 +537,8 @@ async def test_arxiv_html_is_converted_once(
 
     result = await fetch("https://arxiv.org/abs/2401.00002", None)
 
-    assert "Use <style>alpha</style> carefully" in result
-    assert "![Fig](https://arxiv.org/fig.png)" in result
+    assert "Use <style>alpha</style> carefully" in result.content
+    assert "![Fig](https://arxiv.org/fig.png)" in result.content
 
 
 async def test_pdf_keeps_line_breaks(
@@ -547,10 +565,10 @@ async def test_pdf_keeps_line_breaks(
     unfiltered = await fetch(url, None)
     filtered = await fetch(url, "quantum routing")
 
-    assert "Quantum routing results  \ncol_a col_b  \n1 2" in unfiltered
-    assert "bread flour baking" in unfiltered
-    assert "col_a col_b" in filtered
-    assert "bread flour" not in filtered
+    assert "Quantum routing results  \ncol_a col_b  \n1 2" in unfiltered.content
+    assert "bread flour baking" in unfiltered.content
+    assert "col_a col_b" in filtered.content
+    assert "bread flour" not in filtered.content
 
 
 async def test_blank_html_is_empty_response(
@@ -563,7 +581,9 @@ async def test_blank_html_is_empty_response(
         http_client=client, browser=None, provider=None, page_filter=bm25
     )
 
-    assert await fetch("https://site.example/blank", None) == "ERROR: empty response"
+    result = await fetch("https://site.example/blank", None)
+
+    assert result.status is FetchStatus.EMPTY
 
 
 async def test_github_repo_relative_link_resolves_in_repository(
@@ -579,8 +599,8 @@ async def test_github_repo_relative_link_resolves_in_repository(
 
     result = await fetch("https://github.com/org/project", None)
 
-    assert "https://github.com/org/project/blob/HEAD/docs/guide.md" in result
-    assert "https://github.com/paper" in result
+    assert "https://github.com/org/project/blob/HEAD/docs/guide.md" in result.content
+    assert "https://github.com/paper" in result.content
 
 
 async def test_github_blob_relative_link_resolves_in_directory(
@@ -596,7 +616,55 @@ async def test_github_blob_relative_link_resolves_in_directory(
 
     result = await fetch("https://github.com/o/r/blob/main/docs/README.md", None)
 
-    assert "https://github.com/o/r/blob/main/docs/guide.md" in result
+    assert "https://github.com/o/r/blob/main/docs/guide.md" in result.content
+
+
+async def test_filter_yielding_nothing_stays_ok_with_empty_content(bm25):
+    fetch = create_fetch(
+        http_client=None,
+        browser=FakeBrowser(TOPIC_HTML),
+        provider=None,
+        page_filter=bm25,
+    )
+
+    result = await fetch(GENERIC, "zzzz unrelated")
+
+    assert (result.status, result.content) == (FetchStatus.OK, "")
+
+
+async def test_blocked_pdf_skips_browser_and_escalates_to_provider(
+    bm25, httpx_mock: HTTPXMock, client: httpx.AsyncClient
+):
+    pdf_url = "https://source.example/paper.pdf"
+    httpx_mock.add_response(url=pdf_url, status_code=403)
+    browser = FakeBrowser(TOPIC_HTML)
+    provider = FakeProvider(TOPIC_HTML)
+    fetch = create_fetch(
+        http_client=client, browser=browser, provider=provider, page_filter=bm25
+    )
+
+    result = await fetch(pdf_url, "quantum optimization")
+
+    assert result.ok
+    assert "https://source.example/paper" in result.content
+    assert browser.calls == []
+    assert provider.calls == [pdf_url]
+
+
+async def test_restricted_url_never_reaches_provider(bm25):
+    provider = FakeProvider(TOPIC_HTML)
+    fetch = create_fetch(
+        http_client=None,
+        browser=FakeBrowser("ERROR: http code 403"),
+        provider=provider,
+        page_filter=bm25,
+        restricted_domains=("source.example",),
+    )
+
+    result = await fetch(GENERIC, None)
+
+    assert result.status is FetchStatus.RESTRICTED
+    assert provider.calls == []
 
 
 async def test_provider_html_is_filtered_once(bm25):
@@ -616,8 +684,8 @@ async def test_provider_html_is_filtered_once(bm25):
 
     result = await fetch(GENERIC, "quantum optimization")
 
-    assert "https://source.example/paper" in result
-    assert "bread flour" not in result
+    assert "https://source.example/paper" in result.content
+    assert "bread flour" not in result.content
 
 
 class ExplodingClient:

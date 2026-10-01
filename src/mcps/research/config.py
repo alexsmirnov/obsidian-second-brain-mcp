@@ -8,7 +8,6 @@ so the FastMCP lifespan owns the connection pool.
 from __future__ import annotations
 
 import logging
-from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
 import httpx
@@ -20,6 +19,7 @@ from pydantic import SecretStr
 from mcps.config import ServerConfig
 from mcps.research.tools import (
     Fetch,
+    Search,
     SearchResult,
     create_duckduckgo_search,
     create_fetch,
@@ -27,8 +27,7 @@ from mcps.research.tools import (
 )
 from mcps.research.tools.bright_data import BrightDataFetch
 from mcps.research.tools.browser import BrowserFetch, Crawler
-from mcps.research.tools.filtering import create_page_filter
-from mcps.research.tools.result import Fetch as SourceFetch
+from mcps.research.tools.filtering import RelevanceFilter
 from mcps.research.tools.scrape_do import ScrapeDoFetch
 
 __all__ = [
@@ -47,7 +46,7 @@ class ResearchConfig:
 
     fast: BaseChatModel
     small: BaseChatModel
-    search: Callable[[str], Awaitable[list[SearchResult]]]
+    search: Search
     fetch: Fetch
 
 
@@ -90,8 +89,8 @@ def create_search_tool(
     *,
     config: ServerConfig,
     http_client: httpx.AsyncClient | None = None,
-) -> Callable[[str], Awaitable[list[SearchResult]]]:
-    """Return GoogleSearchTool or DuckDuckGoSearchTool fallback."""
+) -> Search:
+    """Return the Google search when configured, else DuckDuckGo."""
     if _is_google_cse_configured(config):
         return create_google_search(
             config.google_api_key,
@@ -103,7 +102,7 @@ def create_search_tool(
 
 def _create_provider_fallback(
     config: ServerConfig, http_client: httpx.AsyncClient
-) -> SourceFetch | None:
+) -> Fetch | None:
     """Build the commercial unblocking provider, or None when unconfigured.
 
     The fetch callable filters and truncates the result once, on the shared path.
@@ -152,7 +151,7 @@ def create_fetch_tool(
         http_client=http_client,
         browser=BrowserFetch(browser_crawler) if browser_crawler else None,
         provider=_create_provider_fallback(config, http_client),
-        page_filter=create_page_filter(
+        page_filter=RelevanceFilter(
             fetch_model=config.fetch_model,
             router_url=config.router_api_base,
             router_key=config.router_api_key,

@@ -22,7 +22,8 @@ from mcps.research.config import (
     build_research_config,
 )
 from mcps.research.deep_research import ResearchAgent
-from mcps.research.tools import SearchResult
+from mcps.research.tools import Fetch, Search, SearchResult
+from mcps.research.tools.result import FetchResult, FetchStatus
 
 # ---------------------------------------------------------------------------
 # Config contract tests
@@ -86,10 +87,8 @@ class TestResearchConfigContract:
             server_config,
             http_client=httpx.AsyncClient(),
         )
-        import asyncio
-
-        assert asyncio.iscoroutinefunction(config.search)
-        assert asyncio.iscoroutinefunction(config.fetch)
+        assert isinstance(config.search, Search)
+        assert isinstance(config.fetch, Fetch)
 
 
 # ---------------------------------------------------------------------------
@@ -308,13 +307,20 @@ class _RecordingModel(FakeMessagesListChatModel):
         return super()._generate(messages, *args, **kwargs)
 
 
-def _make_agent(fetch_results: dict[str, str] | None = None):
+_FAILED = FetchResult("", FetchStatus.HTTP_ERROR, "", http_status=403)
+
+
+def _fetched(content: str) -> FetchResult:
+    return FetchResult("", FetchStatus.OK, "text/markdown", content)
+
+
+def _make_agent(fetch_results: dict[str, FetchResult] | None = None):
     fetch_calls: list[tuple[str, str | None]] = []
     results = fetch_results or {}
 
-    async def fake_fetch(url: str, query: str | None) -> str:
+    async def fake_fetch(url: str, query: str | None = None, /) -> FetchResult:
         fetch_calls.append((url, query))
-        return results.get(url, "content")
+        return results.get(url, _fetched("content"))
 
     async def fake_search(query: str) -> list[SearchResult]:
         return _SEARCH_RESULTS
@@ -364,9 +370,9 @@ class TestWebResearchFetch:
     async def test_failed_and_empty_fetches_are_not_evidence(self):
         agent, fast, _ = _make_agent(
             {
-                "https://a.example": "content A",
-                "https://b.example": "ERROR: http code 403",
-                "https://c.example": "",
+                "https://a.example": _fetched("content A"),
+                "https://b.example": _FAILED,
+                "https://c.example": _fetched(""),
             }
         )
 
@@ -399,9 +405,9 @@ class TestWebResearchFetch:
     async def test_all_failed_fetches_yield_no_evidence_without_llm_call(self):
         agent, fast, _ = _make_agent(
             {
-                "https://a.example": "ERROR: http code 403",
-                "https://b.example": "",
-                "https://c.example": "   ",
+                "https://a.example": _FAILED,
+                "https://b.example": _fetched(""),
+                "https://c.example": _fetched("   "),
             }
         )
 

@@ -22,6 +22,7 @@ from dotenv import load_dotenv
 from mcps.config import create_config
 from mcps.research.config import create_fetch_tool
 from mcps.research.tools.browser import browser_crawler, browser_endpoint
+from mcps.research.tools.result import FetchResult, FetchStatus
 
 CASES_DIR = Path(__file__).parent / "evaluation" / "data"
 
@@ -58,6 +59,15 @@ def _parse_case(number: int, raw: dict[str, object]) -> FetchCase:
         baseline_error=first["status"] != "success" if first else None,
         baseline_chars=first.get("inferred_returned_chars") if first else None,
     )
+
+
+def _error_label(result: FetchResult) -> str | None:
+    """Failure label for the report; restricted domains are not failures."""
+    if result.ok or result.status is FetchStatus.RESTRICTED:
+        return None
+    if result.http_status is not None:
+        return f"http {result.http_status}"
+    return str(result.status)
 
 
 def load_cases(path: Path) -> list[FetchCase]:
@@ -140,7 +150,8 @@ async def main(argv: list[str] | None = None) -> None:
                 )
                 for number, case in enumerate(cases, start=1):
                     started = time.perf_counter()
-                    content = await fetch(case.url, case.query)
+                    result = await fetch(case.url, case.query)
+                    content = result.content
                     elapsed_ms = (time.perf_counter() - started) * 1000
                     logger.info(
                         "[%d/%d] %s %s: %d chars in %.0f ms",
@@ -158,7 +169,7 @@ async def main(argv: list[str] | None = None) -> None:
                             "query": case.query,
                             "response_size": len(content),
                             "response_time_ms": round(elapsed_ms),
-                            "error": content if content.startswith("ERROR") else None,
+                            "error": _error_label(result),
                             "content": content,
                         }
                     )

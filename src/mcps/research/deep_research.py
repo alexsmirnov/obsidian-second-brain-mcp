@@ -17,7 +17,7 @@ from langgraph.graph.message import add_messages as _add_messages
 from langgraph.types import Overwrite, Send
 from pydantic import BaseModel, Field
 
-from mcps.research.tools import SearchResult
+from mcps.research.tools import FetchResult, SearchResult
 
 if TYPE_CHECKING:
     from langgraph.graph.state import CompiledStateGraph
@@ -418,14 +418,14 @@ class ResearchAgent:
     async def clean_result(
         self,
         search_results: list[SearchResult],
-        fetch_results: list[str],
+        fetch_results: list[FetchResult],
         question: str,
         knowledge_gap: str | None,
     ) -> str:
         success_results = [
-            f"Source URL: {sr.url}\nTitle:{sr.title}\nPage Sippet: {sr.snippet}\nCONTENT: {fr}"
+            f"Source URL: {sr.url}\nTitle:{sr.title}\nPage Sippet: {sr.snippet}\nCONTENT: {fr.content}"
             for sr, fr in zip(search_results, fetch_results, strict=False)
-            if fr.strip() and not fr.startswith("ERROR")
+            if fr.ok and fr.content.strip()
         ]
         logger.info(
             "Extract information from %d success and %d failed results. User question %.10s, knowledge gap: %.20s",

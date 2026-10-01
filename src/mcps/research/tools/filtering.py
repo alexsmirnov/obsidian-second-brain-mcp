@@ -1,10 +1,10 @@
-"""Post-retrieval content filter: keep only query-relevant Markdown.
+"""Post-retrieval filters: normalize sources to HTML, keep relevant Markdown.
 
-Every successful source (browser HTML, GitHub/arXiv/PDF Markdown, commercial
-provider Markdown) is funnelled through one :data:`PageFilter`. With a blank
-query the page is returned unfiltered. Otherwise crawl4ai selects the
-relevant blocks -- an LLM filter when ``FETCH_MODEL`` is set, BM25 otherwise --
-and the resulting Markdown keeps its links resolved to absolute URLs.
+:class:`MarkdownToHtml` and :class:`PreTextToHtml` turn Markdown, plain-text
+and ``<pre>``-wrapped sources into HTML blocks. :class:`RelevanceFilter` then
+selects the query-relevant blocks -- an LLM filter when ``FETCH_MODEL`` is set,
+BM25 otherwise -- and returns Markdown with links resolved to absolute URLs.
+With a blank query the page is returned unfiltered.
 
 The blocking ``generate_markdown`` call runs in a worker thread: crawl4ai
 executes its content filter synchronously, and an LLM filter there would
@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable
 from dataclasses import replace
 
 import markdown as markdown_lib
@@ -28,7 +27,6 @@ from crawl4ai import (
 from lxml import html as lxml_html
 
 from mcps.research.tools.common import (
-    ERROR_FILTERING,
     MIME_HTML,
     MIME_MARKDOWN,
     failure,
@@ -37,18 +35,13 @@ from mcps.research.tools.result import FetchResult, FetchStatus
 
 __all__ = [
     "MarkdownToHtml",
-    "PageFilter",
     "PreTextToHtml",
     "RelevanceFilter",
-    "create_page_filter",
     "markdown_to_html",
     "text_page_to_html",
 ]
 
 logger = logging.getLogger(__name__)
-
-# (html, base_url, query) -> filtered Markdown
-PageFilter = Callable[[str, str, str | None], Awaitable[str]]
 
 _LLM_INSTRUCTION = (
     "Keep only passages relevant to the query below, verbatim, with their "
@@ -207,24 +200,3 @@ class RelevanceFilter:
             logger.warning("Content filtering failed for %s", base_url)
             return failure(result.url, FetchStatus.FILTER_FAILED)
         return replace(result, content=markdown, mime=MIME_MARKDOWN)
-
-
-def create_page_filter(
-    *, fetch_model: str, router_url: str, router_key: str
-) -> PageFilter:
-    """String-level adapter over :class:`RelevanceFilter`.
-
-    Removed with the string-returning ``create_fetch`` adapter in Phase 3.
-    """
-    relevance = RelevanceFilter(
-        fetch_model=fetch_model, router_url=router_url, router_key=router_key
-    )
-
-    async def page_filter(html: str, base_url: str, query: str | None) -> str:
-        source = FetchResult(
-            url=base_url, status=FetchStatus.OK, mime=MIME_HTML, content=html
-        )
-        filtered = await relevance(source, query)
-        return filtered.content if filtered.ok else ERROR_FILTERING
-
-    return page_filter
