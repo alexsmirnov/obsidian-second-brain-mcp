@@ -54,14 +54,14 @@ def _new_crawler(cdp_url: str) -> AsyncWebCrawler:
         avoid_ads=True,
         memory_saving_mode=True,
         cdp_cleanup_on_close=True,
-        headers={
-            "Accept-Language": "en-US,en;q=0.9",
-            "Referer": "https://google.com",
-            "DNT": "1",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-            "Sec-Ch-Ua": '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
-            "Sec-Ch-Ua-Mobile": "?0",
-        }
+        # headers={
+        #     "Accept-Language": "en-US,en;q=0.9",
+        #     "Referer": "https://google.com",
+        #     "DNT": "1",
+        #     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+        #     "Sec-Ch-Ua": '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
+        #     "Sec-Ch-Ua-Mobile": "?0",
+        # }
     )
     return AsyncWebCrawler(config=browser_config)
 
@@ -99,12 +99,12 @@ class BrowserFetch:
                 magic=False,  # Enable magic mode
                 wait_until="domcontentloaded",
                 # Give cloudflare a moment to render the DOM elements, it waits 5 second
-                delay_before_return_html=5.5,
+                delay_before_return_html=0.2,
                 scan_full_page=False,
                 exclude_all_images=True,
                 process_iframes=False,       # Prevents recursively crawling deep iframe trees
                 wait_for_images=False,       # Cuts down on event loops monitoring image states
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+                # user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
             )
             crawl = await self._crawler.arun(url, config=crawler_config)
         except Exception as error:
