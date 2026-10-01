@@ -147,11 +147,10 @@ Async web search and content fetching. The fetch tool is a chain of small classe
 |---|---|
 | `result.py`, `combinators.py` | Contracts and combinators above |
 | `models.py` | `SearchResult` |
-| `common.py` | Chrome headers, `MIME_HTML`/`MIME_MARKDOWN`, `request_get`, result builders `failure`/`error_result`, `safe_fetch` (any exception becomes `UNSUPPORTED`) |
+| `common.py` | `MIME_HTML`/`MIME_MARKDOWN` constants, the `failure` result builder, and `extract_hostname` |
 | `google.py`, `duckduckgo.py` | `Search` factories |
-| `extract.py` | httpx response to `(content, mime)` by content type: HTML and PDF paragraphs are `text/html`, plain text and Markdown are `text/markdown` |
-| `default.py` | `HttpFetch`: generic httpx fetch |
-| `arxiv.py`, `github.py` | `ArxivFetch` (HTML, then PDF, then abstract), `GitHubBlobFetch`, `GitHubRepoFetch` (README); GitHub results carry their own `base_url` |
+| `default.py` | `HttpFetch`: the single owner of page GETs (shared or owned client, browser-like Chrome headers) and of content-type extraction; HTML and PDF paragraphs are `text/html`, plain text and Markdown are `text/markdown` |
+| `arxiv.py`, `github.py` | `ArxivFetch` (HTML, then PDF, then abstract), `GitHubBlobFetch`, `GitHubRepoFetch` (README): thin wrappers over an injected `Fetch`; GitHub results carry their own `base_url` |
 | `browser.py` | `BrowserFetch` renders pages on an open crawl4ai crawler; `browser_endpoint` connects to `BROWSER_CDP_URL` or spawns a local Obscura, and `browser_crawler` owns one crawler for the lifespan so fetches never reconnect |
 | `scrape_do.py`, `bright_data.py` | `ScrapeDoFetch`, `BrightDataFetch`: commercial unblocking fallbacks |
 | `filtering.py` | `MarkdownToHtml`, `PreTextToHtml` (normalize sources to HTML), `RelevanceFilter` (`BM25ContentFilter`, or `LLMContentFilter` when `FETCH_MODEL` is set; Markdown output, absolute links) |

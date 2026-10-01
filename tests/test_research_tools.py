@@ -114,6 +114,17 @@ def _pdf_bytes(text: str) -> bytes:
     return data
 
 
+def _pdf_paragraphs(paragraphs: list[str]) -> bytes:
+    """One text box per page; pymupdf joins pages with a blank line."""
+    document = pymupdf.open()
+    for text in paragraphs:
+        page = document.new_page()
+        page.insert_textbox(pymupdf.Rect(72, 72, 520, 700), text, fontsize=11)
+    data = document.tobytes()
+    document.close()
+    return data
+
+
 # ---------------------------------------------------------------------------
 # Search
 # ---------------------------------------------------------------------------
@@ -545,18 +556,14 @@ async def test_pdf_keeps_line_breaks(
     bm25,
     httpx_mock: HTTPXMock,
     client: httpx.AsyncClient,
-    monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.setattr(
-        "mcps.research.tools.extract._convert_pdf_to_text",
-        lambda _pdf: (
-            "Quantum routing results\ncol_a   col_b\n1       2\n\nbread flour baking"
-        ),
-    )
     url = "https://source.example/paper.pdf"
+    pdf = _pdf_paragraphs(
+        ["Quantum routing results\ncol_a   col_b\n1       2", "bread flour baking"]
+    )
     for _ in range(2):
         httpx_mock.add_response(
-            url=url, content=b"%PDF-1.4", headers={"content-type": "application/pdf"}
+            url=url, content=pdf, headers={"content-type": "application/pdf"}
         )
     fetch = create_fetch(
         http_client=client, browser=None, provider=None, page_filter=bm25
@@ -699,8 +706,8 @@ class ExplodingClient:
     ("build", "url"),
     [
         (lambda c: HttpFetch(c), "https://site.example/"),
-        (lambda c: GitHubBlobFetch(c), "https://github.com/o/r/blob/main/a.py"),
-        (lambda c: GitHubRepoFetch(c), "https://github.com/o/r"),
+        (lambda c: GitHubBlobFetch(HttpFetch(c)), "https://github.com/o/r/blob/main/a.py"),
+        (lambda c: GitHubRepoFetch(HttpFetch(c)), "https://github.com/o/r"),
         (lambda c: ArxivFetch(HttpFetch(c)), "https://arxiv.org/abs/2401.00001"),
         (lambda c: ArxivFetch(HttpFetch(c)), "https://arxiv.org/list/cs/new"),
     ],
@@ -773,7 +780,7 @@ async def test_github_blob_is_markdown_with_its_own_link_base(
     )
     url = "https://github.com/o/r/blob/main/a.md"
 
-    result = await GitHubBlobFetch(client)(url)
+    result = await GitHubBlobFetch(HttpFetch(client))(url)
 
     assert (result.mime, result.content) == ("text/markdown", "# Doc")
     assert result.base_url == url
@@ -787,23 +794,183 @@ async def test_github_repo_readme_is_markdown_with_repo_link_base(
         text="# Readme",
     )
 
-    result = await GitHubRepoFetch(client)("https://github.com/org/project")
+    result = await GitHubRepoFetch(HttpFetch(client))("https://github.com/org/project")
 
     assert (result.mime, result.content) == ("text/markdown", "# Readme")
     assert result.base_url == "https://github.com/org/project/blob/HEAD/"
 
 
+async def test_github_blob_strips_surrounding_whitespace(
+    httpx_mock: HTTPXMock, client: httpx.AsyncClient
+):
+    httpx_mock.add_response(
+        url="https://raw.githubusercontent.com/o/r/main/a.md",
+        text="  \n# Doc\n\n",
+        headers={"content-type": "text/plain"},
+    )
+
+    result = await GitHubBlobFetch(HttpFetch(client))(
+        "https://github.com/o/r/blob/main/a.md"
+    )
+
+    assert (result.status, result.content) == (FetchStatus.OK, "# Doc")
+
+
+async def test_github_blob_blank_body_is_empty(
+    httpx_mock: HTTPXMock, client: httpx.AsyncClient
+):
+    httpx_mock.add_response(
+        url="https://raw.githubusercontent.com/o/r/main/a.md",
+        text="   \n",
+        headers={"content-type": "text/plain"},
+    )
+
+    result = await GitHubBlobFetch(HttpFetch(client))(
+        "https://github.com/o/r/blob/main/a.md"
+    )
+
+    assert result.status is FetchStatus.EMPTY
+
+
+async def test_github_blob_invalid_url_is_unsupported_without_request(
+    httpx_mock: HTTPXMock, client: httpx.AsyncClient
+):
+    result = await GitHubBlobFetch(HttpFetch(client))("https://github.com/o/r")
+
+    assert result.status is FetchStatus.UNSUPPORTED
+    assert httpx_mock.get_requests() == []
+
+
+async def test_github_blob_http_error_reports_requested_url(
+    httpx_mock: HTTPXMock, client: httpx.AsyncClient
+):
+    httpx_mock.add_response(
+        url="https://raw.githubusercontent.com/o/r/main/a.py", status_code=403
+    )
+    url = "https://github.com/o/r/blob/main/a.py"
+
+    result = await GitHubBlobFetch(HttpFetch(client))(url)
+
+    assert (result.status, result.http_status, result.url) == (
+        FetchStatus.HTTP_ERROR,
+        403,
+        url,
+    )
+
+
+async def test_github_blob_timeout_reports_requested_url(
+    httpx_mock: HTTPXMock, client: httpx.AsyncClient
+):
+    httpx_mock.add_exception(
+        httpx.ReadTimeout("slow"),
+        url="https://raw.githubusercontent.com/o/r/main/a.py",
+    )
+    url = "https://github.com/o/r/blob/main/a.py"
+
+    result = await GitHubBlobFetch(HttpFetch(client))(url)
+
+    assert (result.status, result.url) == (FetchStatus.TIMEOUT, url)
+
+
+async def test_github_blob_html_body_keeps_html_mime(
+    httpx_mock: HTTPXMock, client: httpx.AsyncClient
+):
+    body = "<html><body><h1>Doc</h1></body></html>"
+    httpx_mock.add_response(
+        url="https://raw.githubusercontent.com/o/r/main/page.html", html=body
+    )
+    url = "https://github.com/o/r/blob/main/page.html"
+
+    result = await GitHubBlobFetch(HttpFetch(client))(url)
+
+    assert (result.status, result.mime) == (FetchStatus.OK, "text/html")
+    assert result.base_url == url
+
+
+async def test_github_blob_unrecognized_content_type_is_unsupported(
+    httpx_mock: HTTPXMock, client: httpx.AsyncClient
+):
+    httpx_mock.add_response(
+        url="https://raw.githubusercontent.com/o/r/main/data.json",
+        content=b"{}",
+        headers={"content-type": "application/json"},
+    )
+    url = "https://github.com/o/r/blob/main/data.json"
+
+    result = await GitHubBlobFetch(HttpFetch(client))(url)
+
+    assert (result.status, result.url) == (FetchStatus.UNSUPPORTED, url)
+
+
+async def test_github_repo_skips_missing_and_blank_readmes(
+    httpx_mock: HTTPXMock, client: httpx.AsyncClient
+):
+    httpx_mock.add_response(
+        url="https://raw.githubusercontent.com/org/project/main/README.md",
+        status_code=404,
+    )
+    httpx_mock.add_response(
+        url="https://raw.githubusercontent.com/org/project/main/README.rst",
+        text="   ",
+        headers={"content-type": "text/plain"},
+    )
+    httpx_mock.add_response(
+        url="https://raw.githubusercontent.com/org/project/main/README.txt",
+        text="# Readme",
+        headers={"content-type": "text/plain"},
+    )
+
+    result = await GitHubRepoFetch(HttpFetch(client))("https://github.com/org/project")
+
+    assert (result.status, result.content) == (FetchStatus.OK, "# Readme")
+    assert result.base_url == "https://github.com/org/project/blob/HEAD/"
+
+
+async def test_github_repo_all_candidates_missing_is_empty(
+    httpx_mock: HTTPXMock, client: httpx.AsyncClient
+):
+    for branch in ("main", "master"):
+        for file_name in ("README.md", "README.rst", "README.txt", "README"):
+            httpx_mock.add_response(
+                url=(
+                    "https://raw.githubusercontent.com/org/project/"
+                    f"{branch}/{file_name}"
+                ),
+                status_code=404,
+            )
+
+    result = await GitHubRepoFetch(HttpFetch(client))("https://github.com/org/project")
+
+    assert (result.status, result.url) == (
+        FetchStatus.EMPTY,
+        "https://github.com/org/project",
+    )
+
+
+async def test_github_repo_non_404_error_stops_lookup(
+    httpx_mock: HTTPXMock, client: httpx.AsyncClient
+):
+    httpx_mock.add_response(
+        url="https://raw.githubusercontent.com/org/project/main/README.md",
+        status_code=403,
+    )
+
+    result = await GitHubRepoFetch(HttpFetch(client))("https://github.com/org/project")
+
+    assert (result.status, result.http_status) == (FetchStatus.HTTP_ERROR, 403)
+    assert result.url == "https://github.com/org/project"
+    assert [request.url for request in httpx_mock.get_requests()] == [
+        "https://raw.githubusercontent.com/org/project/main/README.md"
+    ]
+
+
 async def test_pdf_source_is_html_paragraphs(
     httpx_mock: HTTPXMock,
     client: httpx.AsyncClient,
-    monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.setattr(
-        "mcps.research.tools.extract._convert_pdf_to_text",
-        lambda _pdf: "Alpha\n\nBeta",
-    )
     httpx_mock.add_response(
-        content=b"%PDF-1.4", headers={"content-type": "application/pdf"}
+        content=_pdf_paragraphs(["Alpha", "Beta"]),
+        headers={"content-type": "application/pdf"},
     )
 
     result = await HttpFetch(client)("https://site.example/a.pdf")

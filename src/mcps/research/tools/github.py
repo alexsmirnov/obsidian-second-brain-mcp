@@ -3,18 +3,11 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from urllib.parse import urlparse
 
-import httpx
-
-from mcps.research.tools.common import (
-    CHROME_HEADERS,
-    MIME_MARKDOWN,
-    failure,
-    request_get,
-    safe_fetch,
-)
-from mcps.research.tools.models import FetchResult, FetchStatus
+from mcps.research.tools.common import failure
+from mcps.research.tools.models import Fetch, FetchResult, FetchStatus
 
 __all__ = [
     "GitHubBlobFetch",
@@ -73,61 +66,58 @@ def _github_repo_readme_urls(url: str) -> list[str]:
     ]
 
 
-def _markdown_result(url: str, content: str) -> FetchResult:
-    return FetchResult(
-        url=url,
-        status=FetchStatus.OK,
-        mime=MIME_MARKDOWN,
-        content=content,
-        base_url=github_link_base(url),
-    )
+def _as_requested_url(url: str, result: FetchResult) -> FetchResult:
+    """Retarget any delegated result at the requested GitHub URL."""
+    return replace(result, url=url)
+
+
+def _as_github_content(url: str, result: FetchResult, content: str) -> FetchResult:
+    """Retarget a successful result and give it the GitHub link base."""
+    return replace(result, url=url, content=content, base_url=github_link_base(url))
 
 
 class GitHubBlobFetch:
     """Raw file contents for ``github.com/.../blob/...`` URLs."""
 
-    def __init__(self, http_client: httpx.AsyncClient | None) -> None:
-        self._http_client = http_client
+    def __init__(self, http: Fetch) -> None:
+        self._http = http
 
     async def __call__(self, url: str, query: str | None = None, /) -> FetchResult:
-        return await safe_fetch(url, self._fetch(url))
-
-    async def _fetch(self, url: str) -> FetchResult:
         raw_url = _github_blob_to_raw_url(url)
         if raw_url is None:
             logger.warning("GitHub blob fetch failed for %s: unsupported", url)
             return failure(url, FetchStatus.UNSUPPORTED)
-        response = await request_get(
-            raw_url, http_client=self._http_client, headers=CHROME_HEADERS
-        )
-        content = response.text.strip()
+        result = await self._http(raw_url, query)
+        if not result.ok:
+            return _as_requested_url(url, result)
+        content = result.content.strip()
         if not content:
             logger.warning("GitHub blob fetch failed for %s: empty", url)
             return failure(url, FetchStatus.EMPTY)
-        return _markdown_result(url, content)
+        return _as_github_content(url, result, content)
 
 
 class GitHubRepoFetch:
     """README for ``github.com/<owner>/<repo>`` URLs."""
 
-    def __init__(self, http_client: httpx.AsyncClient | None) -> None:
-        self._http_client = http_client
+    def __init__(self, http: Fetch) -> None:
+        self._http = http
 
     async def __call__(self, url: str, query: str | None = None, /) -> FetchResult:
-        return await safe_fetch(url, self._fetch(url))
-
-    async def _fetch(self, url: str) -> FetchResult:
         for readme_url in _github_repo_readme_urls(url):
-            try:
-                response = await request_get(
-                    readme_url, http_client=self._http_client, headers=CHROME_HEADERS
-                )
-            except httpx.HTTPStatusError as error:
-                if error.response.status_code == 404:
-                    continue
-                raise
-            content = response.text.strip()
-            if content:
-                return _markdown_result(url, content)
+            result = await self._http(readme_url, query)
+            if result.ok:
+                content = result.content.strip()
+                if content:
+                    return _as_github_content(url, result, content)
+                continue
+            if result.status is FetchStatus.EMPTY or (
+                result.status is FetchStatus.HTTP_ERROR
+                and result.http_status == 404
+            ):
+                continue
+            # A rate limit, outage, or block is terminal: retrying the
+            # remaining candidates cannot succeed.
+            return _as_requested_url(url, result)
         logger.warning("GitHub repo fetch failed for %s: empty", url)
         return failure(url, FetchStatus.EMPTY)

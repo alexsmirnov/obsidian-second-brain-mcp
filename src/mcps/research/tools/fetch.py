@@ -87,8 +87,8 @@ def create_fetch(
         [
             (_is_restricted(restricted_domains), Blocked()),
             (is_arxiv_url, ArxivFetch(http)),
-            (is_github_blob_url, GitHubBlobFetch(http_client)),
-            (is_github_repo_url, GitHubRepoFetch(http_client)),
+            (is_github_blob_url, GitHubBlobFetch(http)),
+            (is_github_repo_url, GitHubRepoFetch(http)),
         ],
         default=generic,
     )
