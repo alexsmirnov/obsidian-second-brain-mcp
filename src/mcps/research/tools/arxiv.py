@@ -7,7 +7,7 @@ from dataclasses import replace
 from urllib.parse import urlparse
 
 from mcps.research.tools.common import extract_hostname, failure
-from mcps.research.tools.result import Fetch, FetchResult, FetchStatus
+from mcps.research.tools.models import Fetch, FetchResult, FetchStatus
 
 __all__ = ["ArxivFetch", "is_arxiv_url"]
 

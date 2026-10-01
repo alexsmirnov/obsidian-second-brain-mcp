@@ -20,7 +20,7 @@ from mcps.research.tools.arxiv import ArxivFetch
 from mcps.research.tools.default import HttpFetch
 from mcps.research.tools.filtering import RelevanceFilter
 from mcps.research.tools.github import GitHubBlobFetch, GitHubRepoFetch
-from mcps.research.tools.result import FetchResult, FetchStatus
+from mcps.research.tools.models import FetchResult, FetchStatus
 
 _ERROR_SCRIPTS = {
     "ERROR: http code 403": (FetchStatus.HTTP_ERROR, 403),

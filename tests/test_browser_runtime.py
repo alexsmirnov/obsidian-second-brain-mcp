@@ -15,7 +15,7 @@ from mcps.config import create_config
 from mcps.research.lifespan import build_research_lifespan
 from mcps.research.tools import browser as browser_module
 from mcps.research.tools.browser import LOCAL_CDP_URL, browser_endpoint
-from mcps.research.tools.result import FetchStatus
+from mcps.research.tools.models import FetchStatus
 from mcps.server import create_server
 
 

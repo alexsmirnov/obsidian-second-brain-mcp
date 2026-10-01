@@ -14,7 +14,7 @@ from mcps.research.tools.common import (
     request_get,
     safe_fetch,
 )
-from mcps.research.tools.result import FetchResult, FetchStatus
+from mcps.research.tools.models import FetchResult, FetchStatus
 
 __all__ = [
     "GitHubBlobFetch",

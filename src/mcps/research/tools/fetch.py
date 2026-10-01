@@ -27,7 +27,7 @@ from mcps.research.tools.github import (
     is_github_blob_url,
     is_github_repo_url,
 )
-from mcps.research.tools.result import Fetch, FetchResult, Filter
+from mcps.research.tools.models import Fetch, FetchResult, Filter
 
 __all__ = ["create_fetch"]
 

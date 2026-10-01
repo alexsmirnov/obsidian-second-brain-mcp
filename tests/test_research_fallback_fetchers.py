@@ -17,7 +17,7 @@ from mcps.config import ServerConfig
 from mcps.research.config import create_fetch_tool
 from mcps.research.tools.bright_data import BrightDataFetch
 from mcps.research.tools.browser import BrowserFetch, browser_crawler
-from mcps.research.tools.result import FetchResult, FetchStatus
+from mcps.research.tools.models import FetchResult, FetchStatus
 from mcps.research.tools.scrape_do import ScrapeDoFetch
 
 TARGET = "https://blocked.example/article"

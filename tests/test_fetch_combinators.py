@@ -17,7 +17,7 @@ from mcps.research.tools.combinators import (
     Truncate,
     UrlSelector,
 )
-from mcps.research.tools.result import FetchResult, FetchStatus
+from mcps.research.tools.models import FetchResult, FetchStatus
 
 URL = "https://source.example/page"
 

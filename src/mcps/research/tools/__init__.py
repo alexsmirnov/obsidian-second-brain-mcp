@@ -8,7 +8,7 @@ from mcps.research.tools.duckduckgo import create_duckduckgo_search
 from mcps.research.tools.fetch import create_fetch
 from mcps.research.tools.google import create_google_search
 from mcps.research.tools.models import SearchResult
-from mcps.research.tools.result import Fetch, FetchResult, FetchStatus, Filter, Search
+from mcps.research.tools.models import Fetch, FetchResult, FetchStatus, Filter, Search
 
 __all__ = [
     "Fetch",

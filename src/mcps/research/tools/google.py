@@ -8,7 +8,7 @@ from typing import Any
 import httpx
 
 from mcps.research.tools.models import SearchResult
-from mcps.research.tools.result import Search
+from mcps.research.tools.models import Search
 
 __all__ = ["create_google_search"]
 

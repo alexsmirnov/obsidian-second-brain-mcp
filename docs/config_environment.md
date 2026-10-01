@@ -210,7 +210,7 @@ Google Custom Search Engine ID. Required only when `GOOGLE_API_KEY` is set.
 
 ### Web Fetch
 
-`fetch(url, query)` routing: restricted domains return `""` without I/O; GitHub and arXiv use specialized fetchers (no fallback); `.pdf` paths use the httpx + PyMuPDF extractor; all other URLs render in the CDP browser via crawl4ai. With a nonblank query the result is filtered to query-relevant Markdown (links absolute) and truncated to 15,000 chars. When the browser or PDF result is 401/403/429, empty, timeout, or browser-unavailable, the configured `SCRAPER_PROVIDER` is used; if the provider is unavailable the original error is kept.
+`fetch(url, query)` returns a `FetchResult` (see [Packages & Modules](packages_modules.md)). Routing: restricted domains return status `RESTRICTED` without I/O; GitHub and arXiv use specialized fetchers (no fallback); `.pdf` paths use the httpx + PyMuPDF extractor; all other URLs render in the CDP browser via crawl4ai. The content is filtered to query-relevant Markdown (links absolute; a blank query keeps the whole page) and truncated to 15,000 chars. When the browser or PDF result is 401/403/429, empty, timeout, or browser-unavailable, the configured `SCRAPER_PROVIDER` is used; if the provider is unavailable the original result is kept.
 
 #### `browser_cdp_url` #config
 CDP endpoint of a running browser (e.g. `ws://127.0.0.1:9222`). Must be unauthenticated. If unset or unreachable (10 s), the server starts `obscura serve --stealth --allow-private-network` from `PATH` and connects to `ws://127.0.0.1:9222` (30 s). If neither works, only the `web_research` tool is disabled.
@@ -248,7 +248,7 @@ Model for crawl4ai `LLMContentFilter` (via the router). Empty selects `BM25Conte
 **Used by**: [src/mcps/research/config.py](../src/mcps/research/config.py), [src/mcps/research/tools/filtering.py](../src/mcps/research/tools/filtering.py)
 
 #### `fetch_restricted_domains` #config
-Comma-separated hostnames; the hostname itself and its subdomains are never fetched (result `""`).
+Comma-separated hostnames; the hostname itself and its subdomains are never fetched (status `RESTRICTED`).
 **Type**: tuple[str, ...]
 **Default**: `()`
 **Environment**: `FETCH_RESTRICTED_DOMAINS`

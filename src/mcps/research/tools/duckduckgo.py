@@ -8,7 +8,7 @@ import httpx
 from lxml import html
 
 from mcps.research.tools.models import SearchResult
-from mcps.research.tools.result import Search
+from mcps.research.tools.models import Search
 
 __all__ = ["create_duckduckgo_search"]
 

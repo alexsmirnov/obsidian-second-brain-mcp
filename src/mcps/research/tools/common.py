@@ -8,7 +8,7 @@ from urllib.parse import urlparse
 
 import httpx
 
-from mcps.research.tools.result import FetchResult, FetchStatus
+from mcps.research.tools.models import FetchResult, FetchStatus
 
 __all__ = [
     "CHROME_HEADERS",

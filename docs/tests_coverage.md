@@ -88,14 +88,17 @@ Tests for `ServerConfig` creation, environment variable precedence, CLI override
 ### [tests/test_deep_research.py](../tests/test_deep_research.py)
 Contract tests for the LangGraph deep research agent with mocked models and HTTP calls.
 
+### [tests/test_fetch_combinators.py](../tests/test_fetch_combinators.py)
+Contract tests for `FetchResult` (`ok`, `is_retryable`) and the combinators `Filtered`, `Fallback`, `UrlSelector`, `FilterSelector`, `FilterChain`, `Throttled`, `Blocked`, `Truncate`, using recording stubs.
+
 ### [tests/test_research_tools.py](../tests/test_research_tools.py)
-Contract tests for search parsing (Google, DuckDuckGo), site-routed fetching (arXiv, GitHub, default), exact HTTP error codes, and the fallback escalation chain (HTTP mocked with pytest-httpx).
+Contract tests for search parsing (Google, DuckDuckGo), the composed `create_fetch` (routing, restricted domains, escalation, truncation, concurrency), per-source status mapping and mime, and exceptions becoming `UNSUPPORTED` results (HTTP mocked with pytest-httpx).
 
 ### [tests/test_research_fallback_fetchers.py](../tests/test_research_fallback_fetchers.py)
-Contract tests for the browser (fake crawl4ai crawler), Scrape.do and Bright Data fallbacks: request shape, target vs. provider error mapping, fallback assembly from `ServerConfig`, and crawler connection lifetime (reuse across repeated and overlapping fetches, no replacement on failure, single open/close, startup failure yielding no crawler).
+Contract tests for the browser (fake crawl4ai crawler), Scrape.do and Bright Data fallbacks: request shape, target vs. provider status mapping, fallback assembly from `ServerConfig`, and crawler connection lifetime (reuse across repeated and overlapping fetches, no replacement on failure, single open/close, startup failure yielding no crawler).
 
 ### [tests/test_fetch_filtering.py](../tests/test_fetch_filtering.py)
-Contract tests for query filtering (BM25 keyword guarantee, LLM filter with mocked completion), Markdown/plain-text to HTML conversion, and absolute link resolution.
+Contract tests for `RelevanceFilter` (BM25 keyword guarantee, LLM filter with mocked completion, `FILTER_FAILED`, `base_url` link resolution) and the `MarkdownToHtml` and `PreTextToHtml` filters.
 
 ### [tests/test_browser_runtime.py](../tests/test_browser_runtime.py)
 Tests for `browser_endpoint` (configured CDP, local Obscura spawn), the lifespan enabling/disabling only `web_research`, and the research lifespan owning one browser crawler (reused across fetches, closed before the local Obscura process is terminated).
@@ -150,7 +153,7 @@ DRACO benchmark (`perplexity-ai/draco`, Technology + Academic domains) for the d
 **Run**: `uv run python tests/web_research_evaluation.py` from the repository root. Log and HTML report are written to `tmp/`.
 
 ### [tests/web_fetch_evaluation.py](../tests/web_fetch_evaluation.py)
-Replays JSONL fetch cases through the production `fetch(url, query)` and prints error counts and mean response size versus the saved baseline. Cases: `tests/evaluation/data/fetch-cases-smoke.jsonl` (8, default) and `fetch-cases-baseline.jsonl` (279).
+Replays JSONL fetch cases through the production `fetch(url, query)` and prints failure counts (restricted domains are not failures) and mean response size versus the saved baseline. Cases: `tests/evaluation/data/fetch-cases-smoke.jsonl` (8, default) and `fetch-cases-baseline.jsonl` (279).
 
 **Run**: `uv run tests/web_fetch_evaluation.py --output tmp/fetch-smoke.jsonl [--cases tests/evaluation/data/fetch-cases-baseline.jsonl]`. Requires a CDP browser or Obscura on `PATH`.
 

@@ -31,7 +31,7 @@ from mcps.research.tools.common import (
     MIME_MARKDOWN,
     failure,
 )
-from mcps.research.tools.result import FetchResult, FetchStatus
+from mcps.research.tools.models import FetchResult, FetchStatus
 
 __all__ = [
     "MarkdownToHtml",

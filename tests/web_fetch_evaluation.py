@@ -22,7 +22,7 @@ from dotenv import load_dotenv
 from mcps.config import create_config
 from mcps.research.config import create_fetch_tool
 from mcps.research.tools.browser import browser_crawler, browser_endpoint
-from mcps.research.tools.result import FetchResult, FetchStatus
+from mcps.research.tools.models import FetchResult, FetchStatus
 
 CASES_DIR = Path(__file__).parent / "evaluation" / "data"
 

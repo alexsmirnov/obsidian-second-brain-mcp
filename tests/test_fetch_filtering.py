@@ -13,7 +13,7 @@ from mcps.research.tools.filtering import (
     PreTextToHtml,
     RelevanceFilter,
 )
-from mcps.research.tools.result import FetchResult, FetchStatus
+from mcps.research.tools.models import FetchResult, FetchStatus
 
 TOPIC_HTML = (
     "<html><body><h2>Quantum optimization</h2><p>"

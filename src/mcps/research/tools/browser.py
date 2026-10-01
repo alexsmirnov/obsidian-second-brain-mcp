@@ -14,7 +14,7 @@ from typing import Any, Protocol
 from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig
 
 from mcps.research.tools.common import MIME_HTML, failure
-from mcps.research.tools.result import FetchResult, FetchStatus
+from mcps.research.tools.models import FetchResult, FetchStatus
 
 __all__ = [
     "LOCAL_CDP_URL",
@@ -73,6 +73,10 @@ def _default_crawler_factory(cdp_url: str) -> CrawlerFactory:
         create_isolated_context=True,
         enable_stealth=True,
         verbose=False,
+        text_mode=True,
+        light_mode=True,
+        avoid_ads=True,
+        memory_saving_mode=True
         # user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
         # headers={
         #     "Accept-Language": "en-US,en;q=0.9",
@@ -114,11 +118,12 @@ class BrowserFetch:
     async def __call__(self, url: str, query: str | None = None, /) -> FetchResult:
         try:
             crawler_config = CrawlerRunConfig(
-            simulate_user=True,  # Add user simulation
-            magic=True,  # Enable magic mode
-            wait_until="networkidle", 
-            # Give complex SPA/React apps a moment to render the DOM elements
-            delay_before_return_html=0.8, 
+                simulate_user=True,  # Add user simulation
+                magic=True,  # Enable magic mode
+                wait_until="networkidle", 
+                # Give complex SPA/React apps a moment to render the DOM elements
+                delay_before_return_html=0.8, 
+                exclude_all_images=True
             )
             crawl = await self._crawler.arun(
                 url, config=crawler_config

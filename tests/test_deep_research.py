@@ -23,7 +23,7 @@ from mcps.research.config import (
 )
 from mcps.research.deep_research import ResearchAgent
 from mcps.research.tools import Fetch, Search, SearchResult
-from mcps.research.tools.result import FetchResult, FetchStatus
+from mcps.research.tools.models import FetchResult, FetchStatus
 
 # ---------------------------------------------------------------------------
 # Config contract tests

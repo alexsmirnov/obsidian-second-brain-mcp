@@ -7,7 +7,7 @@ import logging
 from collections.abc import Callable, Sequence
 from dataclasses import replace
 
-from mcps.research.tools.result import Fetch, FetchResult, FetchStatus, Filter
+from mcps.research.tools.models import Fetch, FetchResult, FetchStatus, Filter
 
 __all__ = [
     "Blocked",

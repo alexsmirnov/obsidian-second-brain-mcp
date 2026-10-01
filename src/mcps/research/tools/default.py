@@ -18,7 +18,7 @@ from mcps.research.tools.extract import (
     extract_without_content_type,
     normalize_content_type,
 )
-from mcps.research.tools.result import FetchResult, FetchStatus
+from mcps.research.tools.models import FetchResult, FetchStatus
 
 __all__ = ["HttpFetch"]
 
