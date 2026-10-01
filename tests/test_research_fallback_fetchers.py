@@ -15,11 +15,16 @@ from pytest_httpx import HTTPXMock
 
 from mcps.config import ServerConfig
 from mcps.research.config import create_fetch_tool
-from mcps.research.tools.bright_data import create_bright_data_fetch
-from mcps.research.tools.browser import browser_crawler, create_browser_fetch
-from mcps.research.tools.scrape_do import create_scrape_do_fetch
+from mcps.research.tools.bright_data import BrightDataFetch
+from mcps.research.tools.browser import BrowserFetch, browser_crawler
+from mcps.research.tools.result import FetchResult, FetchStatus
+from mcps.research.tools.scrape_do import ScrapeDoFetch
 
 TARGET = "https://blocked.example/article"
+
+
+def outcome(result: FetchResult) -> tuple[FetchStatus, int | None]:
+    return result.status, result.http_status
 
 
 @pytest.fixture
@@ -111,51 +116,53 @@ class GatedCrawler:
 
 async def test_browser_fetch_returns_cleaned_html():
     crawler = FakeCrawler(result=crawl_result(cleaned_html="<h1>Rendered</h1>"))
-    fetch = create_browser_fetch(crawler)
+    fetch = BrowserFetch(crawler)
 
     result = await fetch(TARGET)
 
-    assert result == "<h1>Rendered</h1>"
+    assert outcome(result) == (FetchStatus.OK, None)
+    assert (result.url, result.content) == (TARGET, "<h1>Rendered</h1>")
     assert crawler.urls == [TARGET]
 
 
 @pytest.mark.parametrize(
     ("result", "expected"),
     [
-        (crawl_result(status_code=403, cleaned_html="denied"), "ERROR: http code 403"),
-        (crawl_result(status_code=404, cleaned_html="gone"), "ERROR: http code 404"),
-        (crawl_result(cleaned_html="   "), "ERROR: empty response"),
-        (crawl_result(success=False, status_code=None), "ERROR: fetcher unavailable"),
+        (
+            crawl_result(status_code=403, cleaned_html="denied"),
+            (FetchStatus.HTTP_ERROR, 403),
+        ),
+        (
+            crawl_result(status_code=404, cleaned_html="gone"),
+            (FetchStatus.HTTP_ERROR, 404),
+        ),
+        (crawl_result(cleaned_html="   "), (FetchStatus.EMPTY, None)),
+        (
+            crawl_result(success=False, status_code=None),
+            (FetchStatus.UNAVAILABLE, None),
+        ),
     ],
 )
-async def test_browser_fetch_maps_crawl_outcomes(result: Any, expected: str):
-    fetch = create_browser_fetch(FakeCrawler(result=result))
+async def test_browser_fetch_maps_crawl_outcomes(
+    result: Any, expected: tuple[FetchStatus, int | None]
+):
+    fetch = BrowserFetch(FakeCrawler(result=result))
 
-    assert await fetch(TARGET) == expected
+    assert outcome(await fetch(TARGET)) == expected
 
 
 async def test_browser_fetch_crawl_failure_is_unavailable():
     crawler = FakeCrawler(error=ConnectionError("cdp down"))
-    fetch = create_browser_fetch(crawler)
+    fetch = BrowserFetch(crawler)
 
-    assert await fetch(TARGET) == "ERROR: fetcher unavailable"
+    assert outcome(await fetch(TARGET)) == (FetchStatus.UNAVAILABLE, None)
 
 
-@pytest.mark.parametrize(
-    ("cleaned_html", "expected"),
-    [
-        ("", "ERROR: empty response"),
-        ("   ", "ERROR: empty response"),
-    ],
-)
-async def test_browser_fetch_blank_cleaned_html_is_empty(
-    cleaned_html: str, expected: str
-):
-    fetch = create_browser_fetch(
-        FakeCrawler(result=crawl_result(cleaned_html=cleaned_html))
-    )
+@pytest.mark.parametrize("cleaned_html", ["", "   "])
+async def test_browser_fetch_blank_cleaned_html_is_empty(cleaned_html: str):
+    fetch = BrowserFetch(FakeCrawler(result=crawl_result(cleaned_html=cleaned_html)))
 
-    assert await fetch(TARGET) == expected
+    assert outcome(await fetch(TARGET)) == (FetchStatus.EMPTY, None)
 
 
 # ---------------------------------------------------------------------------
@@ -172,12 +179,13 @@ async def test_browser_fetch_repeated_requests_reuse_open_connection():
     ) as open_crawler:
         assert open_crawler is not None
         assert open_crawler is crawler
-        fetch = create_browser_fetch(open_crawler)
+        fetch = BrowserFetch(open_crawler)
         first = await fetch("https://a.example")
         second = await fetch("https://b.example")
         assert crawler.opens == 1 and crawler.closes == 0 and crawler.open
 
-    assert first == second == "<h1>X</h1>"
+    assert first.ok and second.ok
+    assert first.content == second.content == "<h1>X</h1>"
     assert crawler.urls == ["https://a.example", "https://b.example"]
     assert crawler.closes == 1 and crawler.open is False
 
@@ -185,7 +193,7 @@ async def test_browser_fetch_repeated_requests_reuse_open_connection():
 async def test_browser_fetch_overlapping_requests_share_connection():
     gates = {"https://a.example": asyncio.Event(), "https://b.example": asyncio.Event()}
     crawler = GatedCrawler(gates)
-    fetch = create_browser_fetch(crawler)
+    fetch = BrowserFetch(crawler)
 
     tasks = [asyncio.ensure_future(fetch(url)) for url in gates]
     async with asyncio.timeout(5):
@@ -196,7 +204,10 @@ async def test_browser_fetch_overlapping_requests_share_connection():
         gate.set()
     results = await asyncio.gather(*tasks)
 
-    assert results == ["<h1>https://a.example</h1>", "<h1>https://b.example</h1>"]
+    assert [result.content for result in results] == [
+        "<h1>https://a.example</h1>",
+        "<h1>https://b.example</h1>",
+    ]
 
 
 async def test_browser_fetch_failure_keeps_connection_for_next_request():
@@ -207,11 +218,13 @@ async def test_browser_fetch_failure_keeps_connection_for_next_request():
         "ws://cdp", crawler_factory=lambda: context
     ) as open_crawler:
         assert open_crawler is not None
-        fetch = create_browser_fetch(open_crawler)
-        assert await fetch("https://a.example") == "ERROR: fetcher unavailable"
+        fetch = BrowserFetch(open_crawler)
+        failure = await fetch("https://a.example")
         crawler.error = None
         crawler.result = crawl_result(cleaned_html="<h1>Recovered</h1>")
-        assert await fetch("https://b.example") == "<h1>Recovered</h1>"
+        recovered = await fetch("https://b.example")
+        assert outcome(failure) == (FetchStatus.UNAVAILABLE, None)
+        assert recovered.content == "<h1>Recovered</h1>"
         assert crawler.opens == 1 and crawler.closes == 0
 
     assert crawler.closes == 1
@@ -287,7 +300,7 @@ async def test_scrape_do_requests_rendered_html_with_unblocking(
     httpx_mock: HTTPXMock, client: httpx.AsyncClient
 ):
     httpx_mock.add_response(text="<h1>Article</h1>")
-    fetch = create_scrape_do_fetch("tok", http_client=client)
+    fetch = ScrapeDoFetch("tok", http_client=client)
 
     result = await fetch(TARGET)
 
@@ -300,18 +313,19 @@ async def test_scrape_do_requests_rendered_html_with_unblocking(
         "super": "true",
         "render": "true",
     }
-    assert result == "<h1>Article</h1>"
+    assert outcome(result) == (FetchStatus.OK, None)
+    assert (result.url, result.content) == (TARGET, "<h1>Article</h1>")
 
 
 @pytest.mark.parametrize(
     ("status_code", "text", "expected"),
     [
-        (200, "  ", "ERROR: empty response"),
-        (404, "not found", "ERROR: http code 404"),
-        (400, "bad target", "ERROR: http code 400"),
-        (401, "no credits", "ERROR: fetcher unavailable"),
-        (429, "concurrency", "ERROR: fetcher unavailable"),
-        (502, "failed", "ERROR: fetcher unavailable"),
+        (200, "  ", (FetchStatus.EMPTY, None)),
+        (404, "not found", (FetchStatus.HTTP_ERROR, 404)),
+        (400, "bad target", (FetchStatus.HTTP_ERROR, 400)),
+        (401, "no credits", (FetchStatus.UNAVAILABLE, None)),
+        (429, "concurrency", (FetchStatus.UNAVAILABLE, None)),
+        (502, "failed", (FetchStatus.UNAVAILABLE, None)),
     ],
 )
 async def test_scrape_do_maps_api_status(
@@ -319,21 +333,21 @@ async def test_scrape_do_maps_api_status(
     client: httpx.AsyncClient,
     status_code: int,
     text: str,
-    expected: str,
+    expected: tuple[FetchStatus, int | None],
 ):
     httpx_mock.add_response(status_code=status_code, text=text)
-    fetch = create_scrape_do_fetch("tok", http_client=client)
+    fetch = ScrapeDoFetch("tok", http_client=client)
 
-    assert await fetch(TARGET) == expected
+    assert outcome(await fetch(TARGET)) == expected
 
 
 async def test_scrape_do_transport_error_is_unavailable(
     httpx_mock: HTTPXMock, client: httpx.AsyncClient
 ):
     httpx_mock.add_exception(httpx.ConnectError("refused"))
-    fetch = create_scrape_do_fetch("tok", http_client=client)
+    fetch = ScrapeDoFetch("tok", http_client=client)
 
-    assert await fetch(TARGET) == "ERROR: fetcher unavailable"
+    assert outcome(await fetch(TARGET)) == (FetchStatus.UNAVAILABLE, None)
 
 
 # ---------------------------------------------------------------------------
@@ -345,7 +359,7 @@ async def test_bright_data_posts_zone_request_for_html(
     httpx_mock: HTTPXMock, client: httpx.AsyncClient
 ):
     httpx_mock.add_response(json={"status_code": 200, "body": "<h1>Article</h1>"})
-    fetch = create_bright_data_fetch("key", "unlocker", http_client=client)
+    fetch = BrightDataFetch("key", "unlocker", http_client=client)
 
     result = await fetch(TARGET)
 
@@ -361,17 +375,22 @@ async def test_bright_data_posts_zone_request_for_html(
         "url": TARGET,
         "format": "json",
     }
-    assert result == "<h1>Article</h1>"
+    assert outcome(result) == (FetchStatus.OK, None)
+    assert (result.url, result.content) == (TARGET, "<h1>Article</h1>")
 
 
 @pytest.mark.parametrize(
     ("status_code", "payload", "expected"),
     [
-        (200, {"status_code": 403, "body": "denied"}, "ERROR: http code 403"),
-        (200, {"status_code": 200, "body": ""}, "ERROR: empty response"),
-        (200, {"unexpected": True}, "ERROR: fetcher unavailable"),
-        (401, {"error": "bad key"}, "ERROR: fetcher unavailable"),
-        (502, {"error": "upstream"}, "ERROR: fetcher unavailable"),
+        (
+            200,
+            {"status_code": 403, "body": "denied"},
+            (FetchStatus.HTTP_ERROR, 403),
+        ),
+        (200, {"status_code": 200, "body": ""}, (FetchStatus.EMPTY, None)),
+        (200, {"unexpected": True}, (FetchStatus.UNAVAILABLE, None)),
+        (401, {"error": "bad key"}, (FetchStatus.UNAVAILABLE, None)),
+        (502, {"error": "upstream"}, (FetchStatus.UNAVAILABLE, None)),
     ],
 )
 async def test_bright_data_maps_outcomes(
@@ -379,12 +398,12 @@ async def test_bright_data_maps_outcomes(
     client: httpx.AsyncClient,
     status_code: int,
     payload: dict[str, Any],
-    expected: str,
+    expected: tuple[FetchStatus, int | None],
 ):
     httpx_mock.add_response(status_code=status_code, json=payload)
-    fetch = create_bright_data_fetch("key", "unlocker", http_client=client)
+    fetch = BrightDataFetch("key", "unlocker", http_client=client)
 
-    assert await fetch(TARGET) == expected
+    assert outcome(await fetch(TARGET)) == expected
 
 
 # ---------------------------------------------------------------------------

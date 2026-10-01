@@ -20,16 +20,16 @@ from pydantic import SecretStr
 from mcps.config import ServerConfig
 from mcps.research.tools import (
     Fetch,
-    Retrieve,
     SearchResult,
     create_duckduckgo_search,
     create_fetch,
     create_google_search,
 )
-from mcps.research.tools.bright_data import create_bright_data_fetch
-from mcps.research.tools.browser import Crawler, create_browser_fetch
+from mcps.research.tools.bright_data import BrightDataFetch
+from mcps.research.tools.browser import BrowserFetch, Crawler
 from mcps.research.tools.filtering import create_page_filter
-from mcps.research.tools.scrape_do import create_scrape_do_fetch
+from mcps.research.tools.result import Fetch as SourceFetch
+from mcps.research.tools.scrape_do import ScrapeDoFetch
 
 __all__ = [
     "ResearchConfig",
@@ -39,9 +39,6 @@ __all__ = [
 ]
 
 logger = logging.getLogger(__name__)
-
-# The provider returns untruncated Markdown; fetch filters then truncates once.
-_NO_TRUNCATION = 10**9
 
 
 @dataclass
@@ -106,27 +103,24 @@ def create_search_tool(
 
 def _create_provider_fallback(
     config: ServerConfig, http_client: httpx.AsyncClient
-) -> Retrieve | None:
+) -> SourceFetch | None:
     """Build the commercial unblocking provider, or None when unconfigured.
 
-    The provider returns untruncated Markdown: the fetch callable filters and
-    truncates the result once, on the shared path.
+    The fetch callable filters and truncates the result once, on the shared path.
     """
     match config.scraper_provider:
         case "":
             return None
         case "scrape_do" if config.scrape_do_token:
-            return create_scrape_do_fetch(
+            return ScrapeDoFetch(
                 config.scrape_do_token,
                 http_client=http_client,
-                max_chars=_NO_TRUNCATION,
             )
         case "bright_data" if config.bright_data_api_key and config.bright_data_zone:
-            return create_bright_data_fetch(
+            return BrightDataFetch(
                 config.bright_data_api_key,
                 config.bright_data_zone,
                 http_client=http_client,
-                max_chars=_NO_TRUNCATION,
             )
         case "scrape_do" | "bright_data":
             logger.warning(
@@ -156,7 +150,7 @@ def create_fetch_tool(
     """
     return create_fetch(
         http_client=http_client,
-        browser=create_browser_fetch(browser_crawler) if browser_crawler else None,
+        browser=BrowserFetch(browser_crawler) if browser_crawler else None,
         provider=_create_provider_fallback(config, http_client),
         page_filter=create_page_filter(
             fetch_model=config.fetch_model,

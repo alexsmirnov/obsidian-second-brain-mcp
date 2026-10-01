@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable
+from dataclasses import replace
 
 import markdown as markdown_lib
 from crawl4ai import (
@@ -26,9 +27,23 @@ from crawl4ai import (
 )
 from lxml import html as lxml_html
 
-from mcps.research.tools.common import ERROR_FILTERING
+from mcps.research.tools.common import (
+    ERROR_FILTERING,
+    MIME_HTML,
+    MIME_MARKDOWN,
+    failure,
+)
+from mcps.research.tools.result import FetchResult, FetchStatus
 
-__all__ = ["PageFilter", "create_page_filter", "markdown_to_html", "text_page_to_html"]
+__all__ = [
+    "MarkdownToHtml",
+    "PageFilter",
+    "PreTextToHtml",
+    "RelevanceFilter",
+    "create_page_filter",
+    "markdown_to_html",
+    "text_page_to_html",
+]
 
 logger = logging.getLogger(__name__)
 
@@ -128,32 +143,88 @@ def _build_content_filter(
     return _KeywordGuaranteedBM25(user_query=query.strip())
 
 
-def create_page_filter(
-    *, fetch_model: str, router_url: str, router_key: str
-) -> PageFilter:
-    """Create the post-retrieval filter selecting query-relevant Markdown."""
+class MarkdownToHtml:
+    """Filter rendering a Markdown/plain-text result to HTML for block filters."""
 
-    async def page_filter(html: str, base_url: str, query: str | None) -> str:
+    # ponytail: source code becomes paragraphs (indentation lost); <pre> keeps
+    # layout but BM25 drops <pre> blocks for any query (verified 0.9.4) --
+    # per-language handling if code fidelity matters
+    async def __call__(
+        self, result: FetchResult, query: str | None = None, /
+    ) -> FetchResult:
+        return replace(
+            result, content=markdown_to_html(result.content), mime=MIME_HTML
+        )
+
+
+class PreTextToHtml:
+    """Filter converting a browser-rendered sole ``<pre>`` page to HTML."""
+
+    async def __call__(
+        self, result: FetchResult, query: str | None = None, /
+    ) -> FetchResult:
+        return replace(result, content=text_page_to_html(result.content))
+
+
+class RelevanceFilter:
+    """Filter keeping query-relevant blocks of an HTML result as Markdown.
+
+    A blank query returns the whole page. Otherwise an LLM filter is used when
+    ``fetch_model`` is set, BM25 when it is not. Links resolve against
+    ``result.base_url`` or, when unset, ``result.url``.
+    """
+
+    def __init__(self, *, fetch_model: str, router_url: str, router_key: str) -> None:
+        self._fetch_model = fetch_model
+        self._router_url = router_url
+        self._router_key = router_key
+
+    async def __call__(
+        self, result: FetchResult, query: str | None = None, /
+    ) -> FetchResult:
         nonblank = (query or "").strip()
         generator = DefaultMarkdownGenerator(
             content_filter=(
                 _build_content_filter(
                     nonblank,
-                    fetch_model=fetch_model,
-                    router_url=router_url,
-                    router_key=router_key,
+                    fetch_model=self._fetch_model,
+                    router_url=self._router_url,
+                    router_key=self._router_key,
                 )
                 if nonblank
                 else None
             )
         )
-        result = await asyncio.to_thread(generator.generate_markdown, html, base_url)
-        if not nonblank:
-            return (result.raw_markdown or "").strip()
-        fit_markdown = (result.fit_markdown or "").strip()
-        if fit_markdown.startswith("Error generating fit markdown"):
+        base_url = result.base_url or result.url
+        generated = await asyncio.to_thread(
+            generator.generate_markdown, result.content, base_url
+        )
+        markdown = (
+            generated.fit_markdown if nonblank else generated.raw_markdown
+        ) or ""
+        markdown = markdown.strip()
+        if nonblank and markdown.startswith("Error generating fit markdown"):
             logger.warning("Content filtering failed for %s", base_url)
-            return ERROR_FILTERING
-        return fit_markdown
+            return failure(result.url, FetchStatus.FILTER_FAILED)
+        return replace(result, content=markdown, mime=MIME_MARKDOWN)
+
+
+def create_page_filter(
+    *, fetch_model: str, router_url: str, router_key: str
+) -> PageFilter:
+    """String-level adapter over :class:`RelevanceFilter`.
+
+    Removed with the string-returning ``create_fetch`` adapter in Phase 3.
+    """
+    relevance = RelevanceFilter(
+        fetch_model=fetch_model, router_url=router_url, router_key=router_key
+    )
+
+    async def page_filter(html: str, base_url: str, query: str | None) -> str:
+        source = FetchResult(
+            url=base_url, status=FetchStatus.OK, mime=MIME_HTML, content=html
+        )
+        filtered = await relevance(source, query)
+        return filtered.content if filtered.ok else ERROR_FILTERING
 
     return page_filter

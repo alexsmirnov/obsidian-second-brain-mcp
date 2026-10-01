@@ -3,18 +3,13 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from urllib.parse import urlparse
 
-import httpx
+from mcps.research.tools.common import extract_hostname, failure
+from mcps.research.tools.result import Fetch, FetchResult, FetchStatus
 
-from mcps.research.tools.common import (
-    ERROR_UNSUPPORTED_CONTENT,
-    extract_hostname,
-    to_error_message,
-)
-from mcps.research.tools.default import fetch_default
-
-__all__ = ["fetch_arxiv", "is_arxiv_url"]
+__all__ = ["ArxivFetch", "is_arxiv_url"]
 
 logger = logging.getLogger(__name__)
 
@@ -31,34 +26,22 @@ def _extract_arxiv_id(url: str) -> str | None:
     return paper_id or None
 
 
-async def _try_fetch(
-    url: str, *, http_client: httpx.AsyncClient | None, max_chars: int
-) -> str:
-    try:
-        return await fetch_default(url, http_client=http_client, max_chars=max_chars)
-    except httpx.HTTPError as error:
-        return to_error_message(error)
-    except Exception:
-        return ERROR_UNSUPPORTED_CONTENT
+class ArxivFetch:
+    """Tries the HTML, then PDF, then abstract page of an arXiv paper."""
 
+    def __init__(self, http: Fetch) -> None:
+        self._http = http
 
-async def fetch_arxiv(
-    url: str,
-    *,
-    http_client: httpx.AsyncClient | None,
-    max_chars: int,
-) -> str:
-    arxiv_id = _extract_arxiv_id(url)
-    if arxiv_id is None:
-        return await fetch_default(url, http_client=http_client, max_chars=max_chars)
-    result = ERROR_UNSUPPORTED_CONTENT
-    for kind in ("html", "pdf", "abs"):
-        result = await _try_fetch(
-            f"https://arxiv.org/{kind}/{arxiv_id}",
-            http_client=http_client,
-            max_chars=max_chars,
-        )
-        if not result.startswith("ERROR:"):
-            return result
-    logger.warning("arXiv fetch failed for %s: %s", url, result)
-    return result
+    async def __call__(self, url: str, query: str | None = None, /) -> FetchResult:
+        arxiv_id = _extract_arxiv_id(url)
+        if arxiv_id is None:
+            return await self._http(url, query)
+        result = failure(url, FetchStatus.UNSUPPORTED)
+        for kind in ("html", "pdf", "abs"):
+            attempt = await self._http(f"https://arxiv.org/{kind}/{arxiv_id}", query)
+            # Links resolve against the requested URL, not the variant fetched.
+            result = replace(attempt, url=url)
+            if result.ok:
+                return result
+        logger.warning("arXiv fetch failed for %s: %s", url, result.status)
+        return result

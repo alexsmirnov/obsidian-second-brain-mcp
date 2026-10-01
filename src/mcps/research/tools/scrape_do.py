@@ -6,15 +6,10 @@ import logging
 
 import httpx
 
-from mcps.research.tools.common import (
-    ERROR_EMPTY_RESPONSE,
-    ERROR_FETCHER_UNAVAILABLE,
-    Retrieve,
-    format_source_output,
-    http_status_error,
-)
+from mcps.research.tools.common import MIME_HTML, failure
+from mcps.research.tools.result import FetchResult, FetchStatus
 
-__all__ = ["SCRAPE_DO_URL", "create_scrape_do_fetch"]
+__all__ = ["SCRAPE_DO_URL", "ScrapeDoFetch"]
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +24,7 @@ def _is_provider_failure(status_code: int) -> bool:
     return status_code in _PROVIDER_FAILURE_CODES or status_code >= 500
 
 
-def _to_fetch_result(url: str, response: httpx.Response, max_chars: int) -> str:
+def _to_fetch_result(url: str, response: httpx.Response) -> FetchResult:
     if _is_provider_failure(response.status_code):
         logger.warning(
             "Scrape.do failed for %s: %d %s",
@@ -37,40 +32,48 @@ def _to_fetch_result(url: str, response: httpx.Response, max_chars: int) -> str:
             response.status_code,
             response.text[:200],
         )
-        return ERROR_FETCHER_UNAVAILABLE
+        return failure(url, FetchStatus.UNAVAILABLE)
     if response.status_code >= 400:
-        return http_status_error(response.status_code)
+        return failure(url, FetchStatus.HTTP_ERROR, response.status_code)
     content = response.text.strip()
     if not content:
-        return ERROR_EMPTY_RESPONSE
-    return format_source_output(url, content, max_chars)
+        return failure(url, FetchStatus.EMPTY)
+    return FetchResult(
+        url=url,
+        status=FetchStatus.OK,
+        mime=MIME_HTML,
+        content=content,
+    )
 
 
-def create_scrape_do_fetch(
-    token: str,
-    *,
-    http_client: httpx.AsyncClient,
-    max_chars: int = 15000,
-    api_url: str = SCRAPE_DO_URL,
-) -> Retrieve:
-    """Create a fetch callable routing requests through Scrape.do.
+class ScrapeDoFetch:
+    """Fetch routing requests through Scrape.do.
 
     Uses premium proxies (``super``) and headless rendering (``render``) since
     it only runs for pages that already blocked a direct request.
     """
 
-    async def fetch(url: str) -> str:
+    def __init__(
+        self,
+        token: str,
+        *,
+        http_client: httpx.AsyncClient,
+        api_url: str = SCRAPE_DO_URL,
+    ) -> None:
+        self._token = token
+        self._http_client = http_client
+        self._api_url = api_url
+
+    async def __call__(self, url: str, query: str | None = None, /) -> FetchResult:
         params = {
-            "token": token,
+            "token": self._token,
             "url": url,
             "super": "true",
             "render": "true",
         }
         try:
-            response = await http_client.get(api_url, params=params)
+            response = await self._http_client.get(self._api_url, params=params)
         except httpx.HTTPError as error:
             logger.warning("Scrape.do unavailable for %s: %r", url, error)
-            return ERROR_FETCHER_UNAVAILABLE
-        return _to_fetch_result(url, response, max_chars)
-
-    return fetch
+            return failure(url, FetchStatus.UNAVAILABLE)
+        return _to_fetch_result(url, response)

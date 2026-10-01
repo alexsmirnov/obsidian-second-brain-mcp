@@ -9,7 +9,7 @@ import httpx
 import pymupdf
 from lxml import html as lxml_html
 
-from mcps.research.tools.filtering import markdown_to_html
+from mcps.research.tools.common import MIME_HTML, MIME_MARKDOWN
 
 __all__ = [
     "CONTENT_TYPE_EXTRACTORS",
@@ -18,6 +18,9 @@ __all__ = [
 ]
 
 _PDF_ANNOT_SCREEN = 21  # pymupdf.PDF_ANNOT_SCREEN
+
+# (content, mime); None when the body holds no content.
+Extracted = tuple[str, str] | None
 
 
 def _convert_pdf_to_text(pdf_bytes: bytes) -> str:
@@ -48,16 +51,16 @@ def normalize_content_type(header_value: str) -> str:
     return header_value.split(";", maxsplit=1)[0].strip().lower()
 
 
-def _extract_html_response(response: httpx.Response) -> str | None:
+def _extract_html_response(response: httpx.Response) -> Extracted:
     # ponytail: <script>/<style> text counts as content; browser path handles JS shells
     try:
         text = lxml_html.document_fromstring(response.text).text_content()
     except Exception:
         return None
-    return response.text if text.strip() else None
+    return (response.text, MIME_HTML) if text.strip() else None
 
 
-def _extract_pdf_response(response: httpx.Response) -> str | None:
+def _extract_pdf_response(response: httpx.Response) -> Extracted:
     if not response.content:
         return None
     blocks = [
@@ -67,16 +70,17 @@ def _extract_pdf_response(response: httpx.Response) -> str | None:
     ]
     if not blocks:
         return None
-    return "".join(
+    paragraphs = "".join(
         f"<p>{html.escape(block).replace(chr(10), '<br>')}</p>" for block in blocks
     )
+    return paragraphs, MIME_HTML
 
 
-def _extract_plain_text_response(response: httpx.Response) -> str | None:
+def _extract_plain_text_response(response: httpx.Response) -> Extracted:
     content = response.text
     if not content or not content.strip():
         return None
-    return markdown_to_html(content)
+    return content, MIME_MARKDOWN
 
 
 def _looks_like_pdf(content: bytes) -> bool:
@@ -89,7 +93,7 @@ def _looks_like_html(content: str) -> bool:
     return lowered.startswith(html_prefixes)
 
 
-def extract_without_content_type(response: httpx.Response) -> str | None:
+def extract_without_content_type(response: httpx.Response) -> Extracted:
     """Sniff PDF/HTML/plain text when the server omits content-type."""
     if response.content and _looks_like_pdf(response.content):
         return _extract_pdf_response(response)
@@ -98,7 +102,7 @@ def extract_without_content_type(response: httpx.Response) -> str | None:
     return _extract_plain_text_response(response)
 
 
-CONTENT_TYPE_EXTRACTORS: dict[str, Callable[[httpx.Response], str | None]] = {
+CONTENT_TYPE_EXTRACTORS: dict[str, Callable[[httpx.Response], Extracted]] = {
     "text/html": _extract_html_response,
     "application/xhtml+xml": _extract_html_response,
     "application/pdf": _extract_pdf_response,

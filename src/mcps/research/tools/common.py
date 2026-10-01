@@ -8,6 +8,8 @@ from urllib.parse import urlparse
 
 import httpx
 
+from mcps.research.tools.result import FetchResult, FetchStatus
+
 __all__ = [
     "CHROME_HEADERS",
     "ERROR_EMPTY_RESPONSE",
@@ -15,17 +17,25 @@ __all__ = [
     "ERROR_FILTERING",
     "ERROR_REQUEST_TIMEOUT",
     "ERROR_UNSUPPORTED_CONTENT",
+    "MIME_HTML",
+    "MIME_MARKDOWN",
     "Fetch",
     "Retrieve",
+    "error_result",
     "extract_hostname",
+    "failure",
     "format_source_output",
     "http_status_error",
     "is_escalatable",
     "request_get",
+    "safe_fetch",
     "to_error_message",
 ]
 
 logger = logging.getLogger(__name__)
+
+MIME_HTML = "text/html"
+MIME_MARKDOWN = "text/markdown"
 
 Fetch = Callable[[str, str | None], Awaitable[str]]
 # A single-URL source callable (browser render or commercial provider).
@@ -102,6 +112,38 @@ def to_error_message(error: Exception) -> str:
     if isinstance(error, httpx.HTTPStatusError):
         return http_status_error(error.response.status_code)
     return ERROR_UNSUPPORTED_CONTENT
+
+
+def failure(
+    url: str, status: FetchStatus, http_status: int | None = None
+) -> FetchResult:
+    """Build an unsuccessful result; error results carry no mime."""
+    return FetchResult(url=url, status=status, mime="", http_status=http_status)
+
+
+def error_result(url: str, error: Exception) -> FetchResult:
+    """Map an httpx exception to a failed result."""
+    if isinstance(error, httpx.TimeoutException):
+        return failure(url, FetchStatus.TIMEOUT)
+    if isinstance(error, httpx.HTTPStatusError):
+        return failure(url, FetchStatus.HTTP_ERROR, error.response.status_code)
+    return failure(url, FetchStatus.UNSUPPORTED)
+
+
+async def safe_fetch(url: str, attempt: Awaitable[FetchResult]) -> FetchResult:
+    """Await ``attempt``; any exception becomes a failed result, never raised.
+
+    ``deep_research`` gathers fetches without ``return_exceptions``, so one
+    bad URL must not fail the whole search step.
+    """
+    try:
+        return await attempt
+    except httpx.HTTPError as error:
+        result = error_result(url, error)
+    except Exception:
+        result = failure(url, FetchStatus.UNSUPPORTED)
+    logger.warning("Web fetch failed for %s: %s", url, result.status)
+    return result
 
 
 def format_source_output(url: str, content: str, max_chars: int) -> str:

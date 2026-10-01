@@ -4,63 +4,55 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Callable, Sequence
 from urllib.parse import urlparse
 
 import httpx
 
-from mcps.research.tools.arxiv import fetch_arxiv, is_arxiv_url
+from mcps.research.tools.arxiv import ArxivFetch, is_arxiv_url
 from mcps.research.tools.common import (
+    ERROR_EMPTY_RESPONSE,
     ERROR_FETCHER_UNAVAILABLE,
+    ERROR_REQUEST_TIMEOUT,
     ERROR_UNSUPPORTED_CONTENT,
+    MIME_MARKDOWN,
     Fetch,
-    Retrieve,
     format_source_output,
-    is_escalatable,
-    to_error_message,
+    http_status_error,
 )
-from mcps.research.tools.default import fetch_default
-from mcps.research.tools.filtering import PageFilter, text_page_to_html
+from mcps.research.tools.default import HttpFetch
+from mcps.research.tools.filtering import (
+    PageFilter,
+    markdown_to_html,
+    text_page_to_html,
+)
 from mcps.research.tools.github import (
-    fetch_github_blob,
-    fetch_github_repo,
-    github_link_base,
+    GitHubBlobFetch,
+    GitHubRepoFetch,
     is_github_blob_url,
     is_github_repo_url,
 )
+from mcps.research.tools.result import Fetch as SourceFetch
+from mcps.research.tools.result import FetchResult, FetchStatus
 
 __all__ = ["create_fetch"]
 
 logger = logging.getLogger(__name__)
 
-SiteFetcher = Callable[..., Awaitable[str]]
 
-# GitHub and arXiv keep their specialized HTTP fetcher and never fall back.
-_SPECIALIZED_ROUTES: tuple[tuple[Callable[[str], bool], SiteFetcher], ...] = (
-    (is_arxiv_url, fetch_arxiv),
-    (is_github_blob_url, fetch_github_blob),
-    (is_github_repo_url, fetch_github_repo),
-)
-
-# Intermediate content is not truncated: the caller filters, then truncates.
-_NO_TRUNCATION = 10**9
-
-
-async def _call_fetcher(
-    fetcher: SiteFetcher,
-    url: str,
-    *,
-    http_client: httpx.AsyncClient | None,
-    max_chars: int,
-) -> str:
-    try:
-        return await fetcher(url, http_client=http_client, max_chars=max_chars)
-    except httpx.HTTPError as error:
-        message = to_error_message(error)
-    except Exception:
-        message = ERROR_UNSUPPORTED_CONTENT
-    logger.warning("Web fetch failed for %s: %s", url, message)
-    return message
+def _legacy_error(result: FetchResult) -> str:
+    """Error string for a failed result (removed once fetch returns results)."""
+    match result.status:
+        case FetchStatus.HTTP_ERROR:
+            return http_status_error(result.http_status or 0)
+        case FetchStatus.TIMEOUT:
+            return ERROR_REQUEST_TIMEOUT
+        case FetchStatus.EMPTY:
+            return ERROR_EMPTY_RESPONSE
+        case FetchStatus.UNAVAILABLE:
+            return ERROR_FETCHER_UNAVAILABLE
+        case _:
+            return ERROR_UNSUPPORTED_CONTENT
 
 
 def _is_restricted(url: str, domains: Sequence[str]) -> bool:
@@ -74,8 +66,8 @@ def _is_restricted(url: str, domains: Sequence[str]) -> bool:
 def create_fetch(
     *,
     http_client: httpx.AsyncClient | None = None,
-    browser: Retrieve | None = None,
-    provider: Retrieve | None = None,
+    browser: SourceFetch | None = None,
+    provider: SourceFetch | None = None,
     page_filter: PageFilter,
     restricted_domains: Sequence[str] = (),
     concurrency: int = 2,
@@ -92,51 +84,56 @@ def create_fetch(
     Concurrent browser renders are capped at ``concurrency``.
     """
     semaphore = asyncio.Semaphore(concurrency)
+    http = HttpFetch(http_client)
+    specialized: tuple[tuple[Callable[[str], bool], SourceFetch], ...] = (
+        (is_arxiv_url, ArxivFetch(http)),
+        (is_github_blob_url, GitHubBlobFetch(http_client)),
+        (is_github_repo_url, GitHubRepoFetch(http_client)),
+    )
 
     async def _filter(
-        html: str, url: str, query: str | None, base_url: str | None = None
+        source: FetchResult, query: str | None, *, text_page: bool
     ) -> str:
-        filtered = await page_filter(html, base_url or url, query)
-        return format_source_output(url, filtered, max_chars)
+        html = source.content
+        if source.mime == MIME_MARKDOWN:
+            html = markdown_to_html(html)
+        elif text_page:
+            html = text_page_to_html(html)
+        filtered = await page_filter(html, source.base_url or source.url, query)
+        return format_source_output(source.url, filtered, max_chars)
+
+    async def _finish(
+        source: FetchResult, query: str | None, *, text_page: bool = False
+    ) -> str:
+        if not source.ok:
+            return _legacy_error(source)
+        return await _filter(source, query, text_page=text_page)
 
     async def fetch(url: str, query: str | None = None) -> str:
         if _is_restricted(url, restricted_domains):
             return ""
 
-        fetcher = next(
-            (route for matches, route in _SPECIALIZED_ROUTES if matches(url)), None
+        routed = next(
+            (route for matches, route in specialized if matches(url)), None
         )
-        if fetcher is not None:
-            result = await _call_fetcher(
-                fetcher, url, http_client=http_client, max_chars=_NO_TRUNCATION
-            )
-            if result.startswith("ERROR"):
-                return result
-            return await _filter(result, url, query, github_link_base(url))
+        if routed is not None:
+            return await _finish(await routed(url), query)
 
         is_pdf = urlparse(url).path.lower().endswith(".pdf")
         if browser is None or is_pdf:
-            result = await _call_fetcher(
-                fetch_default, url, http_client=http_client, max_chars=_NO_TRUNCATION
-            )
-            if not result.startswith("ERROR"):
-                result = await _filter(result, url, query)
+            source = await http(url)
+            text_page = False
         else:
             async with semaphore:
-                rendered = await browser(url)
-            if rendered.startswith("ERROR"):
-                result = rendered
-            else:
-                result = await _filter(text_page_to_html(rendered), url, query)
+                source = await browser(url)
+            text_page = True
+        result = await _finish(source, query, text_page=text_page)
 
-        if provider is not None and is_escalatable(result):
-            logger.info("Escalating %s after %s", url, result)
+        if provider is not None and source.is_retryable():
+            logger.info("Escalating %s after %s", url, source.status)
             candidate = await provider(url)
-            if candidate != ERROR_FETCHER_UNAVAILABLE:
-                if candidate.startswith("ERROR"):
-                    result = candidate
-                else:
-                    result = await _filter(text_page_to_html(candidate), url, query)
+            if candidate.status is not FetchStatus.UNAVAILABLE:
+                result = await _finish(candidate, query, text_page=True)
         return result
 
     return fetch

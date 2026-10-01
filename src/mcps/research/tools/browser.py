@@ -13,21 +13,17 @@ from typing import Any, Protocol
 
 from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig
 
-from mcps.research.tools.common import (
-    ERROR_EMPTY_RESPONSE,
-    ERROR_FETCHER_UNAVAILABLE,
-    Retrieve,
-    http_status_error,
-)
+from mcps.research.tools.common import MIME_HTML, failure
+from mcps.research.tools.result import FetchResult, FetchStatus
 
 __all__ = [
     "LOCAL_CDP_URL",
+    "BrowserFetch",
     "Crawler",
     "CrawlerContext",
     "CrawlerFactory",
     "browser_crawler",
     "browser_endpoint",
-    "create_browser_fetch",
     "probe_cdp",
 ]
 
@@ -89,36 +85,33 @@ def _default_crawler_factory(cdp_url: str) -> CrawlerFactory:
     return lambda: AsyncWebCrawler(config=browser_config)
 
 
-def _to_fetch_result(url: str, crawl: Any) -> str:
-    """Map a crawl4ai ``CrawlResult`` to rendered HTML or an error string."""
+def _to_fetch_result(url: str, crawl: Any) -> FetchResult:
+    """Map a crawl4ai ``CrawlResult`` to rendered HTML or a failed result."""
     if crawl.status_code is not None and crawl.status_code >= 400:
-        return http_status_error(crawl.status_code)
+        return failure(url, FetchStatus.HTTP_ERROR, crawl.status_code)
     if not crawl.success:
         logger.warning("Browser fetch failed for %s: %s", url, crawl.error_message)
-        return ERROR_FETCHER_UNAVAILABLE
+        return failure(url, FetchStatus.UNAVAILABLE)
     content = crawl.cleaned_html or ""
     if not content.strip():
-        return ERROR_EMPTY_RESPONSE
-    return content
+        return failure(url, FetchStatus.EMPTY)
+    return FetchResult(
+        url=url, status=FetchStatus.OK, mime=MIME_HTML, content=content
+    )
 
 
-def create_browser_fetch(crawler: Crawler) -> Retrieve:
-    """Create a callable that renders pages on an already-open crawler.
+class BrowserFetch:
+    """Render pages on an already-open crawler.
 
     The crawler's lifetime is owned by the caller (see :func:`browser_crawler`),
     so fetches never start, close, or replace it. crawl4ai mutates the
     ``CrawlerRunConfig`` it is given, so every call builds a fresh one.
     """
-    return _BrowserFetch(crawler)
-
-
-class _BrowserFetch:
-    """Borrowed-crawler retrieval: run one URL, map the crawl to content."""
 
     def __init__(self, crawler: Crawler) -> None:
         self._crawler = crawler
 
-    async def __call__(self, url: str) -> str:
+    async def __call__(self, url: str, query: str | None = None, /) -> FetchResult:
         try:
             crawler_config = CrawlerRunConfig(
             simulate_user=True,  # Add user simulation
@@ -132,7 +125,7 @@ class _BrowserFetch:
             )
         except Exception as error:
             logger.warning("Browser fetch unavailable for %s: %r", url, error)
-            return ERROR_FETCHER_UNAVAILABLE
+            return failure(url, FetchStatus.UNAVAILABLE)
         return _to_fetch_result(url, crawl)
 
 

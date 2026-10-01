@@ -9,16 +9,16 @@ import httpx
 
 from mcps.research.tools.common import (
     CHROME_HEADERS,
-    ERROR_EMPTY_RESPONSE,
-    ERROR_UNSUPPORTED_CONTENT,
-    format_source_output,
+    MIME_MARKDOWN,
+    failure,
     request_get,
+    safe_fetch,
 )
-from mcps.research.tools.filtering import markdown_to_html
+from mcps.research.tools.result import FetchResult, FetchStatus
 
 __all__ = [
-    "fetch_github_blob",
-    "fetch_github_repo",
+    "GitHubBlobFetch",
+    "GitHubRepoFetch",
     "github_link_base",
     "is_github_blob_url",
     "is_github_repo_url",
@@ -73,52 +73,61 @@ def _github_repo_readme_urls(url: str) -> list[str]:
     ]
 
 
-async def fetch_github_blob(
-    url: str,
-    *,
-    http_client: httpx.AsyncClient | None,
-    max_chars: int,
-) -> str:
-    raw_url = _github_blob_to_raw_url(url)
-    if raw_url is None:
-        logger.warning(
-            "GitHub blob fetch failed for %s: %s", url, ERROR_UNSUPPORTED_CONTENT
-        )
-        return ERROR_UNSUPPORTED_CONTENT
-    response = await request_get(
-        raw_url,
-        http_client=http_client,
-        headers=CHROME_HEADERS,
+def _markdown_result(url: str, content: str) -> FetchResult:
+    return FetchResult(
+        url=url,
+        status=FetchStatus.OK,
+        mime=MIME_MARKDOWN,
+        content=content,
+        base_url=github_link_base(url),
     )
-    content = response.text.strip()
-    if not content:
-        logger.warning("GitHub blob fetch failed for %s: %s", url, ERROR_EMPTY_RESPONSE)
-        return ERROR_EMPTY_RESPONSE
-    # ponytail: source code becomes paragraphs (indentation lost); <pre> keeps
-    # layout but BM25 drops <pre> blocks for any query (verified 0.9.4) --
-    # per-language handling if code fidelity matters
-    return format_source_output(url, markdown_to_html(content), max_chars)
 
 
-async def fetch_github_repo(
-    url: str,
-    *,
-    http_client: httpx.AsyncClient | None,
-    max_chars: int,
-) -> str:
-    for readme_url in _github_repo_readme_urls(url):
-        try:
-            response = await request_get(
-                readme_url,
-                http_client=http_client,
-                headers=CHROME_HEADERS,
-            )
-        except httpx.HTTPStatusError as error:
-            if error.response.status_code == 404:
-                continue
-            raise
+class GitHubBlobFetch:
+    """Raw file contents for ``github.com/.../blob/...`` URLs."""
+
+    def __init__(self, http_client: httpx.AsyncClient | None) -> None:
+        self._http_client = http_client
+
+    async def __call__(self, url: str, query: str | None = None, /) -> FetchResult:
+        return await safe_fetch(url, self._fetch(url))
+
+    async def _fetch(self, url: str) -> FetchResult:
+        raw_url = _github_blob_to_raw_url(url)
+        if raw_url is None:
+            logger.warning("GitHub blob fetch failed for %s: unsupported", url)
+            return failure(url, FetchStatus.UNSUPPORTED)
+        response = await request_get(
+            raw_url, http_client=self._http_client, headers=CHROME_HEADERS
+        )
         content = response.text.strip()
-        if content:
-            return format_source_output(url, markdown_to_html(content), max_chars)
-    logger.warning("GitHub repo fetch failed for %s: %s", url, ERROR_EMPTY_RESPONSE)
-    return ERROR_EMPTY_RESPONSE
+        if not content:
+            logger.warning("GitHub blob fetch failed for %s: empty", url)
+            return failure(url, FetchStatus.EMPTY)
+        return _markdown_result(url, content)
+
+
+class GitHubRepoFetch:
+    """README for ``github.com/<owner>/<repo>`` URLs."""
+
+    def __init__(self, http_client: httpx.AsyncClient | None) -> None:
+        self._http_client = http_client
+
+    async def __call__(self, url: str, query: str | None = None, /) -> FetchResult:
+        return await safe_fetch(url, self._fetch(url))
+
+    async def _fetch(self, url: str) -> FetchResult:
+        for readme_url in _github_repo_readme_urls(url):
+            try:
+                response = await request_get(
+                    readme_url, http_client=self._http_client, headers=CHROME_HEADERS
+                )
+            except httpx.HTTPStatusError as error:
+                if error.response.status_code == 404:
+                    continue
+                raise
+            content = response.text.strip()
+            if content:
+                return _markdown_result(url, content)
+        logger.warning("GitHub repo fetch failed for %s: empty", url)
+        return failure(url, FetchStatus.EMPTY)

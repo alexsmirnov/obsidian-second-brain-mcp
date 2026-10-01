@@ -16,7 +16,27 @@ from mcps.research.tools import (
     create_fetch,
     create_google_search,
 )
+from mcps.research.tools.arxiv import ArxivFetch
+from mcps.research.tools.default import HttpFetch
 from mcps.research.tools.filtering import create_page_filter
+from mcps.research.tools.github import GitHubBlobFetch, GitHubRepoFetch
+from mcps.research.tools.result import FetchResult, FetchStatus
+
+_ERROR_SCRIPTS = {
+    "ERROR: http code 403": (FetchStatus.HTTP_ERROR, 403),
+    "ERROR: http code 404": (FetchStatus.HTTP_ERROR, 404),
+    "ERROR: empty response": (FetchStatus.EMPTY, None),
+    "ERROR: request timeout": (FetchStatus.TIMEOUT, None),
+    "ERROR: fetcher unavailable": (FetchStatus.UNAVAILABLE, None),
+}
+
+
+def scripted_result(url: str, script: str) -> FetchResult:
+    """Turn a scripted HTML body or ``ERROR: ...`` marker into a FetchResult."""
+    if script in _ERROR_SCRIPTS:
+        status, http_status = _ERROR_SCRIPTS[script]
+        return FetchResult(url, status, "", http_status=http_status)
+    return FetchResult(url, FetchStatus.OK, "text/html", script)
 
 TOPIC_HTML = (
     "<html><body><h2>Quantum optimization</h2><p>"
@@ -46,7 +66,7 @@ class FakeBrowser:
         self.in_flight = 0
         self.max_in_flight = 0
 
-    async def __call__(self, url: str) -> str:
+    async def __call__(self, url: str, query: str | None = None, /) -> FetchResult:
         self.calls.append(url)
         self.in_flight += 1
         self.max_in_flight = max(self.max_in_flight, self.in_flight)
@@ -54,8 +74,10 @@ class FakeBrowser:
             if self.gate is not None:
                 await self.gate.wait()
             if isinstance(self.result, dict):
-                return self.result.get(url, "ERROR: empty response")
-            return self.result
+                return scripted_result(
+                    url, self.result.get(url, "ERROR: empty response")
+                )
+            return scripted_result(url, self.result)
         finally:
             self.in_flight -= 1
 
@@ -67,9 +89,9 @@ class FakeProvider:
         self.result = result
         self.calls: list[str] = []
 
-    async def __call__(self, url: str) -> str:
+    async def __call__(self, url: str, query: str | None = None, /) -> FetchResult:
         self.calls.append(url)
-        return self.result
+        return scripted_result(url, self.result)
 
 
 @pytest.fixture
@@ -596,3 +618,138 @@ async def test_provider_html_is_filtered_once(bm25):
 
     assert "https://source.example/paper" in result
     assert "bread flour" not in result
+
+
+class ExplodingClient:
+    """Client whose requests raise a non-httpx error (e.g. a malformed URL)."""
+
+    async def get(self, *_args: object, **_kwargs: object) -> httpx.Response:
+        raise ValueError("boom")
+
+
+@pytest.mark.parametrize(
+    ("build", "url"),
+    [
+        (lambda c: HttpFetch(c), "https://site.example/"),
+        (lambda c: GitHubBlobFetch(c), "https://github.com/o/r/blob/main/a.py"),
+        (lambda c: GitHubRepoFetch(c), "https://github.com/o/r"),
+        (lambda c: ArxivFetch(HttpFetch(c)), "https://arxiv.org/abs/2401.00001"),
+        (lambda c: ArxivFetch(HttpFetch(c)), "https://arxiv.org/list/cs/new"),
+    ],
+    ids=["http", "github-blob", "github-repo", "arxiv", "arxiv-no-id"],
+)
+async def test_unexpected_exception_becomes_unsupported_result(build, url: str):
+    fetch = build(ExplodingClient())
+
+    result = await fetch(url)
+
+    assert result.status is FetchStatus.UNSUPPORTED
+    assert result.url == url
+
+
+# ---------------------------------------------------------------------------
+# Source mime contract: each source declares what it returns
+# ---------------------------------------------------------------------------
+
+HTML_BODY = "<html><body><h1>Hello</h1><p>World</p></body></html>"
+
+
+@pytest.mark.parametrize(
+    ("url", "response", "expected_mime", "expected_content"),
+    [
+        pytest.param(
+            "https://site.example/page",
+            {"html": HTML_BODY},
+            "text/html",
+            HTML_BODY,
+            id="html",
+        ),
+        pytest.param(
+            "https://site.example/notes.txt",
+            {"text": "# Title", "headers": {"content-type": "text/plain"}},
+            "text/markdown",
+            "# Title",
+            id="plain-text",
+        ),
+        pytest.param(
+            "https://site.example/notes.md",
+            {"text": "# Title", "headers": {"content-type": "text/markdown"}},
+            "text/markdown",
+            "# Title",
+            id="markdown",
+        ),
+    ],
+)
+async def test_http_source_declares_mime_and_native_content(
+    httpx_mock: HTTPXMock,
+    client: httpx.AsyncClient,
+    url: str,
+    response: dict,
+    expected_mime: str,
+    expected_content: str,
+):
+    httpx_mock.add_response(**response)
+
+    result = await HttpFetch(client)(url)
+
+    assert result.ok
+    assert (result.mime, result.content) == (expected_mime, expected_content)
+    assert result.base_url is None
+
+
+async def test_github_blob_is_markdown_with_its_own_link_base(
+    httpx_mock: HTTPXMock, client: httpx.AsyncClient
+):
+    httpx_mock.add_response(
+        url="https://raw.githubusercontent.com/o/r/main/a.md", text="# Doc"
+    )
+    url = "https://github.com/o/r/blob/main/a.md"
+
+    result = await GitHubBlobFetch(client)(url)
+
+    assert (result.mime, result.content) == ("text/markdown", "# Doc")
+    assert result.base_url == url
+
+
+async def test_github_repo_readme_is_markdown_with_repo_link_base(
+    httpx_mock: HTTPXMock, client: httpx.AsyncClient
+):
+    httpx_mock.add_response(
+        url="https://raw.githubusercontent.com/org/project/main/README.md",
+        text="# Readme",
+    )
+
+    result = await GitHubRepoFetch(client)("https://github.com/org/project")
+
+    assert (result.mime, result.content) == ("text/markdown", "# Readme")
+    assert result.base_url == "https://github.com/org/project/blob/HEAD/"
+
+
+async def test_pdf_source_is_html_paragraphs(
+    httpx_mock: HTTPXMock,
+    client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(
+        "mcps.research.tools.extract._convert_pdf_to_text",
+        lambda _pdf: "Alpha\n\nBeta",
+    )
+    httpx_mock.add_response(
+        content=b"%PDF-1.4", headers={"content-type": "application/pdf"}
+    )
+
+    result = await HttpFetch(client)("https://site.example/a.pdf")
+
+    assert result.mime == "text/html"
+    assert result.content == "<p>Alpha</p><p>Beta</p>"
+
+
+async def test_http_source_does_not_truncate(
+    httpx_mock: HTTPXMock, client: httpx.AsyncClient
+):
+    body = "<html><body><p>" + "word " * 8000 + "</p></body></html>"
+    httpx_mock.add_response(html=body)
+
+    result = await HttpFetch(client)("https://site.example/long")
+
+    assert result.content == body
