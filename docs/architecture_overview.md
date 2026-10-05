@@ -12,7 +12,7 @@ FastMCP-based Model Context Protocol server with RAG capabilities for Obsidian v
 ### Database and Search
 - **LanceDB 0.25.3** - Vector database with full-text and hybrid search capabilities [src/mcps/rag/database.py:9-14](../src/mcps/rag/database.py#L9-L14)
 - **pyarrow** - Columnar data format for LanceDB schemas and table operations
-- **rank-bm25** - BM25 algorithm for keyword-based ranking (reserved for future use)
+- **rank-bm25** - BM25L keyword ranking over source-mapped fetch-filter windows [src/mcps/research/tools/filtering.py](../src/mcps/research/tools/filtering.py)
 
 ### AI Services
 - **OpenAI-compatible model router** - Central gateway for web research and Obsidian RAG chat/embedding models.

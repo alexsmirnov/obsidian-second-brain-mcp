@@ -64,7 +64,8 @@ class ServerConfig:
     bright_data_api_key: str = ""
     bright_data_zone: str = ""
     # Content filtering and fetch routing
-    # LLM model used by LLMContentFilter; empty selects BM25 filtering.
+    # Chat model for hybrid source-window selection; empty selects local
+    # lexical filtering. Requires rag_embedding_model when set.
     fetch_model: str = ""
     # Hostnames (and their subdomains) fetch must never visit.
     fetch_restricted_domains: tuple[str, ...] = ()

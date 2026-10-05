@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
-import html
 import logging
-from collections.abc import Callable
 
 import httpx
 import pymupdf
 from lxml import html as lxml_html
 
-from mcps.research.tools.common import MIME_HTML, MIME_MARKDOWN, failure
+from mcps.research.tools.common import (
+    MIME_HTML,
+    MIME_PLAIN,
+    failure,
+    normalize_mime,
+    textual_mime,
+)
 from mcps.research.tools.models import FetchResult, FetchStatus
 
 __all__ = ["HttpFetch"]
@@ -74,10 +78,6 @@ def _convert_pdf_to_text(pdf_bytes: bytes) -> str:
     return "\n\n".join(page_text).strip()
 
 
-def _normalize_content_type(header_value: str) -> str:
-    return header_value.split(";", maxsplit=1)[0].strip().lower()
-
-
 def _extract_html_response(response: httpx.Response) -> Extracted:
     # ponytail: <script>/<style> text counts as content; browser path handles JS shells
     try:
@@ -90,24 +90,19 @@ def _extract_html_response(response: httpx.Response) -> Extracted:
 def _extract_pdf_response(response: httpx.Response) -> Extracted:
     if not response.content:
         return None
-    blocks = [
-        block
-        for block in _convert_pdf_to_text(response.content).split("\n\n")
-        if block.strip()
-    ]
-    if not blocks:
+    extracted = _convert_pdf_to_text(response.content)
+    if not extracted.strip():
         return None
-    paragraphs = "".join(
-        f"<p>{html.escape(block).replace(chr(10), '<br>')}</p>" for block in blocks
-    )
-    return paragraphs, MIME_HTML
+    return extracted, MIME_PLAIN
 
 
-def _extract_plain_text_response(response: httpx.Response) -> Extracted:
+def _extract_plain_text_response(
+    response: httpx.Response, mime: str
+) -> Extracted:
     content = response.text
     if not content or not content.strip():
         return None
-    return content, MIME_MARKDOWN
+    return content, mime
 
 
 def _looks_like_pdf(content: bytes) -> bool:
@@ -125,27 +120,22 @@ def _extract_without_content_type(response: httpx.Response) -> Extracted:
         return _extract_pdf_response(response)
     if response.text and _looks_like_html(response.text):
         return _extract_html_response(response)
-    return _extract_plain_text_response(response)
-
-
-_CONTENT_TYPE_EXTRACTORS: dict[str, Callable[[httpx.Response], Extracted]] = {
-    "text/html": _extract_html_response,
-    "application/xhtml+xml": _extract_html_response,
-    "application/pdf": _extract_pdf_response,
-    "text/plain": _extract_plain_text_response,
-    "text/markdown": _extract_plain_text_response,
-}
+    return _extract_plain_text_response(response, MIME_PLAIN)
 
 
 def _extract(response: httpx.Response) -> Extracted:
     """Return extracted text, or raise LookupError for unsupported types."""
-    content_type = _normalize_content_type(response.headers.get("content-type", ""))
+    content_type = normalize_mime(response.headers.get("content-type", ""))
     if not content_type:
         return _extract_without_content_type(response)
-    extractor = _CONTENT_TYPE_EXTRACTORS.get(content_type)
-    if extractor is None:
+    if content_type == "application/pdf":
+        return _extract_pdf_response(response)
+    classified = textual_mime(content_type)
+    if classified is None:
         raise LookupError(content_type)
-    return extractor(response)
+    if classified == MIME_HTML:
+        return _extract_html_response(response)
+    return _extract_plain_text_response(response, classified)
 
 
 def _error_result(url: str, error: Exception) -> FetchResult:

@@ -94,6 +94,18 @@ class FakeProvider:
         return scripted_result(url, self.result)
 
 
+class MarkdownBrowser:
+    """Browser stub returning a declared Markdown result."""
+
+    def __init__(self, content: str) -> None:
+        self.content = content
+        self.calls: list[str] = []
+
+    async def __call__(self, url: str, query: str | None = None, /) -> FetchResult:
+        self.calls.append(url)
+        return FetchResult(url, FetchStatus.OK, "text/markdown", self.content)
+
+
 @pytest.fixture
 async def client() -> AsyncIterator[httpx.AsyncClient]:
     async with httpx.AsyncClient(follow_redirects=True) as http_client:
@@ -230,9 +242,8 @@ async def test_generic_url_uses_browser_and_filters(bm25, httpx_mock: HTTPXMock)
     assert httpx_mock.get_requests() == []
 
 
-async def test_plain_text_url_via_browser_is_filtered(bm25):
-    page = f"<html><body><pre>{html.escape(MARKDOWN_PAGE)}</pre></body></html>"
-    browser = FakeBrowser(page)
+async def test_declared_markdown_via_browser_is_filtered(bm25):
+    browser = MarkdownBrowser(MARKDOWN_PAGE)
     provider = FakeProvider(TOPIC_HTML)
     fetch = create_fetch(
         http_client=None, browser=browser, provider=provider, page_filter=bm25
@@ -243,6 +254,24 @@ async def test_plain_text_url_via_browser_is_filtered(bm25):
     assert "https://source.example/paper" in result.content
     assert "bread flour" not in result.content
     assert provider.calls == []
+
+
+async def test_browser_html_pre_code_survives_rendering(bm25):
+    code = "def quantum():\n    return 1"
+    page = (
+        "<html><body><h2>Quantum</h2><pre><code>"
+        + html.escape(code)
+        + "</code></pre></body></html>"
+    )
+    browser = FakeBrowser(page)
+    fetch = create_fetch(
+        http_client=None, browser=browser, provider=None, page_filter=bm25
+    )
+
+    result = await fetch(GENERIC, "quantum")
+
+    assert "def quantum():" in result.content
+    assert "    return 1" in result.content
 
 
 async def test_reddit_and_wikipedia_use_browser(bm25, httpx_mock: HTTPXMock):
@@ -552,7 +581,7 @@ async def test_arxiv_html_is_converted_once(
     assert "![Fig](https://arxiv.org/fig.png)" in result.content
 
 
-async def test_pdf_keeps_line_breaks(
+async def test_pdf_keeps_extracted_text(
     bm25,
     httpx_mock: HTTPXMock,
     client: httpx.AsyncClient,
@@ -572,9 +601,12 @@ async def test_pdf_keeps_line_breaks(
     unfiltered = await fetch(url, None)
     filtered = await fetch(url, "quantum routing")
 
-    assert "Quantum routing results  \ncol_a col_b  \n1 2" in unfiltered.content
-    assert "bread flour baking" in unfiltered.content
-    assert "col_a col_b" in filtered.content
+    assert unfiltered.mime == "text/plain"
+    assert unfiltered.content == (
+        "Quantum routing results\ncol_a   col_b\n1       2\n\nbread flour baking"
+    )
+    assert "col_a   col_b" in filtered.content
+    assert filtered.mime == "text/plain"
     assert "bread flour" not in filtered.content
 
 
@@ -743,7 +775,7 @@ HTML_BODY = "<html><body><h1>Hello</h1><p>World</p></body></html>"
         pytest.param(
             "https://site.example/notes.txt",
             {"text": "# Title", "headers": {"content-type": "text/plain"}},
-            "text/markdown",
+            "text/plain",
             "# Title",
             id="plain-text",
         ),
@@ -889,7 +921,7 @@ async def test_github_blob_html_body_keeps_html_mime(
     assert result.url == url
 
 
-async def test_github_blob_unrecognized_content_type_is_unsupported(
+async def test_github_blob_json_is_supported_text(
     httpx_mock: HTTPXMock, client: httpx.AsyncClient
 ):
     httpx_mock.add_response(
@@ -901,7 +933,12 @@ async def test_github_blob_unrecognized_content_type_is_unsupported(
 
     result = await GitHubBlobFetch(HttpFetch(client))(url)
 
-    assert (result.status, result.url) == (FetchStatus.UNSUPPORTED, url)
+    assert (result.status, result.mime, result.content) == (
+        FetchStatus.OK,
+        "text/plain",
+        "{}",
+    )
+    assert result.url == url
 
 
 async def test_github_repo_skips_missing_and_blank_readmes(
@@ -966,7 +1003,7 @@ async def test_github_repo_non_404_error_stops_lookup(
     ]
 
 
-async def test_pdf_source_is_html_paragraphs(
+async def test_pdf_source_is_plain_text(
     httpx_mock: HTTPXMock,
     client: httpx.AsyncClient,
 ):
@@ -977,8 +1014,8 @@ async def test_pdf_source_is_html_paragraphs(
 
     result = await HttpFetch(client)("https://site.example/a.pdf")
 
-    assert result.mime == "text/html"
-    assert result.content == "<p>Alpha</p><p>Beta</p>"
+    assert result.mime == "text/plain"
+    assert result.content == "Alpha\n\nBeta"
 
 
 async def test_http_source_does_not_truncate(
@@ -990,3 +1027,198 @@ async def test_http_source_does_not_truncate(
     result = await HttpFetch(client)("https://site.example/long")
 
     assert result.content == body
+
+
+# ---------------------------------------------------------------------------
+# Phase 2: native textual source types and composed filtering
+# ---------------------------------------------------------------------------
+
+TEXT_BODY = (
+    "  # Quantum routing\n\n    value = 2 < 3\n    keep   spaces\n\nBread flour.\n"
+)
+
+TEXT_CASES = [
+    "text/plain; charset=utf-8",
+    "TEXT/CSV",
+    "text/x-python",
+    "application/json",
+    "application/problem+json",
+    "application/xml",
+    "application/atom+xml",
+]
+
+
+def _large_html() -> str:
+    parts = ["<html><body><h1>Handbook</h1>"]
+    for number in range(300):
+        parts.append(f"<h2>Topic {number}</h2>")
+        if number == 0:
+            parts.append("<p>Quantum routing evidence START.</p>")
+        elif number == 150:
+            parts.append("<p>Quantum routing evidence MIDDLE.</p>")
+        elif number == 299:
+            parts.append("<p>Quantum routing evidence END.</p>")
+        else:
+            parts.append("<p>" + "bread flour kitchen dough " * 30 + "</p>")
+    parts.append("</body></html>")
+    return "".join(parts)
+
+
+@pytest.mark.parametrize("content_type", TEXT_CASES)
+async def test_http_textual_types_preserve_plain_content(
+    httpx_mock: HTTPXMock, client: httpx.AsyncClient, content_type: str
+):
+    httpx_mock.add_response(
+        url="https://source.example/content",
+        text=TEXT_BODY,
+        headers={"content-type": content_type},
+    )
+
+    result = await HttpFetch(client)("https://source.example/content")
+
+    assert result.ok
+    assert result.mime == "text/plain"
+    assert result.content == TEXT_BODY
+    assert result.url == "https://source.example/content"
+
+
+async def test_fetch_plain_query_does_not_interpret_markdown_or_html(
+    bm25, httpx_mock: HTTPXMock, client: httpx.AsyncClient
+):
+    body = "Quantum # routing <tag>literal</tag>   spacing.\n\nBread flour."
+    httpx_mock.add_response(
+        url="https://source.example/content",
+        text=body,
+        headers={"content-type": "text/plain"},
+    )
+    fetch = create_fetch(
+        http_client=client, browser=None, provider=None, page_filter=bm25
+    )
+
+    result = await fetch("https://source.example/content", "quantum")
+
+    assert result.mime == "text/plain"
+    assert result.content == "Quantum # routing <tag>literal</tag>   spacing."
+
+
+async def test_pdf_source_preserves_extracted_text(
+    httpx_mock: HTTPXMock, client: httpx.AsyncClient
+):
+    url = "https://source.example/paper.pdf"
+    httpx_mock.add_response(
+        url=url,
+        content=_pdf_paragraphs(
+            ["Quantum routing results\ncol_a   col_b\n1       2", "Bread flour baking"]
+        ),
+        headers={"content-type": "application/pdf"},
+    )
+
+    result = await HttpFetch(client)(url)
+
+    assert result.mime == "text/plain"
+    assert result.content == (
+        "Quantum routing results\ncol_a   col_b\n1       2\n\nBread flour baking"
+    )
+
+
+async def test_pdf_filtered_output_preserves_extracted_text(
+    bm25, httpx_mock: HTTPXMock, client: httpx.AsyncClient
+):
+    url = "https://source.example/paper.pdf"
+    httpx_mock.add_response(
+        url=url,
+        content=_pdf_paragraphs(
+            ["Quantum routing results\ncol_a   col_b\n1       2", "Bread flour baking"]
+        ),
+        headers={"content-type": "application/pdf"},
+    )
+    fetch = create_fetch(
+        http_client=client, browser=None, provider=None, page_filter=bm25
+    )
+
+    result = await fetch(url, "quantum routing")
+
+    assert result.mime == "text/plain"
+    assert "col_a   col_b" in result.content
+    assert "Bread flour" not in result.content
+
+
+async def test_large_html_keeps_start_middle_end_evidence(
+    bm25, httpx_mock: HTTPXMock, client: httpx.AsyncClient
+):
+    httpx_mock.add_response(url="https://source.example/large", html=_large_html())
+    fetch = create_fetch(
+        http_client=client,
+        browser=None,
+        provider=None,
+        page_filter=bm25,
+        max_chars=15000,
+    )
+
+    result = await fetch("https://source.example/large", "quantum routing")
+
+    content = result.content
+    assert content.index("START") < content.index("MIDDLE") < content.index("END")
+    assert "bread flour" not in content
+    assert result.mime == "text/markdown"
+
+
+async def test_large_pdf_keeps_start_middle_end_evidence(
+    bm25, httpx_mock: HTTPXMock, client: httpx.AsyncClient
+):
+    pages = ["Bread flour kitchen dough. " * 12 for _ in range(60)]
+    pages[0] = "Quantum routing evidence START."
+    pages[30] = "Quantum routing evidence MIDDLE."
+    pages[59] = "Quantum routing evidence END."
+    url = "https://source.example/big.pdf"
+    httpx_mock.add_response(
+        url=url,
+        content=_pdf_paragraphs(pages),
+        headers={"content-type": "application/pdf"},
+    )
+    fetch = create_fetch(
+        http_client=client,
+        browser=None,
+        provider=None,
+        page_filter=bm25,
+        max_chars=15000,
+    )
+
+    result = await fetch(url, "quantum routing")
+
+    content = result.content
+    assert content.index("START") < content.index("MIDDLE") < content.index("END")
+    assert "bread" not in content
+    assert "dough" not in content
+    assert result.mime == "text/plain"
+
+
+async def test_truncated_markdown_does_not_leak_discarded_links(
+    bm25, httpx_mock: HTTPXMock, client: httpx.AsyncClient
+):
+    relevant = (
+        "## Quantum\n\n"
+        + (
+            "Quantum routing improves latency. "
+            + "[paper](https://source.example/paper)\n\n"
+        )
+        * 300
+    )
+    discarded = (
+        "## Baking\n\nBread flour. See "
+        "[recipe](https://source.example/recipe).\n\n"
+    )
+    httpx_mock.add_response(
+        url="https://source.example/big.md",
+        text=relevant + discarded,
+        headers={"content-type": "text/markdown"},
+    )
+    fetch = create_fetch(
+        http_client=client, browser=None, provider=None, page_filter=bm25
+    )
+
+    result = await fetch("https://source.example/big.md", "quantum routing")
+
+    assert result.content.endswith("[Content truncated]")
+    assert "https://source.example/recipe" not in result.content
+    assert "Baking" not in result.content

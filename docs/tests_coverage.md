@@ -89,16 +89,16 @@ Tests for `ServerConfig` creation, environment variable precedence, CLI override
 Contract tests for the LangGraph deep research agent with mocked models and HTTP calls.
 
 ### [tests/test_fetch_combinators.py](../tests/test_fetch_combinators.py)
-Contract tests for `FetchResult` (`ok`, `is_retryable`) and the combinators `Filtered`, `Fallback`, `UrlSelector`, `FilterSelector`, `FilterChain`, `Throttled`, `Blocked`, `Truncate`, using recording stubs.
+Contract tests for `FetchResult` (`ok`, `is_retryable`) and the combinators `Filtered`, `Fallback`, `UrlSelector`, `FilterSelector`, `FilterChain`, `Throttled`, `Blocked`, `Truncate`, using recording stubs. `Truncate` cases cover syntax-safe Markdown fences/tables/reference definitions, orphan-heading avoidance, and plain-text word boundaries.
 
 ### [tests/test_research_tools.py](../tests/test_research_tools.py)
-Contract tests for search parsing (Google, DuckDuckGo), the composed `create_fetch` (routing, restricted domains, escalation, truncation, concurrency), per-source status mapping and mime, and exceptions becoming `UNSUPPORTED` results (HTTP mocked with pytest-httpx).
+Contract tests for search parsing (Google, DuckDuckGo), the composed `create_fetch` (routing, restricted domains, escalation, truncation, concurrency), per-source status mapping and native mime/text preservation (HTML, Markdown, other textual types, raw PDF text), and exceptions becoming `UNSUPPORTED` results (HTTP mocked with pytest-httpx). Large HTML and PDF fixtures verify start/middle/end evidence survives composed local filtering.
 
 ### [tests/test_research_fallback_fetchers.py](../tests/test_research_fallback_fetchers.py)
 Contract tests for the browser (fake crawl4ai crawler), Scrape.do and Bright Data fallbacks: request shape, target vs. provider status mapping, provider selection from `ServerConfig`, and crawler connection lifetime (reuse across repeated and overlapping fetches, no replacement on failure, single open/close, startup failure yielding no crawler).
 
 ### [tests/test_fetch_filtering.py](../tests/test_fetch_filtering.py)
-Contract tests for `RelevanceFilter` (BM25 keyword guarantee, LLM filter with mocked completion, `FILTER_FAILED`, link resolution against the requested URL) and the `MarkdownToHtml` and `PreTextToHtml` filters.
+Contract tests for `RelevanceFilter`: native plain/Markdown/HTML source preservation, source-safe link normalization, BM25L selection windows, input/window limits, unsupported media, `FILTER_FAILED`, and the retained `MarkdownToHtml`/`PreTextToHtml` normalizers. Model mode is exercised through a real `OpenAIEmbeddings` adapter and a scripted `httpx.MockTransport` router boundary: hybrid semantic shortlisting, strict source-ID validation, invalid embeddings, HTTP failure and retry recovery, budget/deadline failures, cancellation, and shared concurrency.
 
 ### [tests/test_browser_runtime.py](../tests/test_browser_runtime.py)
 Tests for `create_browser_fetch` (configured CDP, local Obscura spawn), the lifespan enabling/disabling only `web_research`, and the research lifespan owning one browser crawler (reused across fetches, closed before the local Obscura process is terminated).

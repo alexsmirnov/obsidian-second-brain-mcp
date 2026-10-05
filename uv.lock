@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.13"
 resolution-markers = [
     "python_full_version >= '3.14' and sys_platform == 'win32'",
@@ -1981,6 +1981,7 @@ dependencies = [
     { name = "langgraph" },
     { name = "lxml" },
     { name = "markdown" },
+    { name = "markdown-it-py" },
     { name = "pandas" },
     { name = "pymupdf" },
     { name = "python-dotenv" },
@@ -2015,6 +2016,7 @@ requires-dist = [
     { name = "langgraph", specifier = ">=1.1.6" },
     { name = "lxml", specifier = ">=5.0.0" },
     { name = "markdown", specifier = ">=3.10.0" },
+    { name = "markdown-it-py", specifier = ">=4.2.0,<5" },
     { name = "pandas", specifier = ">=3.0.3" },
     { name = "pymupdf", specifier = ">=1.25.0" },
     { name = "python-dotenv", specifier = ">=1.2.2" },

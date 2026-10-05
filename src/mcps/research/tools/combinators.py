@@ -7,6 +7,7 @@ import logging
 from collections.abc import Callable, Sequence
 from dataclasses import replace
 
+from mcps.research.tools.filtering_content import truncate_content
 from mcps.research.tools.models import Fetch, FetchResult, FetchStatus, Filter
 
 __all__ = [
@@ -146,9 +147,11 @@ class Blocked:
 
 
 class Truncate:
-    """Filter cutting content beyond ``max_chars``."""
+    """Filter cutting content beyond ``max_chars`` at a safe boundary."""
 
     def __init__(self, max_chars: int) -> None:
+        if max_chars < 0:
+            raise ValueError("max_chars must be nonnegative")
         self._max_chars = max_chars
 
     async def __call__(
@@ -157,5 +160,9 @@ class Truncate:
         logger.info("Fetch %d chars from url %s", len(result.content), result.url)
         if len(result.content) <= self._max_chars:
             return result
-        content = result.content[: self._max_chars] + _TRUNCATION_MARKER
-        return replace(result, content=content)
+        content, omitted = await asyncio.to_thread(
+            truncate_content, result.content, result.mime, self._max_chars
+        )
+        if not omitted:
+            return result
+        return replace(result, content=content + _TRUNCATION_MARKER)

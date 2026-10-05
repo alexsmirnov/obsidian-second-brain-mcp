@@ -88,6 +88,8 @@ class FakeAsyncWebCrawler:
             success=True,
             status_code=200,
             cleaned_html="<html><body><p>hello world</p></body></html>",
+            html="<html><body><p>hello world</p></body></html>",
+            response_headers=None,
             error_message="",
         )
 

@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncGenerator, Sequence
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator
 from urllib.parse import urlparse
 
 import httpx
@@ -19,21 +18,19 @@ from mcps.research.tools.combinators import (
     Fallback,
     FilterChain,
     Filtered,
-    FilterSelector,
     Throttled,
     Truncate,
     UrlSelector,
 )
-from mcps.research.tools.common import MIME_HTML, MIME_MARKDOWN
 from mcps.research.tools.default import HttpFetch
-from mcps.research.tools.filtering import MarkdownToHtml, PreTextToHtml, RelevanceFilter
+from mcps.research.tools.filtering import RelevanceFilter
 from mcps.research.tools.github import (
     GitHubBlobFetch,
     GitHubRepoFetch,
     is_github_blob_url,
     is_github_repo_url,
 )
-from mcps.research.tools.models import Fetch, FetchResult, Filter
+from mcps.research.tools.models import Fetch, Filter
 from mcps.research.tools.scrape_do import ScrapeDoFetch
 
 __all__ = ["build_fetch_tool", "create_fetch"]
@@ -58,14 +55,6 @@ def _is_pdf_url(url: str) -> bool:
     return urlparse(url).path.lower().endswith(".pdf")
 
 
-def _is_markdown(result: FetchResult) -> bool:
-    return result.mime == MIME_MARKDOWN
-
-
-def _is_html(result: FetchResult) -> bool:
-    return result.mime == MIME_HTML
-
-
 def create_fetch(
     *,
     http_client: httpx.AsyncClient | None = None,
@@ -83,8 +72,8 @@ def create_fetch(
     available) every other URL use the httpx extractor; all remaining URLs are
     rendered in the browser, at most ``concurrency`` at a time. A blocked,
     empty, timed-out, or unavailable generic result escalates once to
-    ``provider`` when configured. Every successful source is normalized to
-    HTML, passed through ``page_filter`` and truncated to ``max_chars``.
+    ``provider`` when configured. Every successful native source is passed
+    through ``page_filter`` and truncated to ``max_chars``.
     """
     http = HttpFetch(http_client)
     generic: Fetch = Throttled(browser, concurrency) if browser else http
@@ -101,14 +90,8 @@ def create_fetch(
         ],
         default=generic,
     )
-    normalize = FilterSelector(
-        [
-            (_is_markdown, MarkdownToHtml()),
-            (_is_html, PreTextToHtml()),
-        ]
-    )
     return Filtered(
-        routed, FilterChain(normalize, page_filter, Truncate(max_chars))
+        routed, FilterChain(page_filter, Truncate(max_chars))
     )
 
 
@@ -172,6 +155,9 @@ async def build_fetch_tool(
                 fetch_model=config.fetch_model,
                 router_url=config.router_api_base,
                 router_key=config.router_api_key,
+                embedding_model=config.rag_embedding_model,
+                embedding_dimensions=config.rag_embedding_dimensions,
+                http_client=http_client,
             ),
             restricted_domains=config.fetch_restricted_domains,
             concurrency=config.fetch_concurrency,

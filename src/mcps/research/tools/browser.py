@@ -16,9 +16,15 @@ from contextlib import AsyncExitStack, asynccontextmanager
 from typing import AsyncGenerator, cast
 
 from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig, CrawlResult
+from lxml import html as lxml_html
 
 from mcps.config import ServerConfig
-from mcps.research.tools.common import MIME_HTML, failure
+from mcps.research.tools.common import (
+    MIME_HTML,
+    MIME_PLAIN,
+    failure,
+    textual_mime,
+)
 from mcps.research.tools.models import FetchResult, FetchStatus
 
 __all__ = [
@@ -66,18 +72,70 @@ def _new_crawler(cdp_url: str) -> AsyncWebCrawler:
     return AsyncWebCrawler(config=browser_config)
 
 
+def _unwrap_sole_pre(source: str) -> str | None:
+    """Return sole ``<body><pre>`` text, or ``None`` for any other shape."""
+    if not source:
+        return None
+    try:
+        document = lxml_html.document_fromstring(source)
+    except Exception:
+        return None
+    body = document.find("body")
+    if body is None:
+        body = document
+    children = [child for child in body if isinstance(child.tag, str)]
+    if len(children) != 1 or children[0].tag != "pre":
+        return None
+    if (body.text or "").strip() or (children[0].tail or "").strip():
+        return None
+    return children[0].text_content()
+
+
 def _to_fetch_result(url: str, crawl: CrawlResult) -> FetchResult:
-    """Map a crawl4ai ``CrawlResult`` to rendered HTML or a failed result."""
+    """Map a crawl4ai ``CrawlResult`` to typed source content or a failure."""
     if crawl.status_code is not None and crawl.status_code >= 400:
         return failure(url, FetchStatus.HTTP_ERROR, crawl.status_code)
     if not crawl.success:
         logger.warning("Browser fetch failed for %s: %s", url, crawl.error_message)
         return failure(url, FetchStatus.UNAVAILABLE)
-    content = crawl.cleaned_html or ""
-    if not content.strip():
+
+    headers = {
+        key.lower(): value
+        for key, value in (crawl.response_headers or {}).items()
+    }
+    raw_content_type = headers.get("content-type", "")
+    declared = textual_mime(raw_content_type) if raw_content_type else None
+    if raw_content_type and declared is None:
+        logger.warning("Browser fetch failed for %s: unsupported type", url)
+        return failure(url, FetchStatus.UNSUPPORTED)
+
+    if declared in (None, MIME_HTML):
+        if declared is None:
+            unwrapped = _unwrap_sole_pre(crawl.html or crawl.cleaned_html or "")
+            if unwrapped is not None:
+                if not unwrapped.strip():
+                    return failure(url, FetchStatus.EMPTY)
+                return FetchResult(
+                    url=url,
+                    status=FetchStatus.OK,
+                    mime=MIME_PLAIN,
+                    content=unwrapped,
+                )
+        content = crawl.cleaned_html or ""
+        if not content.strip():
+            return failure(url, FetchStatus.EMPTY)
+        return FetchResult(
+            url=url, status=FetchStatus.OK, mime=MIME_HTML, content=content
+        )
+
+    unwrapped = _unwrap_sole_pre(crawl.html or crawl.cleaned_html or "")
+    if unwrapped is None:
+        logger.warning("Browser fetch failed for %s: malformed text wrapper", url)
+        return failure(url, FetchStatus.UNSUPPORTED)
+    if not unwrapped.strip():
         return failure(url, FetchStatus.EMPTY)
     return FetchResult(
-        url=url, status=FetchStatus.OK, mime=MIME_HTML, content=content
+        url=url, status=FetchStatus.OK, mime=declared, content=unwrapped
     )
 
 

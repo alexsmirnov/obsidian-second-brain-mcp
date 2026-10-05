@@ -37,12 +37,19 @@ Arrow columnar data format used by LanceDB for schemas and table operations.
 ### markdown
 Python Markdown parser.
 **Version**: `>=3.10.0`
-**Used by**: document processing pipeline.
+**Used by**: document processing pipeline and the retained `MarkdownToHtml` legacy normalizer.
 **Docs**: [python-markdown.github.io](https://python-markdown.github.io/)
 
+### markdown-it-py
+CommonMark parser with block source maps and reference-definition tracking, used to preserve native Markdown structure during filtering and truncation.
+**Version**: `>=4.2.0,<5`
+**Used by**: [src/mcps/research/tools/filtering_content.py](../src/mcps/research/tools/filtering_content.py)
+**Docs**: [markdown-it-py.readthedocs.io](https://markdown-it-py.readthedocs.io/)
+
 ### rank_bm25
-BM25 keyword relevance scoring (reserved for future hybrid search integration).
+BM25 keyword relevance scoring. The filter uses `BM25L` over source-mapped scoring windows, which avoids zero/negative-IDF loss on small corpora.
 **Version**: unpinned
+**Used by**: [src/mcps/research/tools/filtering.py](../src/mcps/research/tools/filtering.py)
 **Docs**: [github.com/dorianbrown/rank_bm25](https://github.com/dorianbrown/rank_bm25)
 
 ### python-dotenv
@@ -76,9 +83,9 @@ Shared async HTTP client for model router and web requests.
 **Used by**: [src/mcps/server.py:7](../src/mcps/server.py#L7), [src/mcps/tools/obsidian_vault.py:9](../src/mcps/tools/obsidian_vault.py#L9), [src/mcps/research/tools/](../src/mcps/research/tools/common.py)
 
 ### crawl4ai
-Mandatory dependency. Renders generic pages in a CDP browser (Obscura) and provides `BM25ContentFilter` / `LLMContentFilter` and the HTML-to-Markdown generator used for query-relevant filtering.
+Mandatory dependency. Renders generic pages in a CDP browser (Obscura) and provides the HTML-to-Markdown generator used to render actual HTML once before native filtering. Content filtering and model selection no longer run inside crawl4ai.
 **Version**: `>=0.7`
-**Used by**: [src/mcps/research/tools/browser.py](../src/mcps/research/tools/browser.py), [src/mcps/research/tools/filtering.py](../src/mcps/research/tools/filtering.py)
+**Used by**: [src/mcps/research/tools/browser.py](../src/mcps/research/tools/browser.py), [src/mcps/research/tools/filtering_content.py](../src/mcps/research/tools/filtering_content.py)
 
 ### pydantic
 Data validation and modeling.
@@ -88,9 +95,9 @@ Data validation and modeling.
 ## Model Providers
 
 ### langchain-openai
-OpenAI-compatible chat and embedding adapters, used against the model router.
+OpenAI-compatible chat and embedding adapters, used against the model router. The fetch filter uses `OpenAIEmbeddings` with the borrowed async client for hybrid window shortlisting.
 **Version**: `>=1.1.11`
-**Used by**: [src/mcps/rag/vault.py:15](../src/mcps/rag/vault.py#L15), [src/mcps/research/config.py:16](../src/mcps/research/config.py#L16)
+**Used by**: [src/mcps/rag/vault.py:15](../src/mcps/rag/vault.py#L15), [src/mcps/research/config.py:16](../src/mcps/research/config.py#L16), [src/mcps/research/tools/filtering_models.py](../src/mcps/research/tools/filtering_models.py)
 
 ### langchain-google-genai
 Google Gemini model adapter for web research.

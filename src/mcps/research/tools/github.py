@@ -6,7 +6,7 @@ import logging
 from dataclasses import replace
 from urllib.parse import urlparse
 
-from mcps.research.tools.common import failure
+from mcps.research.tools.common import MIME_MARKDOWN, MIME_PLAIN, failure
 from mcps.research.tools.models import Fetch, FetchResult, FetchStatus
 
 __all__ = [
@@ -65,9 +65,19 @@ def _as_requested_url(url: str, result: FetchResult) -> FetchResult:
     return replace(result, url=url)
 
 
-def _as_github_content(url: str, result: FetchResult, content: str) -> FetchResult:
-    """Retarget a successful result at the requested GitHub URL."""
-    return replace(result, url=url, content=content)
+def _is_known_markdown_path(url: str) -> bool:
+    path = urlparse(url).path.lower()
+    return path.endswith(".md") or path.endswith(".markdown")
+
+
+def _as_github_content(
+    url: str, result: FetchResult, content: str, source_url: str
+) -> FetchResult:
+    """Retarget at the requested URL, promoting known raw Markdown files."""
+    mime = result.mime
+    if mime == MIME_PLAIN and _is_known_markdown_path(source_url):
+        mime = MIME_MARKDOWN
+    return replace(result, url=url, content=content, mime=mime)
 
 
 class GitHubBlobFetch:
@@ -88,7 +98,7 @@ class GitHubBlobFetch:
         if not content:
             logger.warning("GitHub blob fetch failed for %s: empty", url)
             return failure(url, FetchStatus.EMPTY)
-        return _as_github_content(url, result, content)
+        return _as_github_content(url, result, content, raw_url)
 
 
 class GitHubRepoFetch:
@@ -103,7 +113,7 @@ class GitHubRepoFetch:
             if result.ok:
                 content = result.content.strip()
                 if content:
-                    return _as_github_content(url, result, content)
+                    return _as_github_content(url, result, content, readme_url)
                 continue
             if result.status is FetchStatus.EMPTY or (
                 result.status is FetchStatus.HTTP_ERROR

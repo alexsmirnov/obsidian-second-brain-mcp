@@ -210,7 +210,7 @@ Google Custom Search Engine ID. Required only when `GOOGLE_API_KEY` is set.
 
 ### Web Fetch
 
-`fetch(url, query)` returns a `FetchResult` (see [Packages & Modules](packages_modules.md)). Routing: restricted domains return status `RESTRICTED` without I/O; GitHub and arXiv use specialized fetchers (no fallback); `.pdf` paths use the httpx + PyMuPDF extractor; all other URLs render in the CDP browser via crawl4ai. The content is filtered to query-relevant Markdown (links absolute; a blank query keeps the whole page) and truncated to 15,000 chars. When the browser or PDF result is 401/403/429, empty, timeout, or browser-unavailable, the configured `SCRAPER_PROVIDER` is used; if the provider is unavailable the original result is kept.
+`fetch(url, query)` returns a `FetchResult` (see [Packages & Modules](packages_modules.md)). Routing: restricted domains return status `RESTRICTED` without I/O; GitHub and arXiv use specialized fetchers (no fallback); `.pdf` paths use the httpx + PyMuPDF extractor; all other URLs render in the CDP browser via crawl4ai. Sources reach the filter natively: HTML is rendered once to Markdown, Markdown keeps its source structure, and other textual types (including raw PDF text) stay plain. A nonblank query selects source passages -- local BM25L by default, or hybrid embedding shortlist plus router source-ID selection when `FETCH_MODEL` is set -- and resolves web links absolutely. A blank query keeps the prepared whole document without any model call. The result is truncated to 15,000 chars at a safe Markdown/word boundary. When the browser or PDF result is 401/403/429, empty, timeout, or browser-unavailable, the configured `SCRAPER_PROVIDER` is used; if the provider is unavailable the original result is kept.
 
 #### `browser_cdp_url` #config
 CDP endpoint of a running browser (e.g. `ws://127.0.0.1:9222`). Must be unauthenticated. If unset or unreachable (10 s), the server starts `obscura serve --stealth --allow-private-network` from `PATH` and connects to `ws://127.0.0.1:9222` (30 s). If neither works, only the `web_research` tool is disabled.
@@ -241,11 +241,11 @@ Bright Data API key and Web Unlocker zone name. Both required when `SCRAPER_PROV
 **Used by**: [src/mcps/research/tools/bright_data.py](../src/mcps/research/tools/bright_data.py)
 
 #### `fetch_model` #config
-Model for crawl4ai `LLMContentFilter` (via the router). Empty selects `BM25ContentFilter`.
+Chat model used for hybrid source-window selection through the router. Empty selects local-only lexical filtering. When set, `RAG_EMBEDDING_MODEL` is also required and both model calls run against the shared router client; model failures return `FILTER_FAILED` and never fall back to lexical output. Constructor budgets (`FilterLimits`) bound input size, windows, batching, concurrency, response bytes, and a total model deadline that also covers SDK embedding retries. Embedding responses must be returned in input order; embedding redirects follow the borrowed client, while the direct chat request never redirects and enforces its response-byte cap.
 **Type**: str
 **Default**: `""`
 **Environment**: `FETCH_MODEL`
-**Used by**: [src/mcps/research/tools/fetch.py](../src/mcps/research/tools/fetch.py), [src/mcps/research/tools/filtering.py](../src/mcps/research/tools/filtering.py)
+**Used by**: [src/mcps/research/tools/fetch.py](../src/mcps/research/tools/fetch.py), [src/mcps/research/tools/filtering.py](../src/mcps/research/tools/filtering.py), [src/mcps/research/tools/filtering_models.py](../src/mcps/research/tools/filtering_models.py)
 
 #### `fetch_restricted_domains` #config
 Comma-separated hostnames; the hostname itself and its subdomains are never fetched (status `RESTRICTED`).

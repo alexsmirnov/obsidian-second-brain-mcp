@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import html
 import json
 import shutil
 from collections.abc import AsyncIterator
@@ -19,11 +20,15 @@ from mcps.config import ServerConfig
 from mcps.research.tools import browser as browser_module
 from mcps.research.tools.bright_data import BrightDataFetch
 from mcps.research.tools.browser import BrowserFetch, create_browser_fetch
+from mcps.research.tools.default import HttpFetch
 from mcps.research.tools.fetch import build_fetch_tool
+from mcps.research.tools.github import GitHubBlobFetch
 from mcps.research.tools.models import FetchResult, FetchStatus
 from mcps.research.tools.scrape_do import ScrapeDoFetch
 
 TARGET = "https://blocked.example/article"
+
+MARKDOWN_PAGE = "## Quantum\n\n" + "quantum optimization improves routing " * 30
 
 
 def outcome(result: FetchResult) -> tuple[FetchStatus, int | None]:
@@ -68,11 +73,15 @@ def crawl_result(
     success: bool = True,
     status_code: int | None = 200,
     cleaned_html: str = "",
+    html: str = "",
+    response_headers: dict[str, str] | None = None,
 ) -> SimpleNamespace:
     return SimpleNamespace(
         success=success,
         status_code=status_code,
         cleaned_html=cleaned_html,
+        html=html,
+        response_headers=response_headers,
         error_message="" if success else "boom",
     )
 
@@ -203,6 +212,107 @@ async def test_browser_fetch_blank_cleaned_html_is_empty(cleaned_html: str):
     fetch = _browser(FakeCrawler(result=crawl_result(cleaned_html=cleaned_html)))
 
     assert outcome(await fetch(TARGET)) == (FetchStatus.EMPTY, None)
+
+
+SOURCE_TEXT = '{\n  "quantum": "routing",\n  "literal": "<p>not markup</p>"\n}\n'
+
+
+def _pre_wrapper(text: str) -> str:
+    return f"<html><body><pre>{html.escape(text)}</pre></body></html>"
+
+
+async def test_browser_declared_text_unwraps_original_pre_without_markdown_conversion():
+    wrapper = _pre_wrapper(SOURCE_TEXT)
+    crawler = FakeCrawler(
+        result=crawl_result(
+            cleaned_html=wrapper,
+            html=wrapper,
+            response_headers={"Content-Type": "application/json; charset=utf-8"},
+        )
+    )
+
+    result = await _browser(crawler)("https://source.example/content")
+
+    assert result.status is FetchStatus.OK
+    assert result.mime == "text/plain"
+    assert result.content == SOURCE_TEXT
+
+
+async def test_browser_declared_text_restores_whitespace_from_original_html():
+    exact = _pre_wrapper(SOURCE_TEXT)
+    collapsed = _pre_wrapper(SOURCE_TEXT.replace("\n", " ").replace("  ", " "))
+    crawler = FakeCrawler(
+        result=crawl_result(
+            cleaned_html=collapsed,
+            html=exact,
+            response_headers={"content-type": "text/plain"},
+        )
+    )
+
+    result = await _browser(crawler)("https://source.example/content")
+
+    assert result.content == SOURCE_TEXT
+
+
+async def test_browser_declared_markdown_preserves_native_source():
+    wrapper = _pre_wrapper(MARKDOWN_PAGE)
+    crawler = FakeCrawler(
+        result=crawl_result(
+            cleaned_html=wrapper,
+            html=wrapper,
+            response_headers={"content-type": "text/markdown"},
+        )
+    )
+
+    result = await _browser(crawler)("https://source.example/content")
+
+    assert result.status is FetchStatus.OK
+    assert result.mime == "text/markdown"
+    assert result.content == MARKDOWN_PAGE
+
+
+async def test_browser_binary_type_is_unsupported_even_with_viewer_html():
+    crawler = FakeCrawler(
+        result=crawl_result(
+            cleaned_html="<h1>viewer</h1>",
+            html="<html><body><h1>viewer</h1></body></html>",
+            response_headers={"content-type": "image/png"},
+        )
+    )
+
+    result = await _browser(crawler)(TARGET)
+
+    assert outcome(result) == (FetchStatus.UNSUPPORTED, None)
+    assert (result.content, result.mime) == ("", "")
+
+
+async def test_browser_malformed_declared_text_is_unsupported():
+    crawler = FakeCrawler(
+        result=crawl_result(
+            cleaned_html="<html><body><p>no pre</p></body></html>",
+            html="<html><body><p>no pre</p></body></html>",
+            response_headers={"content-type": "text/plain"},
+        )
+    )
+
+    assert (await _browser(crawler)(TARGET)).status is FetchStatus.UNSUPPORTED
+
+
+async def test_github_plain_code_is_not_markdown(
+    httpx_mock: HTTPXMock, client: httpx.AsyncClient
+):
+    httpx_mock.add_response(
+        url="https://raw.githubusercontent.com/o/r/main/src/a.py",
+        text="    # literal\n    print(1)",
+        headers={"content-type": "text/plain"},
+    )
+    url = "https://github.com/o/r/blob/main/src/a.py"
+
+    result = await GitHubBlobFetch(HttpFetch(client))(url)
+
+    assert result.mime == "text/plain"
+    assert result.content == "# literal\n    print(1)"
+    assert result.url == url
 
 
 # ---------------------------------------------------------------------------
@@ -526,3 +636,88 @@ async def test_unusable_provider_config_keeps_target_failure(
         result = await fetch(TARGET, None)
 
     assert outcome(result) == (FetchStatus.HTTP_ERROR, 403)
+
+
+async def test_build_fetch_tool_wires_both_models_and_preserves_borrowed_client(
+    monkeypatch,
+):
+    monkeypatch.setattr(shutil, "which", lambda _name: None)
+    crawler = FakeCrawler(
+        result=crawl_result(
+            cleaned_html=(
+                "<html><body><h2>Quantum optimization</h2><p>"
+                + "quantum optimization improves routing " * 30
+                + "</p><h2>Recipes</h2><p>"
+                + "bread flour baking kitchen " * 30
+                + "</p></body></html>"
+            )
+        )
+    )
+    _script_crawlers(monkeypatch, None, crawler)
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path.endswith("/embeddings"):
+            body = json.loads(request.content)
+            vectors = [[1.0, 0.0, 0.0] for _ in body["input"]]
+            return httpx.Response(
+                200,
+                json={
+                    "object": "list",
+                    "data": [
+                        {"object": "embedding", "index": index, "embedding": vector}
+                        for index, vector in enumerate(vectors)
+                    ],
+                },
+            )
+        body = json.loads(request.content)
+        user = json.loads(body["messages"][1]["content"])
+        ids = [
+            window["id"]
+            for window in user["windows"]
+            if "quantum" in window["text"]
+        ]
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "index": 0,
+                        "finish_reason": "stop",
+                        "message": {
+                            "role": "assistant",
+                            "content": json.dumps({"selected_ids": ids}),
+                        },
+                    }
+                ]
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        config = ServerConfig(
+            browser_cdp_url="ws://cdp",
+            fetch_model="fetch-test",
+            rag_embedding_model="embed-test",
+            rag_embedding_dimensions=3,
+            router_api_base="https://router.example/v1",
+            router_api_key="test-key",
+        )
+
+        async with build_fetch_tool(config, client) as fetch:
+            assert fetch is not None
+            result = await fetch(TARGET, "quantum optimization")
+
+        assert result.ok
+        assert "quantum optimization" in result.content
+        assert "bread flour" not in result.content
+        assert client.is_closed is False
+
+    assert crawler.open is False
+    assert any(
+        request.url.path.endswith("/embeddings") for request in requests
+    )
+    assert any(
+        request.url.path.endswith("/chat/completions") for request in requests
+    )

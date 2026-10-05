@@ -123,7 +123,7 @@ Async web search and content fetching. The fetch tool is a chain of small classe
 **Uses**: httpx, lxml, pydantic, markdown, pymupdf, crawl4ai
 **Used by**: research.deep_research, research.config
 
-#### Contracts ([result.py](../src/mcps/research/tools/result.py)) #architecture
+#### Contracts ([models.py](../src/mcps/research/tools/models.py)) #architecture
 - `Fetch`: `async (url, query=None) -> FetchResult`. Expected failures are returned, never raised.
 - `Filter`: `async (FetchResult, query=None) -> FetchResult`.
 - `Search`: `async (query) -> list[SearchResult]`.
@@ -140,20 +140,22 @@ Async web search and content fetching. The fetch tool is a chain of small classe
 | `FilterChain(*filters)` | `Filter`; in order, stops at the first failure |
 | `Throttled(fetch, limit)` | `Fetch`; at most `limit` concurrent calls |
 | `Blocked()` | `Fetch`; `RESTRICTED` without I/O |
-| `Truncate(max_chars)` | `Filter`; cuts content and appends `[Content truncated]` |
+| `Truncate(max_chars)` | `Filter`; MIME-aware safe prefix plus `[Content truncated]` marker outside the cap |
 
 #### Modules
 | Module | Responsibility |
 |---|---|
 | `result.py`, `combinators.py` | Contracts and combinators above |
 | `models.py` | `SearchResult` |
-| `common.py` | `MIME_HTML`/`MIME_MARKDOWN` constants, the `failure` result builder, and `extract_hostname` |
+| `common.py` | `MIME_HTML`/`MIME_MARKDOWN`/`MIME_PLAIN` constants, `normalize_mime`/`textual_mime` classifiers, the `failure` result builder, and `extract_hostname` |
 | `google.py`, `duckduckgo.py` | `Search` factories |
-| `default.py` | `HttpFetch`: the single owner of page GETs (shared or owned client, browser-like Chrome headers) and of content-type extraction; HTML and PDF paragraphs are `text/html`, plain text and Markdown are `text/markdown` |
+| `default.py` | `HttpFetch`: the single owner of page GETs (shared or owned client, browser-like Chrome headers) and of content-type extraction; HTML stays `text/html`, Markdown stays `text/markdown`, every other supported textual type and raw PDF text is `text/plain` |
 | `arxiv.py`, `github.py` | `ArxivFetch` (HTML, then PDF, then abstract), `GitHubBlobFetch`, `GitHubRepoFetch` (README): thin wrappers over an injected `Fetch`; results are retargeted at the requested GitHub URL |
 | `browser.py` | `BrowserFetch` renders pages on an open crawl4ai crawler; `create_browser_fetch` owns the whole browser lifecycle (connects to `BROWSER_CDP_URL` or spawns a local Obscura, starts one crawler, closes both on exit) so fetches never reconnect |
 | `scrape_do.py`, `bright_data.py` | `ScrapeDoFetch`, `BrightDataFetch`: commercial unblocking fallbacks |
-| `filtering.py` | `MarkdownToHtml`, `PreTextToHtml` (normalize sources to HTML), `RelevanceFilter` (`BM25ContentFilter`, or `LLMContentFilter` when `FETCH_MODEL` is set; Markdown output, absolute links) |
+| `filtering_content.py` | Pure source-mapped helpers: HTML rendering, native Markdown/plain parsing, source-safe link normalization, scoring windows, selection rendering, and syntax-safe truncation |
+| `filtering.py` | `FilterLimits`, `RelevanceFilter` (BM25L over source windows; hybrid embedding shortlist plus router source-ID selection when `FETCH_MODEL` is set), and `MarkdownToHtml`/`PreTextToHtml` legacy normalizers |
+| `filtering_models.py` | `RouterPassageModels`: borrowed-client embeddings via `OpenAIEmbeddings` and a byte-bounded direct chat-selection POST, returning only validated window IDs |
 | `fetch.py` | `create_fetch`: the composition root; `build_fetch_tool`: lifespan-friendly context manager that owns the browser via `create_browser_fetch` and assembles the fetch |
 
 #### Composition ([fetch.py](../src/mcps/research/tools/fetch.py)) #architecture
@@ -161,9 +163,9 @@ Async web search and content fetching. The fetch tool is a chain of small classe
 generic = UrlSelector([.pdf -> HttpFetch], default = Throttled(browser) or HttpFetch)
 generic = Fallback(generic, provider)                     # when a provider is configured
 routed  = UrlSelector([restricted -> Blocked, arXiv, GitHub blob, GitHub repo], default=generic)
-fetch   = Filtered(routed, FilterChain(normalize, RelevanceFilter, Truncate))
+fetch   = Filtered(routed, FilterChain(RelevanceFilter, Truncate))
 ```
-`normalize` is a `FilterSelector` that renders `text/markdown` results to HTML and unwraps a sole `<pre>` page in `text/html` results. The arXiv and GitHub routes sit outside the `Fallback`, so they never escalate.
+Sources reach `RelevanceFilter` natively: HTML is rendered once, Markdown keeps its source structure, and other textual types stay plain. The arXiv and GitHub routes sit outside the `Fallback`, so they never escalate.
 
 #### Adding a provider
 - **Fetch provider**: write a class with `async __call__(url, query=None, /) -> FetchResult` that returns `failure(url, FetchStatus.UNAVAILABLE)` when the service itself fails and declares its `mime`. Add it as a route in `create_fetch` (site-specific) or build it in `research.tools.fetch._create_provider_fallback` (unblocking fallback).
