@@ -155,7 +155,7 @@ class BrowserFetch:
             crawler_config = CrawlerRunConfig(
                 simulate_user=False,  # Add user simulation
                 magic=False,  # Enable magic mode
-                wait_until="domcontentloaded",
+                wait_until="networkidle",
                 # Give cloudflare a moment to render the DOM elements, it waits 5 second
                 delay_before_return_html=0.2,
                 scan_full_page=False,
