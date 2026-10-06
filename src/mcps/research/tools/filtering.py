@@ -23,10 +23,12 @@ import markdown as markdown_lib
 from lxml import html as lxml_html
 from rank_bm25 import BM25L
 
-from mcps.research.tools.common import MIME_HTML, failure
+from mcps.research.tools.common import MIME_HTML, TRUNCATION_MARKER, failure
 from mcps.research.tools.filtering_content import (
+    ContentDocument,
     ScoringWindow,
     build_scoring_windows,
+    build_selection_units,
     prepare_document,
     render_selection,
 )
@@ -78,9 +80,19 @@ class FilterLimits:
     model_concurrency: int = 4
     model_timeout_seconds: float = 120.0
     max_response_bytes: int = 4_000_000
+    # ponytail: mirrors create_fetch's default max_chars; a single shared
+    # constant if the fetch budget ever becomes configurable.
+    max_output_chars: int = 15_000
+    # Selection-unit ceiling and the size below which a section absorbs the
+    # following sections (same rule as the RAG SemanticChunker).
+    unit_chars: int = 2_000
+    min_unit_chars: int = 500
 
     def __post_init__(self) -> None:
         positive = (
+            self.unit_chars,
+            self.min_unit_chars,
+            self.max_output_chars,
             self.max_input_chars,
             self.max_query_chars,
             self.window_chars,
@@ -118,24 +130,16 @@ def lexical_scores(
     windows: tuple[ScoringWindow, ...], query: str
 ) -> dict[int, float]:
     """Score every window with BM25L; windows with no query overlap score zero."""
-    if not windows:
-        return {}
     query_tokens = _normalize_tokens(query)
-    if not query_tokens:
-        return {window.window_id: 0.0 for window in windows}
     corpus = [_normalize_tokens(window.text) for window in windows]
-    if not any(corpus):
+    if not query_tokens or not any(corpus):
         return {window.window_id: 0.0 for window in windows}
     raw_scores = BM25L(corpus).get_scores(query_tokens)
     query_terms = set(query_tokens)
-    scores: dict[int, float] = {}
-    for window, tokens, score in zip(
-        windows, corpus, raw_scores, strict=True
-    ):
-        scores[window.window_id] = (
-            float(score) if query_terms & set(tokens) else 0.0
-        )
-    return scores
+    return {
+        window.window_id: 0.0 if query_terms.isdisjoint(tokens) else float(score)
+        for window, tokens, score in zip(windows, corpus, raw_scores, strict=True)
+    }
 
 
 def _cosine(left: list[float], right: list[float]) -> float:
@@ -158,19 +162,21 @@ def select_hybrid_candidates(
     semantic_candidates: int,
 ) -> tuple[ScoringWindow, ...]:
     """Union all positive lexical windows with the best semantic windows."""
-    chosen: dict[int, ScoringWindow] = {
+    chosen = {
         window.window_id: window
         for window in windows
         if lexical.get(window.window_id, 0.0) > 0.0
     }
-    ranked: list[tuple[float, int, ScoringWindow]] = []
-    for window, vector in zip(windows, vectors, strict=False):
-        similarity = _cosine(query_vector, vector)
-        if similarity > 0.0:
-            ranked.append((similarity, window.window_id, window))
-    ranked.sort(key=lambda item: (-item[0], item[1]))
-    for _, window_id, window in ranked[:semantic_candidates]:
-        chosen[window_id] = window
+    similarities = [
+        (_cosine(query_vector, vector), window)
+        for window, vector in zip(windows, vectors, strict=False)
+    ]
+    ranked = sorted(
+        (item for item in similarities if item[0] > 0.0),
+        key=lambda item: (-item[0], item[1].window_id),
+    )
+    for _, window in ranked[:semantic_candidates]:
+        chosen[window.window_id] = window
     return tuple(sorted(chosen.values(), key=lambda window: window.window_id))
 
 
@@ -268,6 +274,13 @@ def _embedding_batches(
     return batches
 
 
+def _payload_size(
+    fetch_model: str, query: str, windows: list[ScoringWindow]
+) -> int:
+    payload = build_selection_payload(fetch_model, query, tuple(windows))
+    return len(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
+
+
 def _selection_batches(
     windows: tuple[ScoringWindow, ...],
     query: str,
@@ -277,30 +290,58 @@ def _selection_batches(
     """Pack selection windows bounded by item count and serialized payload size."""
     batches: list[tuple[ScoringWindow, ...]] = []
     current: list[ScoringWindow] = []
-
-    def payload_size(candidate: list[ScoringWindow]) -> int:
-        payload = build_selection_payload(fetch_model, query, tuple(candidate))
-        return len(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
-
     for window in windows:
-        if len(current) >= limits.llm_batch_size:
+        if current and (
+            len(current) >= limits.llm_batch_size
+            or _payload_size(fetch_model, query, [*current, window])
+            > limits.llm_request_chars
+        ):
             batches.append(tuple(current))
             current = []
-        candidate = [*current, window]
-        if payload_size(candidate) > limits.llm_request_chars:
-            if not current:
-                raise FilterModelError("selection window exceeds request budget")
-            batches.append(tuple(current))
-            current = [window]
-            if payload_size(current) > limits.llm_request_chars:
-                raise FilterModelError("selection window exceeds request budget")
-        else:
-            current = candidate
+        if (
+            not current
+            and _payload_size(fetch_model, query, [window])
+            > limits.llm_request_chars
+        ):
+            raise FilterModelError("selection window exceeds request budget")
+        current.append(window)
     if current:
         batches.append(tuple(current))
     if len(batches) > limits.max_llm_batches:
         raise FilterModelError("selection batch budget exceeded")
     return batches
+
+
+def _local_selection(
+    document: ContentDocument,
+    windows: tuple[ScoringWindow, ...],
+    query: str,
+    max_output_chars: int,
+) -> tuple[set[int], bool]:
+    """Greedily keep the best-scoring blocks whose rendering fits the budget.
+
+    Returns the selection and whether any matching block was dropped. The top
+    block is always kept, even when oversized; final truncation shortens it.
+    Lower-ranked blocks that do not fit are skipped so smaller ones can still
+    fill the remaining budget.
+    """
+    scores = lexical_scores(windows, query)
+    ranked = sorted(
+        (window for window in windows if scores[window.window_id] > 0.0),
+        key=lambda window: (-scores[window.window_id], window.window_id),
+    )
+    matching = dict.fromkeys(window.block_id for window in ranked)
+    selected: set[int] = set()
+    # ponytail: re-renders per candidate, O(candidates x blocks); track the
+    # rendered size incrementally if huge documents make this slow.
+    for block_id in matching:
+        candidate = selected | {block_id}
+        if selected and len(render_selection(document, candidate)) > max_output_chars:
+            continue
+        selected = candidate
+        if len(render_selection(document, selected)) >= max_output_chars:
+            break
+    return selected, not matching.keys() <= selected
 
 
 async def _run_model_selection(
@@ -363,11 +404,6 @@ class RelevanceFilter:
         if embedding_dimensions < 0:
             raise ValueError("embedding_dimensions must be nonnegative")
         self._fetch_model = fetch_model
-        self._router_url = router_url
-        self._router_key = router_key
-        self._embedding_model = embedding_model
-        self._embedding_dimensions = embedding_dimensions
-        self._http_client = http_client
         self._limits = limits or FilterLimits()
         self._models: RouterPassageModels | None = None
         if (
@@ -392,63 +428,12 @@ class RelevanceFilter:
     ) -> FetchResult:
         if not result.ok:
             return result
-        nonblank = (query or "").strip()
-        if nonblank and self._fetch_model:
-            return await self._model_filter(result, nonblank)
-        try:
-            document = await asyncio.to_thread(
-                prepare_document,
-                result,
-                max_input_chars=self._limits.max_input_chars,
-                window_chars=self._limits.window_chars,
-            )
-        except LookupError:
-            return failure(result.url, FetchStatus.UNSUPPORTED)
-        except Exception:
-            logger.warning("Content preparation failed for %s", result.url)
-            return failure(result.url, FetchStatus.FILTER_FAILED)
-        if not nonblank:
-            return replace(result, content=document.text, mime=document.mime)
-        if len(nonblank) > self._limits.max_query_chars:
-            return failure(result.url, FetchStatus.FILTER_FAILED)
-        try:
-            windows = await asyncio.to_thread(
-                build_scoring_windows,
-                document,
-                window_chars=self._limits.window_chars,
-                overlap_chars=self._limits.overlap_chars,
-                max_windows=self._limits.max_windows,
-            )
-        except Exception:
-            logger.warning("Content windowing failed for %s", result.url)
-            return failure(result.url, FetchStatus.FILTER_FAILED)
-        selected = self._local_selection(windows, nonblank)
-        if not selected:
-            return replace(result, content="", mime=document.mime)
-        try:
-            content = render_selection(document, selected)
-        except Exception:
-            logger.warning("Content rendering failed for %s", result.url)
-            return failure(result.url, FetchStatus.FILTER_FAILED)
-        return replace(result, content=content, mime=document.mime)
-
-    def _local_selection(
-        self, windows: tuple[ScoringWindow, ...], query: str
-    ) -> set[int]:
-        if not _normalize_tokens(query):
-            return set()
-        scores = lexical_scores(windows, query)
-        return {
-            window.block_id
-            for window in windows
-            if scores.get(window.window_id, 0.0) > 0.0
-        }
-
-    async def _model_filter(
-        self, result: FetchResult, query: str
-    ) -> FetchResult:
         limits = self._limits
-        if len(query) > limits.max_query_chars:
+        query = (query or "").strip()
+        model_mode = bool(query and self._fetch_model)
+        query_too_long = len(query) > limits.max_query_chars
+        # Model mode rejects oversized queries before preparing the document.
+        if model_mode and query_too_long:
             return failure(result.url, FetchStatus.FILTER_FAILED)
         try:
             document = await asyncio.to_thread(
@@ -462,11 +447,21 @@ class RelevanceFilter:
         except Exception:
             logger.warning("Content preparation failed for %s", result.url)
             return failure(result.url, FetchStatus.FILTER_FAILED)
-        models = self._models
-        if models is None:
+        if not query:
+            return replace(result, content=document.text, mime=document.mime)
+        if query_too_long:
+            return failure(result.url, FetchStatus.FILTER_FAILED)
+        models = self._models if model_mode else None
+        if model_mode and models is None:
             logger.warning("Content models unavailable for %s", result.url)
             return failure(result.url, FetchStatus.FILTER_FAILED)
         try:
+            document = await asyncio.to_thread(
+                build_selection_units,
+                document,
+                unit_chars=limits.unit_chars,
+                min_unit_chars=limits.min_unit_chars,
+            )
             windows = await asyncio.to_thread(
                 build_scoring_windows,
                 document,
@@ -479,17 +474,27 @@ class RelevanceFilter:
             return failure(result.url, FetchStatus.FILTER_FAILED)
         if not windows:
             return replace(result, content="", mime=document.mime)
-        try:
-            async with asyncio.timeout(limits.model_timeout_seconds):
-                selected = await _run_model_selection(
-                    models, windows, query, limits
+        dropped = False
+        if models is None:
+            selected, dropped = await asyncio.to_thread(
+                _local_selection, document, windows, query, limits.max_output_chars
+            )
+        else:
+            try:
+                async with asyncio.timeout(limits.model_timeout_seconds):
+                    selected = await _run_model_selection(
+                        models, windows, query, limits
+                    )
+            except TimeoutError:
+                logger.warning(
+                    "Content model deadline exceeded for %s", result.url
                 )
-        except TimeoutError:
-            logger.warning("Content model deadline exceeded for %s", result.url)
-            return failure(result.url, FetchStatus.FILTER_FAILED)
-        except FilterModelError:
-            logger.warning("Content model response failed for %s", result.url)
-            return failure(result.url, FetchStatus.FILTER_FAILED)
+                return failure(result.url, FetchStatus.FILTER_FAILED)
+            except FilterModelError:
+                logger.warning(
+                    "Content model response failed for %s", result.url
+                )
+                return failure(result.url, FetchStatus.FILTER_FAILED)
         if not selected:
             return replace(result, content="", mime=document.mime)
         try:
@@ -497,4 +502,6 @@ class RelevanceFilter:
         except Exception:
             logger.warning("Content rendering failed for %s", result.url)
             return failure(result.url, FetchStatus.FILTER_FAILED)
+        if dropped:
+            content += TRUNCATION_MARKER
         return replace(result, content=content, mime=document.mime)

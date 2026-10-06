@@ -332,6 +332,11 @@ class SemanticChunker(IChunker):
             while i < len(pieces):
                 current_piece, current_offset = pieces[i]
 
+                # TODO: AI investigate merging undersized pieces only within
+                # their own header section. This loop merges across headers, so
+                # a small section absorbs unrelated neighbours; the web-fetch
+                # filter (research/tools/filtering_content.py, _merge_small)
+                # keeps merging section-local to preserve evidence isolation.
                 if len(current_piece.strip()) < self.min_chunk_size:
                     merged_pieces = [current_piece]
                     j = i + 1

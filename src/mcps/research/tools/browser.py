@@ -86,9 +86,17 @@ def _unwrap_sole_pre(source: str) -> str | None:
     children = [child for child in body if isinstance(child.tag, str)]
     if len(children) != 1 or children[0].tag != "pre":
         return None
-    if (body.text or "").strip() or (children[0].tail or "").strip():
+    pre = children[0]
+    if (body.text or "").strip() or (pre.tail or "").strip():
         return None
-    return children[0].text_content()
+    return pre.text_content()
+
+
+def _content_result(url: str, mime: str, content: str) -> FetchResult:
+    """Build an OK result, or EMPTY when ``content`` is blank."""
+    if not content.strip():
+        return failure(url, FetchStatus.EMPTY)
+    return FetchResult(url=url, status=FetchStatus.OK, mime=mime, content=content)
 
 
 def _to_fetch_result(url: str, crawl: CrawlResult) -> FetchResult:
@@ -100,43 +108,24 @@ def _to_fetch_result(url: str, crawl: CrawlResult) -> FetchResult:
         return failure(url, FetchStatus.UNAVAILABLE)
 
     headers = {
-        key.lower(): value
-        for key, value in (crawl.response_headers or {}).items()
+        key.lower(): value for key, value in (crawl.response_headers or {}).items()
     }
-    raw_content_type = headers.get("content-type", "")
-    declared = textual_mime(raw_content_type) if raw_content_type else None
-    if raw_content_type and declared is None:
+    content_type = headers.get("content-type", "")
+    rendered_html = crawl.cleaned_html or ""
+    declared = textual_mime(content_type) if content_type else None
+    if content_type and declared is None:
         logger.warning("Browser fetch failed for %s: unsupported type", url)
         return failure(url, FetchStatus.UNSUPPORTED)
+    if declared == MIME_HTML:
+        return _content_result(url, MIME_HTML, rendered_html)
 
-    if declared in (None, MIME_HTML):
-        if declared is None:
-            unwrapped = _unwrap_sole_pre(crawl.html or crawl.cleaned_html or "")
-            if unwrapped is not None:
-                if not unwrapped.strip():
-                    return failure(url, FetchStatus.EMPTY)
-                return FetchResult(
-                    url=url,
-                    status=FetchStatus.OK,
-                    mime=MIME_PLAIN,
-                    content=unwrapped,
-                )
-        content = crawl.cleaned_html or ""
-        if not content.strip():
-            return failure(url, FetchStatus.EMPTY)
-        return FetchResult(
-            url=url, status=FetchStatus.OK, mime=MIME_HTML, content=content
-        )
-
-    unwrapped = _unwrap_sole_pre(crawl.html or crawl.cleaned_html or "")
-    if unwrapped is None:
-        logger.warning("Browser fetch failed for %s: malformed text wrapper", url)
-        return failure(url, FetchStatus.UNSUPPORTED)
-    if not unwrapped.strip():
-        return failure(url, FetchStatus.EMPTY)
-    return FetchResult(
-        url=url, status=FetchStatus.OK, mime=declared, content=unwrapped
-    )
+    unwrapped = _unwrap_sole_pre(crawl.html or rendered_html)
+    if unwrapped is not None:
+        return _content_result(url, declared or MIME_PLAIN, unwrapped)
+    if declared is None:
+        return _content_result(url, MIME_HTML, rendered_html)
+    logger.warning("Browser fetch failed for %s: malformed text wrapper", url)
+    return failure(url, FetchStatus.UNSUPPORTED)
 
 
 class BrowserFetch:

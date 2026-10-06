@@ -432,6 +432,20 @@ async def test_truncate_exact_limit_is_unchanged():
     assert result.content == "abcd"
 
 
+async def test_truncate_does_not_count_existing_marker_against_limit():
+    source = ok("alpha beta" + MARKER, "text/plain")
+
+    result = await Truncate(10)(source)
+
+    assert result.content == "alpha beta" + MARKER
+
+
+async def test_truncate_cuts_premarked_content_with_single_marker():
+    result = await Truncate(12)(ok("alpha beta gamma" + MARKER, "text/plain"))
+
+    assert result.content == "alpha beta" + MARKER
+
+
 async def test_truncate_empty_content_is_unchanged():
     result = await Truncate(0)(ok("", "text/plain"))
 

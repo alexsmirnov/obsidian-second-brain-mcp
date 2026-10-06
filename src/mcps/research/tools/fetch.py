@@ -90,9 +90,7 @@ def create_fetch(
         ],
         default=generic,
     )
-    return Filtered(
-        routed, FilterChain(page_filter, Truncate(max_chars))
-    )
+    return Filtered(routed, FilterChain(page_filter, Truncate(max_chars)))
 
 
 def _create_provider_fallback(

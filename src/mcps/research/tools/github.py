@@ -66,8 +66,7 @@ def _as_requested_url(url: str, result: FetchResult) -> FetchResult:
 
 
 def _is_known_markdown_path(url: str) -> bool:
-    path = urlparse(url).path.lower()
-    return path.endswith(".md") or path.endswith(".markdown")
+    return urlparse(url).path.lower().endswith((".md", ".markdown"))
 
 
 def _as_github_content(

@@ -314,6 +314,193 @@ async def test_filter_large_markdown_keeps_start_middle_end_evidence():
     assert "[Content truncated]" not in content
 
 
+def budgeted(max_output_chars: int) -> RelevanceFilter:
+    return RelevanceFilter(
+        fetch_model="",
+        router_url="",
+        router_key="",
+        limits=FilterLimits(max_output_chars=max_output_chars),
+    )
+
+
+async def test_filter_output_budget_keeps_highest_scoring_blocks_in_source_order():
+    strong_first = "Quantum routing reduces latency in quantum networks."
+    weak = "Bread flour proofing has some latency."
+    strong_last = "Quantum routing schedules quantum packets."
+    source = f"{strong_first}\n\n{weak}\n\n{strong_last}"
+    budget = len(strong_first) + len(strong_last) + 2
+
+    result = await budgeted(budget)(
+        page(source, mime="text/plain"), "quantum routing latency"
+    )
+
+    assert result.status is FetchStatus.OK
+    assert result.content == (
+        f"{strong_first}\n\n{strong_last}\n\n[Content truncated]"
+    )
+
+
+async def test_filter_output_budget_fitting_all_matches_has_no_marker():
+    result = await budgeted(1000)(
+        page(TWO_BLOCKS, mime="text/plain"), "quantum routing"
+    )
+
+    assert result.content == "Quantum routing reduces latency."
+
+
+async def test_filter_output_budget_keeps_oversized_top_block_alone():
+    top = "Quantum routing evidence. " * 20
+    minor = "Routing note."
+    source = f"{minor}\n\n{top}"
+
+    result = await budgeted(100)(
+        page(source, mime="text/plain"), "quantum routing evidence"
+    )
+
+    assert result.status is FetchStatus.OK
+    assert result.content == top + "\n\n[Content truncated]"
+
+
+def unit_filter(unit_chars: int) -> RelevanceFilter:
+    return RelevanceFilter(
+        fetch_model="",
+        router_url="",
+        router_key="",
+        limits=FilterLimits(unit_chars=unit_chars),
+    )
+
+
+BREAD_SENTENCE = "Bread flour needs warm water. "
+
+
+async def test_filter_oversized_plain_paragraph_returns_matching_sentence_fragment():
+    source = (
+        BREAD_SENTENCE * 10 + "Quantum routing reduces latency. " + BREAD_SENTENCE * 10
+    ).strip()
+
+    result = await unit_filter(120)(
+        page(source, mime="text/plain"), "quantum routing"
+    )
+
+    assert result.status is FetchStatus.OK
+    assert "Quantum routing reduces latency." in result.content
+    assert len(result.content) <= 120
+    assert result.content in source
+    assert result.content.endswith(".")
+
+
+async def test_filter_split_paragraph_fully_selected_renders_original_source():
+    source = " ".join(
+        f"Quantum routing step {number} is described in the "
+        f"[paper {number}](https://source.example/paper/{number})."
+        for number in range(8)
+    )
+
+    result = await unit_filter(120)(
+        page(source, mime="text/markdown"), "quantum routing"
+    )
+
+    assert result.content == source
+
+
+async def test_filter_paragraph_split_never_cuts_inside_link_syntax():
+    names = ["alpha", "beta", "gamma", "delta", "zeta", "theta", "kappa", "omega"]
+    source = " ".join(
+        f"[{name} quantum paper](https://source.example/papers/{name})"
+        for name in names
+    )
+    page_filter = RelevanceFilter(
+        fetch_model="",
+        router_url="",
+        router_key="",
+        limits=FilterLimits(unit_chars=100, max_output_chars=100),
+    )
+
+    result = await page_filter(page(source, mime="text/markdown"), "zeta")
+
+    content = result.content.removesuffix("\n\n[Content truncated]")
+    assert len(content) <= 100
+    assert "[zeta quantum paper](https://source.example/papers/zeta)" in content
+    assert content.count("[") == content.count("]")
+    assert content.count("(") == content.count(")")
+
+
+async def test_filter_small_sections_never_merge_across_headings():
+    source = (
+        "## Quantum\n\nQuantum routing reduces latency.\n\n"
+        "## Baking\n\nBread flour needs water."
+    )
+
+    result = await bm25()(page(source, mime="text/markdown"), "quantum")
+
+    assert result.content == "## Quantum\n\nQuantum routing reduces latency."
+
+
+async def test_filter_small_blocks_merge_within_oversized_section():
+    bread = (BREAD_SENTENCE * 4).strip()
+    source = (
+        f"## Operations\n\n{bread}\n\nQuantum routing reduces latency.\n\n"
+        "Routing uses short paths.\n\n## Baking\n\nQuantum bread."
+    )
+
+    result = await unit_filter(150)(
+        page(source, mime="text/markdown"), "quantum latency"
+    )
+
+    assert result.content == (
+        "## Operations\n\nQuantum routing reduces latency.\n\n"
+        "Routing uses short paths.\n\n## Baking\n\nQuantum bread."
+    )
+
+
+async def test_filter_oversized_section_returns_matching_part_with_headings():
+    bread = (BREAD_SENTENCE * 3).strip()
+    source = (
+        f"# Guide\n\n## Operations\n\n{bread}\n\n{bread}\n\n"
+        f"Quantum routing reduces latency.\n\n{bread}"
+    )
+
+    result = await unit_filter(120)(
+        page(source, mime="text/markdown"), "quantum routing"
+    )
+
+    assert result.content == (
+        "# Guide\n\n## Operations\n\nQuantum routing reduces latency."
+    )
+
+
+async def test_filter_oversized_list_returns_matching_items_with_introduction():
+    items = [f"- Bread step {number} needs flour and water." for number in range(10)]
+    items[5] = "- Quantum routing step reduces latency."
+    source = "Steps:\n\n" + "\n".join(items)
+
+    result = await unit_filter(100)(
+        page(source, mime="text/markdown"), "quantum routing"
+    )
+
+    content = result.content
+    assert content.startswith("Steps:\n\n- ")
+    assert "- Quantum routing step reduces latency." in content
+    assert "Bread step 0 " not in content
+    assert "Bread step 9 " not in content
+
+
+async def test_filter_oversized_table_returns_matching_rows_with_header():
+    rows = [f"| bread {number} | flour and water |" for number in range(10)]
+    rows[6] = "| quantum | routing latency |"
+    source = "| item | note |\n| --- | --- |\n" + "\n".join(rows)
+
+    result = await unit_filter(100)(
+        page(source, mime="text/markdown"), "quantum routing"
+    )
+
+    content = result.content
+    assert content.startswith("| item | note |\n| --- | --- |\n")
+    assert "| quantum | routing latency |" in content
+    assert "| bread 0 |" not in content
+    assert "| bread 9 |" not in content
+
+
 async def test_filter_unsupported_direct_input_returns_unsupported():
     result = await bm25()(page("binary", mime="image/png"), "quantum")
 
@@ -386,13 +573,28 @@ async def test_filter_code_block_includes_colon_introduction():
     assert "quantum = 1" in result.content
 
 
-async def test_filter_code_block_skips_unrelated_introduction():
+async def test_filter_section_that_fits_unit_is_returned_whole():
     source = (
         "## Setup\n\nThis is a historical aside.\n\n"
-        "```python\nquantum = 1\n```\n"
+        "```python\nquantum = 1\n```"
     )
 
     result = await bm25()(page(source, mime="text/markdown"), "quantum")
+
+    assert result.content == source
+
+
+async def test_filter_split_section_skips_unrelated_introduction():
+    aside = "This is a historical aside about bread. " * 4
+    source = (
+        f"## Setup\n\n{aside.strip()}\n\n"
+        f"{BREAD_SENTENCE * 4}\n\n"
+        "```python\nquantum = 1\n```"
+    )
+
+    result = await unit_filter(170)(
+        page(source, mime="text/markdown"), "quantum"
+    )
 
     assert "historical aside" not in result.content
     assert "quantum = 1" in result.content

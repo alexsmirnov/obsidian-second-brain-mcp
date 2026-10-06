@@ -96,9 +96,7 @@ def _extract_pdf_response(response: httpx.Response) -> Extracted:
     return extracted, MIME_PLAIN
 
 
-def _extract_plain_text_response(
-    response: httpx.Response, mime: str
-) -> Extracted:
+def _extract_plain_text_response(response: httpx.Response, mime: str) -> Extracted:
     content = response.text
     if not content or not content.strip():
         return None

@@ -7,6 +7,7 @@ import logging
 from collections.abc import Callable, Sequence
 from dataclasses import replace
 
+from mcps.research.tools.common import TRUNCATION_MARKER
 from mcps.research.tools.filtering_content import truncate_content
 from mcps.research.tools.models import Fetch, FetchResult, FetchStatus, Filter
 
@@ -25,8 +26,6 @@ logger = logging.getLogger(__name__)
 
 UrlPredicate = Callable[[str], bool]
 ResultPredicate = Callable[[FetchResult], bool]
-
-_TRUNCATION_MARKER = "\n\n[Content truncated]"
 
 
 class Filtered:
@@ -158,11 +157,13 @@ class Truncate:
         self, result: FetchResult, query: str | None = None, /
     ) -> FetchResult:
         logger.info("Fetch %d chars from url %s", len(result.content), result.url)
-        if len(result.content) <= self._max_chars:
+        body = result.content.removesuffix(TRUNCATION_MARKER)
+        premarked = len(body) < len(result.content)
+        if len(body) <= self._max_chars:
             return result
         content, omitted = await asyncio.to_thread(
-            truncate_content, result.content, result.mime, self._max_chars
+            truncate_content, body, result.mime, self._max_chars
         )
-        if not omitted:
+        if not (omitted or premarked):
             return result
-        return replace(result, content=content + _TRUNCATION_MARKER)
+        return replace(result, content=content + TRUNCATION_MARKER)

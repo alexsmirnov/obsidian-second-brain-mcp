@@ -10,6 +10,7 @@ __all__ = [
     "MIME_HTML",
     "MIME_MARKDOWN",
     "MIME_PLAIN",
+    "TRUNCATION_MARKER",
     "extract_hostname",
     "failure",
     "normalize_mime",
@@ -20,7 +21,9 @@ MIME_HTML = "text/html"
 MIME_MARKDOWN = "text/markdown"
 MIME_PLAIN = "text/plain"
 
-_MARKDOWN_MIMES = frozenset(["text/markdown", "text/x-markdown"])
+TRUNCATION_MARKER = "\n\n[Content truncated]"
+
+_MARKDOWN_MIMES = frozenset([MIME_MARKDOWN, "text/x-markdown"])
 _HTML_MIMES = frozenset([MIME_HTML, "application/xhtml+xml"])
 _JSON_XML_MIMES = frozenset(["application/json", "application/xml"])
 
@@ -43,11 +46,11 @@ def textual_mime(value: str) -> str | None:
         return MIME_HTML
     if normalized in _MARKDOWN_MIMES:
         return MIME_MARKDOWN
-    if normalized.startswith("text/"):
-        return MIME_PLAIN
-    if normalized in _JSON_XML_MIMES:
-        return MIME_PLAIN
-    if normalized.endswith("+json") or normalized.endswith("+xml"):
+    if (
+        normalized.startswith("text/")
+        or normalized in _JSON_XML_MIMES
+        or normalized.endswith(("+json", "+xml"))
+    ):
         return MIME_PLAIN
     return None
 

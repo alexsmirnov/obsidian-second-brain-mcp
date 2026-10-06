@@ -12,7 +12,6 @@ from __future__ import annotations
 import asyncio
 import json
 import math
-from typing import Any
 
 import httpx
 from langchain_openai import OpenAIEmbeddings
@@ -41,17 +40,6 @@ class FilterModelError(ValueError):
     """Invalid/incomplete model response or a rejected boundary payload."""
 
 
-def _strip_provider_prefix(fetch_model: str) -> str:
-    prefix = "openai/"
-    if fetch_model.startswith(prefix):
-        return fetch_model[len(prefix) :]
-    return fetch_model
-
-
-def _chat_endpoint(router_url: str) -> str:
-    return router_url.rstrip("/") + "/chat/completions"
-
-
 def build_selection_payload(
     fetch_model: str, query: str, windows: tuple[ScoringWindow, ...]
 ) -> dict[str, object]:
@@ -67,7 +55,7 @@ def build_selection_payload(
         ensure_ascii=False,
     )
     return {
-        "model": _strip_provider_prefix(fetch_model),
+        "model": fetch_model.removeprefix("openai/"),
         "messages": [
             {"role": "system", "content": SELECTION_INSTRUCTION},
             {"role": "user", "content": user_content},
@@ -119,11 +107,12 @@ class RouterPassageModels:
         self._max_response_bytes = max_response_bytes
         self._semaphore = asyncio.Semaphore(concurrency)
         self._secret = SecretStr(router_key)
-        self._chat_endpoint = _chat_endpoint(router_url)
+        base_url = router_url.rstrip("/")
+        self._chat_endpoint = f"{base_url}/chat/completions"
         self._embeddings = OpenAIEmbeddings(
             model=embedding_model,
             dimensions=embedding_dimensions or None,
-            base_url=router_url.rstrip("/"),
+            base_url=base_url,
             api_key=self._embedding_api_key,
             http_async_client=http_client,
             check_embedding_ctx_length=False,
@@ -167,12 +156,10 @@ class RouterPassageModels:
         if not windows:
             return set()
         payload = build_selection_payload(self._fetch_model, query, windows)
-        body = await self._post_json(self._chat_endpoint, payload)
+        body = await self._post_chat(payload)
         return _parse_selection(body, {window.window_id for window in windows})
 
-    async def _post_json(
-        self, endpoint: str, payload: dict[str, object]
-    ) -> object:
+    async def _post_chat(self, payload: dict[str, object]) -> object:
         headers = {"content-type": "application/json"}
         key = self._secret.get_secret_value()
         if key:
@@ -182,7 +169,7 @@ class RouterPassageModels:
             try:
                 async with self._http_client.stream(
                     "POST",
-                    endpoint,
+                    self._chat_endpoint,
                     content=data,
                     headers=headers,
                     follow_redirects=False,
@@ -196,8 +183,6 @@ class RouterPassageModels:
                         buffer.extend(chunk)
                         if len(buffer) > self._max_response_bytes:
                             raise FilterModelError("chat response too large")
-            except FilterModelError:
-                raise
             except httpx.HTTPError as error:
                 raise FilterModelError("chat request failed") from error
         try:
@@ -226,19 +211,17 @@ def _parse_selection(body: object, window_ids: set[int]) -> set[int]:
     if not isinstance(content, str):
         raise FilterModelError("selection message has no text")
     try:
-        parsed: Any = json.loads(content)
+        parsed = json.loads(content)
     except json.JSONDecodeError as error:
         raise FilterModelError("selection content is not JSON") from error
-    if not isinstance(parsed, dict) or set(parsed.keys()) != {"selected_ids"}:
+    if not isinstance(parsed, dict) or parsed.keys() != {"selected_ids"}:
         raise FilterModelError("selection object has unexpected keys")
     selected = parsed["selected_ids"]
     if not isinstance(selected, list):
         raise FilterModelError("selected_ids is not a list")
-    result: set[int] = set()
     for value in selected:
         if type(value) is not int:
             raise FilterModelError("selected id is not an integer")
         if value not in window_ids:
             raise FilterModelError("selected id is outside this batch")
-        result.add(value)
-    return result
+    return set(selected)
