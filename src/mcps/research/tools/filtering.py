@@ -1,11 +1,14 @@
 """Post-retrieval filters selecting query-relevant native source passages.
 
 :class:`MarkdownToHtml` and :class:`PreTextToHtml` are retained legacy
-normalizers. :class:`RelevanceFilter` prepares a fetch result natively, scores
-source-mapped windows with BM25L, and -- when ``FETCH_MODEL`` is configured --
-augments lexical hits with embedding cosine shortlisting and asks the router
-model to select source window IDs. A blank query returns the prepared whole
-document without any model call.
+normalizers. :class:`RelevanceFilter` is the shared pipeline: it prepares a
+fetch result natively, delegates chunking to an injected :class:`Chunker`, and
+asks the subclass to select source blocks. :class:`Bm25RelevanceFilter` scores
+source-mapped windows with BM25L; :class:`LlmRelevanceFilter` augments lexical
+hits with embedding cosine shortlisting and asks the router model to select
+source window IDs. A blank query returns the prepared whole document without
+any model call. Implementations are chosen once from configuration (see
+``mcps.research.tools.fetch.create_page_filter``).
 """
 
 from __future__ import annotations
@@ -15,10 +18,10 @@ import json
 import logging
 import math
 import re
+from abc import ABC, abstractmethod
 from dataclasses import dataclass, replace
-from urllib.parse import urlparse
+from typing import Protocol
 
-import httpx
 import markdown as markdown_lib
 from lxml import html as lxml_html
 from rank_bm25 import BM25L
@@ -40,10 +43,14 @@ from mcps.research.tools.filtering_models import (
 from mcps.research.tools.models import FetchResult, FetchStatus
 
 __all__ = [
+    "Bm25RelevanceFilter",
+    "Chunker",
     "FilterLimits",
+    "LlmRelevanceFilter",
     "MarkdownToHtml",
     "PreTextToHtml",
     "RelevanceFilter",
+    "SectionChunker",
     "lexical_scores",
     "markdown_to_html",
     "select_hybrid_candidates",
@@ -237,18 +244,6 @@ class PreTextToHtml:
 # ---------------------------------------------------------------------------
 
 
-def _valid_router_url(router_url: str) -> bool:
-    parsed = urlparse(router_url)
-    return (
-        parsed.scheme in ("http", "https")
-        and bool(parsed.hostname)
-        and not parsed.username
-        and not parsed.password
-        and not parsed.query
-        and not parsed.fragment
-    )
-
-
 def _embedding_batches(
     items: list[str], limits: FilterLimits
 ) -> list[list[str]]:
@@ -387,41 +382,68 @@ async def _run_model_selection(
     }
 
 
-class RelevanceFilter:
-    """Filter selecting query-relevant native source passages."""
+class Chunker(Protocol):
+    """Strategy splitting a prepared document into selection units and windows.
+
+    Returns the (possibly regrouped) document together with scoring windows
+    whose ``block_id`` values refer to blocks of the returned document.
+    """
+
+    def __call__(
+        self, document: ContentDocument
+    ) -> tuple[ContentDocument, tuple[ScoringWindow, ...]]: ...
+
+
+class SectionChunker:
+    """Chunker grouping sections into units, then windowing each unit."""
+
+    def __init__(self, limits: FilterLimits) -> None:
+        self._limits = limits
+
+    def __call__(
+        self, document: ContentDocument
+    ) -> tuple[ContentDocument, tuple[ScoringWindow, ...]]:
+        limits = self._limits
+        units = build_selection_units(
+            document,
+            unit_chars=limits.unit_chars,
+            min_unit_chars=limits.min_unit_chars,
+        )
+        windows = build_scoring_windows(
+            units,
+            window_chars=limits.window_chars,
+            overlap_chars=limits.overlap_chars,
+            max_windows=limits.max_windows,
+        )
+        return units, windows
+
+
+class RelevanceFilter(ABC):
+    """Pipeline selecting query-relevant native source passages.
+
+    The filter's ``limits`` own input, query, output, and model budgets; the
+    injected ``chunker`` owns chunking (the default is built from the same
+    limits). Subclasses implement only block selection.
+    """
 
     def __init__(
         self,
         *,
-        fetch_model: str,
-        router_url: str,
-        router_key: str,
-        embedding_model: str = "",
-        embedding_dimensions: int = 0,
-        http_client: httpx.AsyncClient | None = None,
         limits: FilterLimits | None = None,
+        chunker: Chunker | None = None,
     ) -> None:
-        if embedding_dimensions < 0:
-            raise ValueError("embedding_dimensions must be nonnegative")
-        self._fetch_model = fetch_model
         self._limits = limits or FilterLimits()
-        self._models: RouterPassageModels | None = None
-        if (
-            fetch_model
-            and embedding_model
-            and http_client is not None
-            and _valid_router_url(router_url)
-        ):
-            self._models = RouterPassageModels(
-                http_client,
-                router_url=router_url,
-                router_key=router_key,
-                fetch_model=fetch_model,
-                embedding_model=embedding_model,
-                embedding_dimensions=embedding_dimensions,
-                concurrency=self._limits.model_concurrency,
-                max_response_bytes=self._limits.max_response_bytes,
-            )
+        self._chunker = chunker or SectionChunker(self._limits)
+
+    @abstractmethod
+    async def _select(
+        self,
+        document: ContentDocument,
+        windows: tuple[ScoringWindow, ...],
+        query: str,
+        url: str,
+    ) -> tuple[set[int], bool]:
+        """Return the selected block IDs and whether matches were dropped."""
 
     async def __call__(
         self, result: FetchResult, query: str | None = None, /
@@ -430,10 +452,7 @@ class RelevanceFilter:
             return result
         limits = self._limits
         query = (query or "").strip()
-        model_mode = bool(query and self._fetch_model)
-        query_too_long = len(query) > limits.max_query_chars
-        # Model mode rejects oversized queries before preparing the document.
-        if model_mode and query_too_long:
+        if len(query) > limits.max_query_chars:
             return failure(result.url, FetchStatus.FILTER_FAILED)
         try:
             document = await asyncio.to_thread(
@@ -449,52 +468,19 @@ class RelevanceFilter:
             return failure(result.url, FetchStatus.FILTER_FAILED)
         if not query:
             return replace(result, content=document.text, mime=document.mime)
-        if query_too_long:
-            return failure(result.url, FetchStatus.FILTER_FAILED)
-        models = self._models if model_mode else None
-        if model_mode and models is None:
-            logger.warning("Content models unavailable for %s", result.url)
-            return failure(result.url, FetchStatus.FILTER_FAILED)
         try:
-            document = await asyncio.to_thread(
-                build_selection_units,
-                document,
-                unit_chars=limits.unit_chars,
-                min_unit_chars=limits.min_unit_chars,
-            )
-            windows = await asyncio.to_thread(
-                build_scoring_windows,
-                document,
-                window_chars=limits.window_chars,
-                overlap_chars=limits.overlap_chars,
-                max_windows=limits.max_windows,
-            )
+            document, windows = await asyncio.to_thread(self._chunker, document)
         except Exception:
             logger.warning("Content windowing failed for %s", result.url)
             return failure(result.url, FetchStatus.FILTER_FAILED)
         if not windows:
             return replace(result, content="", mime=document.mime)
-        dropped = False
-        if models is None:
-            selected, dropped = await asyncio.to_thread(
-                _local_selection, document, windows, query, limits.max_output_chars
+        try:
+            selected, dropped = await self._select(
+                document, windows, query, result.url
             )
-        else:
-            try:
-                async with asyncio.timeout(limits.model_timeout_seconds):
-                    selected = await _run_model_selection(
-                        models, windows, query, limits
-                    )
-            except TimeoutError:
-                logger.warning(
-                    "Content model deadline exceeded for %s", result.url
-                )
-                return failure(result.url, FetchStatus.FILTER_FAILED)
-            except FilterModelError:
-                logger.warning(
-                    "Content model response failed for %s", result.url
-                )
-                return failure(result.url, FetchStatus.FILTER_FAILED)
+        except FilterModelError:
+            return failure(result.url, FetchStatus.FILTER_FAILED)
         if not selected:
             return replace(result, content="", mime=document.mime)
         try:
@@ -505,3 +491,57 @@ class RelevanceFilter:
         if dropped:
             content += TRUNCATION_MARKER
         return replace(result, content=content, mime=document.mime)
+
+
+class Bm25RelevanceFilter(RelevanceFilter):
+    """Local lexical filter: BM25L-ranked blocks within the output budget."""
+
+    async def _select(
+        self,
+        document: ContentDocument,
+        windows: tuple[ScoringWindow, ...],
+        query: str,
+        url: str,
+    ) -> tuple[set[int], bool]:
+        return await asyncio.to_thread(
+            _local_selection,
+            document,
+            windows,
+            query,
+            self._limits.max_output_chars,
+        )
+
+
+class LlmRelevanceFilter(RelevanceFilter):
+    """Hybrid filter: embedding shortlist plus router-model block selection."""
+
+    def __init__(
+        self,
+        models: RouterPassageModels,
+        *,
+        limits: FilterLimits | None = None,
+        chunker: Chunker | None = None,
+    ) -> None:
+        super().__init__(limits=limits, chunker=chunker)
+        self._models = models
+
+    async def _select(
+        self,
+        document: ContentDocument,
+        windows: tuple[ScoringWindow, ...],
+        query: str,
+        url: str,
+    ) -> tuple[set[int], bool]:
+        limits = self._limits
+        try:
+            async with asyncio.timeout(limits.model_timeout_seconds):
+                selected = await _run_model_selection(
+                    self._models, windows, query, limits
+                )
+        except TimeoutError:
+            logger.warning("Content model deadline exceeded for %s", url)
+            raise FilterModelError("model deadline exceeded") from None
+        except FilterModelError:
+            logger.warning("Content model response failed for %s", url)
+            raise
+        return selected, False

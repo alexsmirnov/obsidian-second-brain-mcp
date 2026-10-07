@@ -102,17 +102,18 @@ def _to_fetch_result(url: str, crawl: CrawlResult) -> FetchResult:
     content_type = headers.get("content-type", "")
     rendered_html = crawl.cleaned_html or ""
     declared = textual_mime(content_type) if content_type else None
+    page_url = crawl.redirected_url or url
     if content_type and declared is None:
         logger.warning("Browser fetch failed for %s: unsupported type", url)
         return failure(url, FetchStatus.UNSUPPORTED)
     if declared == MIME_HTML:
-        return _content_result(url, MIME_HTML, rendered_html)
+        return _content_result(page_url, MIME_HTML, rendered_html)
 
     unwrapped = _unwrap_sole_pre(crawl.html or rendered_html)
     if unwrapped is not None:
-        return _content_result(url, declared or MIME_PLAIN, unwrapped)
+        return _content_result(page_url, declared or MIME_PLAIN, unwrapped)
     if declared is None:
-        return _content_result(url, MIME_HTML, rendered_html)
+        return _content_result(page_url, MIME_HTML, rendered_html)
     logger.warning("Browser fetch failed for %s: malformed text wrapper", url)
     return failure(url, FetchStatus.UNSUPPORTED)
 

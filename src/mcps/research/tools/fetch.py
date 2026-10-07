@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import AsyncGenerator, Sequence
+from collections.abc import AsyncGenerator, Callable, Sequence
 from contextlib import asynccontextmanager
 from urllib.parse import urlparse
 
@@ -23,7 +23,15 @@ from mcps.research.tools.combinators import (
     UrlSelector,
 )
 from mcps.research.tools.default import HttpFetch
-from mcps.research.tools.filtering import RelevanceFilter
+from mcps.research.tools.filtering import (
+    Bm25RelevanceFilter,
+    FilterLimits,
+    LlmRelevanceFilter,
+)
+from mcps.research.tools.filtering_models import (
+    RouterPassageModels,
+    valid_router_url,
+)
 from mcps.research.tools.github import (
     GitHubBlobFetch,
     GitHubRepoFetch,
@@ -33,7 +41,7 @@ from mcps.research.tools.github import (
 from mcps.research.tools.models import Fetch, Filter
 from mcps.research.tools.scrape_do import ScrapeDoFetch
 
-__all__ = ["build_fetch_tool", "create_fetch"]
+__all__ = ["build_fetch_tool", "create_fetch", "create_page_filter"]
 
 logger = logging.getLogger(__name__)
 
@@ -126,6 +134,60 @@ def _create_provider_fallback(
     return None
 
 
+PageFilterBuilder = Callable[[ServerConfig, httpx.AsyncClient], Filter]
+
+
+def _llm_configured(config: ServerConfig) -> bool:
+    """True when FETCH_MODEL and the router boundary it needs are usable."""
+    if not config.fetch_model:
+        return False
+    if config.rag_embedding_model and valid_router_url(config.router_api_base):
+        return True
+    logger.warning(
+        "FETCH_MODEL=%s requires RAG_EMBEDDING_MODEL and a valid router URL; "
+        "using BM25 filtering.",
+        config.fetch_model,
+    )
+    return False
+
+
+def _llm_filter(config: ServerConfig, http_client: httpx.AsyncClient) -> Filter:
+    limits = FilterLimits()
+    models = RouterPassageModels(
+        http_client,
+        router_url=config.router_api_base,
+        router_key=config.router_api_key,
+        fetch_model=config.fetch_model,
+        embedding_model=config.rag_embedding_model,
+        embedding_dimensions=config.rag_embedding_dimensions,
+        concurrency=limits.model_concurrency,
+        max_response_bytes=limits.max_response_bytes,
+    )
+    return LlmRelevanceFilter(models, limits=limits)
+
+
+def _bm25_filter(config: ServerConfig, http_client: httpx.AsyncClient) -> Filter:
+    return Bm25RelevanceFilter()
+
+
+# Ordered registry: the first entry whose predicate holds builds the filter.
+# To add an implementation, append an entry before the BM25 catch-all.
+_PAGE_FILTERS: tuple[tuple[Callable[[ServerConfig], bool], PageFilterBuilder], ...] = (
+    (_llm_configured, _llm_filter),
+    (lambda _: True, _bm25_filter),
+)
+
+
+def create_page_filter(
+    config: ServerConfig, http_client: httpx.AsyncClient
+) -> Filter:
+    """Build the relevance filter selected by ``config``, once at startup."""
+    for is_configured, build in _PAGE_FILTERS:
+        if is_configured(config):
+            return build(config, http_client)
+    raise AssertionError("page filter registry lacks a catch-all entry")
+
+
 @asynccontextmanager
 async def build_fetch_tool(
     config: ServerConfig,
@@ -149,14 +211,7 @@ async def build_fetch_tool(
             http_client=http_client,
             browser=browser,
             provider=_create_provider_fallback(config, http_client),
-            page_filter=RelevanceFilter(
-                fetch_model=config.fetch_model,
-                router_url=config.router_api_base,
-                router_key=config.router_api_key,
-                embedding_model=config.rag_embedding_model,
-                embedding_dimensions=config.rag_embedding_dimensions,
-                http_client=http_client,
-            ),
+            page_filter=create_page_filter(config, http_client),
             restricted_domains=config.fetch_restricted_domains,
             concurrency=config.fetch_concurrency,
         )

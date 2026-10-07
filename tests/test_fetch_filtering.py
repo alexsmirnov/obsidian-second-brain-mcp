@@ -11,11 +11,15 @@ import httpx
 import pytest
 
 from mcps.research.tools.filtering import (
+    Bm25RelevanceFilter,
     FilterLimits,
+    LlmRelevanceFilter,
     MarkdownToHtml,
     PreTextToHtml,
-    RelevanceFilter,
+    SectionChunker,
 )
+from mcps.research.tools.filtering_content import ScoringWindow, prepare_document
+from mcps.research.tools.filtering_models import RouterPassageModels
 from mcps.research.tools.models import FetchResult, FetchStatus
 
 TOPIC_HTML = (
@@ -36,8 +40,8 @@ def page(
     )
 
 
-def bm25() -> RelevanceFilter:
-    return RelevanceFilter(fetch_model="", router_url="", router_key="")
+def bm25() -> Bm25RelevanceFilter:
+    return Bm25RelevanceFilter()
 
 MARKDOWN_PAGE = (
     "## Quantum\n\n"
@@ -123,11 +127,7 @@ def large_markdown() -> str:
 
 
 async def test_blank_query_returns_unfiltered_markdown():
-    page_filter = RelevanceFilter(
-        fetch_model="fetch-test",
-        router_url="https://router.example/v1",
-        router_key="k",
-    )
+    page_filter = Bm25RelevanceFilter()
 
     for query in (None, "", "  "):
         result = await page_filter(page(TOPIC_HTML), query)
@@ -314,12 +314,9 @@ async def test_filter_large_markdown_keeps_start_middle_end_evidence():
     assert "[Content truncated]" not in content
 
 
-def budgeted(max_output_chars: int) -> RelevanceFilter:
-    return RelevanceFilter(
-        fetch_model="",
-        router_url="",
-        router_key="",
-        limits=FilterLimits(max_output_chars=max_output_chars),
+def budgeted(max_output_chars: int) -> Bm25RelevanceFilter:
+    return Bm25RelevanceFilter(
+        limits=FilterLimits(max_output_chars=max_output_chars)
     )
 
 
@@ -361,13 +358,8 @@ async def test_filter_output_budget_keeps_oversized_top_block_alone():
     assert result.content == top + "\n\n[Content truncated]"
 
 
-def unit_filter(unit_chars: int) -> RelevanceFilter:
-    return RelevanceFilter(
-        fetch_model="",
-        router_url="",
-        router_key="",
-        limits=FilterLimits(unit_chars=unit_chars),
-    )
+def unit_filter(unit_chars: int) -> Bm25RelevanceFilter:
+    return Bm25RelevanceFilter(limits=FilterLimits(unit_chars=unit_chars))
 
 
 BREAD_SENTENCE = "Bread flour needs warm water. "
@@ -409,11 +401,8 @@ async def test_filter_paragraph_split_never_cuts_inside_link_syntax():
         f"[{name} quantum paper](https://source.example/papers/{name})"
         for name in names
     )
-    page_filter = RelevanceFilter(
-        fetch_model="",
-        router_url="",
-        router_key="",
-        limits=FilterLimits(unit_chars=100, max_output_chars=100),
+    page_filter = Bm25RelevanceFilter(
+        limits=FilterLimits(unit_chars=100, max_output_chars=100)
     )
 
     result = await page_filter(page(source, mime="text/markdown"), "zeta")
@@ -804,17 +793,19 @@ async def router_harness():
         yield harness
 
 
-def make_ai_filter(harness: RouterHarness, **overrides: Any) -> RelevanceFilter:
+def make_ai_filter(harness: RouterHarness, **overrides: Any) -> LlmRelevanceFilter:
     limits = overrides.pop("limits", None) or small_limits()
-    return RelevanceFilter(
-        fetch_model=overrides.pop("fetch_model", FETCH_MODEL),
+    models = RouterPassageModels(
+        overrides.pop("http_client", harness.client),
         router_url=overrides.pop("router_url", ROUTER_BASE),
         router_key=overrides.pop("router_key", ROUTER_KEY),
+        fetch_model=overrides.pop("fetch_model", FETCH_MODEL),
         embedding_model=overrides.pop("embedding_model", EMBED_MODEL),
         embedding_dimensions=overrides.pop("embedding_dimensions", EMBED_DIM),
-        http_client=overrides.pop("http_client", harness.client),
-        limits=limits,
+        concurrency=limits.model_concurrency,
+        max_response_bytes=limits.max_response_bytes,
     )
+    return LlmRelevanceFilter(models, limits=limits)
 
 
 async def test_filter_hybrid_keeps_semantic_only_source_and_excludes_distractor(
@@ -837,27 +828,6 @@ async def test_filter_hybrid_keeps_semantic_only_source_and_excludes_distractor(
     transmitted = [text for batch in router_harness.embedding_inputs for text in batch]
     assert HYBRID_QUERY in transmitted
     assert "QUANTUM_LEXICAL" in " ".join(transmitted)
-
-
-@pytest.mark.parametrize(
-    "overrides",
-    [
-        {"embedding_model": ""},
-        {"http_client": None},
-        {"router_url": "ftp://router.example/v1"},
-    ],
-    ids=["no-embedding-model", "no-client", "bad-router"],
-)
-async def test_filter_model_mode_without_runtime_config_returns_filter_failed(
-    router_harness: RouterHarness, overrides: dict[str, Any]
-):
-    result = await make_ai_filter(router_harness, **overrides)(
-        page(TOPIC_HTML), "quantum"
-    )
-
-    assert result.status is FetchStatus.FILTER_FAILED
-    assert result.content == ""
-    assert router_harness.requests == []
 
 
 async def test_filter_llm_empty_selection_returns_ok_empty(
@@ -1245,17 +1215,6 @@ async def test_filter_oversized_atomic_block_selects_parent_from_late_window(
     assert result.content == source
 
 
-async def test_filter_missing_embedding_model_does_not_call_router(
-    router_harness: RouterHarness,
-):
-    result = await make_ai_filter(
-        router_harness, embedding_model=""
-    )(page(TOPIC_HTML), "quantum")
-
-    assert result.status is FetchStatus.FILTER_FAILED
-    assert router_harness.requests == []
-
-
 async def test_filter_embeds_all_windows_within_request_bounds(
     router_harness: RouterHarness,
 ):
@@ -1455,17 +1414,6 @@ async def test_filter_duplicate_selected_ids_deduplicate(
     )
 
 
-async def test_local_filter_with_embedding_model_makes_no_model_requests(
-    router_harness: RouterHarness,
-):
-    result = await make_ai_filter(router_harness, fetch_model="")(
-        page(HYBRID_TEXT, mime="text/plain"), HYBRID_QUERY
-    )
-
-    assert result.status is FetchStatus.OK
-    assert router_harness.requests == []
-
-
 async def test_filter_empty_router_key_does_not_use_environment_key(monkeypatch):
     # openai==3.3.1 rejects an empty key through the LangChain adapter, so an
     # empty router key is a runtime configuration failure (FILTER_FAILED), not
@@ -1530,3 +1478,74 @@ async def test_filter_escaped_bracket_is_not_treated_as_link():
 
     assert result.status is FetchStatus.OK
     assert result.content == source
+
+
+class AlphaWindowChunker:
+    """Chunker stub scoring "quantum" text but pointing at the "alpha" block."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def __call__(self, document):
+        self.calls += 1
+        block_id = next(
+            block.block_id for block in document.blocks if "alpha" in block.search_text
+        )
+        return document, (ScoringWindow(0, block_id, "quantum"),)
+
+
+async def test_bm25_filter_uses_injected_chunker():
+    chunker = AlphaWindowChunker()
+    source = page("alpha paragraph\n\nquantum paragraph", mime="text/plain")
+
+    result = await Bm25RelevanceFilter(chunker=chunker)(source, "quantum")
+
+    assert result.status is FetchStatus.OK
+    assert result.content == "alpha paragraph"
+    assert chunker.calls == 1
+
+
+async def test_filter_chunker_failure_returns_filter_failed():
+    def failing_chunker(document):
+        raise ValueError("boom")
+
+    result = await Bm25RelevanceFilter(chunker=failing_chunker)(
+        page("quantum paragraph", mime="text/plain"), "quantum"
+    )
+
+    assert result.status is FetchStatus.FILTER_FAILED
+    assert result.content == ""
+
+
+def test_section_chunker_windows_reference_unit_blocks():
+    text = "\n\n".join(f"Paragraph {n}: " + "word " * 14 for n in range(5))
+    limits = FilterLimits(
+        unit_chars=100, min_unit_chars=50, window_chars=120, overlap_chars=20
+    )
+    document = prepare_document(
+        page(text, mime="text/plain"), max_input_chars=10_000, window_chars=120
+    )
+
+    chunked, windows = SectionChunker(limits)(document)
+
+    assert len(chunked.blocks) > 1
+    assert len(windows) > 1
+    assert {w.block_id for w in windows} <= {b.block_id for b in chunked.blocks}
+
+
+async def test_filter_overlong_query_fails_before_preparation():
+    result = await Bm25RelevanceFilter(limits=FilterLimits(max_query_chars=5))(
+        page("x", mime="image/png"), "quantum"
+    )
+
+    assert result.status is FetchStatus.FILTER_FAILED
+
+
+async def test_llm_filter_blank_query_makes_no_router_calls(
+    router_harness: RouterHarness,
+):
+    result = await make_ai_filter(router_harness)(page(TOPIC_HTML), "")
+
+    assert result.status is FetchStatus.OK
+    assert "Quantum optimization" in result.content
+    assert router_harness.requests == []

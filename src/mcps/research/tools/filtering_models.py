@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import json
 import math
+from urllib.parse import urlparse
 
 import httpx
 from langchain_openai import OpenAIEmbeddings
@@ -24,6 +25,7 @@ __all__ = [
     "FilterModelError",
     "RouterPassageModels",
     "build_selection_payload",
+    "valid_router_url",
 ]
 
 SELECTION_INSTRUCTION = (
@@ -38,6 +40,18 @@ SELECTION_INSTRUCTION = (
 
 class FilterModelError(ValueError):
     """Invalid/incomplete model response or a rejected boundary payload."""
+
+
+def valid_router_url(router_url: str) -> bool:
+    parsed = urlparse(router_url)
+    return (
+        parsed.scheme in ("http", "https")
+        and bool(parsed.hostname)
+        and not parsed.username
+        and not parsed.password
+        and not parsed.query
+        and not parsed.fragment
+    )
 
 
 def build_selection_payload(
@@ -101,6 +115,8 @@ class RouterPassageModels:
         concurrency: int,
         max_response_bytes: int,
     ) -> None:
+        if embedding_dimensions < 0:
+            raise ValueError("embedding_dimensions must be nonnegative")
         self._http_client = http_client
         self._fetch_model = fetch_model
         self._embedding_dimensions = embedding_dimensions

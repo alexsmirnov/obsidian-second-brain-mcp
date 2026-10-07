@@ -20,7 +20,8 @@ from mcps.research.tools import browser as browser_module
 from mcps.research.tools.bright_data import BrightDataFetch
 from mcps.research.tools.browser import BrowserFetch, create_browser_fetch
 from mcps.research.tools.default import HttpFetch
-from mcps.research.tools.fetch import build_fetch_tool
+from mcps.research.tools.fetch import build_fetch_tool, create_page_filter
+from mcps.research.tools.filtering import Bm25RelevanceFilter, LlmRelevanceFilter
 from mcps.research.tools.github import GitHubBlobFetch
 from mcps.research.tools.models import FetchResult, FetchStatus
 from mcps.research.tools.scrape_do import ScrapeDoFetch
@@ -714,3 +715,66 @@ async def test_build_fetch_tool_wires_both_models_and_preserves_borrowed_client(
     assert any(
         request.url.path.endswith("/chat/completions") for request in requests
     )
+
+
+ROUTER = "http://router/v1"
+
+
+@pytest.mark.parametrize(
+    ("config_kwargs", "expected", "warns"),
+    [
+        pytest.param({}, Bm25RelevanceFilter, False, id="unset"),
+        pytest.param(
+            {"rag_embedding_model": "e", "router_api_base": ROUTER},
+            Bm25RelevanceFilter,
+            False,
+            id="no-fetch-model",
+        ),
+        pytest.param(
+            {
+                "fetch_model": "m",
+                "rag_embedding_model": "e",
+                "router_api_base": ROUTER,
+            },
+            LlmRelevanceFilter,
+            False,
+            id="fully-configured",
+        ),
+        pytest.param(
+            {"fetch_model": "m", "router_api_base": ROUTER},
+            Bm25RelevanceFilter,
+            True,
+            id="no-embedding-model",
+        ),
+        pytest.param(
+            {"fetch_model": "m", "rag_embedding_model": "e", "router_api_base": ""},
+            Bm25RelevanceFilter,
+            True,
+            id="empty-router",
+        ),
+        pytest.param(
+            {
+                "fetch_model": "m",
+                "rag_embedding_model": "e",
+                "router_api_base": "ftp://router",
+            },
+            Bm25RelevanceFilter,
+            True,
+            id="bad-router-scheme",
+        ),
+    ],
+)
+async def test_create_page_filter_selects_by_config(
+    caplog,
+    client: httpx.AsyncClient,
+    config_kwargs: dict[str, Any],
+    expected: type,
+    warns: bool,
+):
+    caplog.set_level("WARNING", logger="mcps.research.tools.fetch")
+
+    page_filter = create_page_filter(ServerConfig(**config_kwargs), client)
+
+    assert type(page_filter) is expected
+    warnings = [r for r in caplog.records if "FETCH_MODEL" in r.getMessage()]
+    assert bool(warnings) is warns

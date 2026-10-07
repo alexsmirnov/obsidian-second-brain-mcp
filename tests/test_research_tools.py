@@ -18,7 +18,7 @@ from mcps.research.tools import (
 )
 from mcps.research.tools.arxiv import ArxivFetch
 from mcps.research.tools.default import HttpFetch
-from mcps.research.tools.filtering import RelevanceFilter
+from mcps.research.tools.filtering import Bm25RelevanceFilter
 from mcps.research.tools.github import GitHubBlobFetch, GitHubRepoFetch
 from mcps.research.tools.models import FetchResult, FetchStatus
 
@@ -114,7 +114,7 @@ async def client() -> AsyncIterator[httpx.AsyncClient]:
 
 @pytest.fixture
 def bm25():
-    return RelevanceFilter(fetch_model="", router_url="", router_key="")
+    return Bm25RelevanceFilter()
 
 
 def _pdf_bytes(text: str) -> bytes:

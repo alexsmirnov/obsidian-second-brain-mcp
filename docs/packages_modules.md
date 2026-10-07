@@ -154,7 +154,7 @@ Async web search and content fetching. The fetch tool is a chain of small classe
 | `browser.py` | `BrowserFetch` renders pages on an open crawl4ai crawler; `create_browser_fetch` opens one crawler on `BROWSER_CDP_URL` (yields `None` when unset or unreachable) and closes it on exit, so fetches never reconnect |
 | `scrape_do.py`, `bright_data.py` | `ScrapeDoFetch`, `BrightDataFetch`: commercial unblocking fallbacks |
 | `filtering_content.py` | Pure source-mapped helpers: HTML rendering, native Markdown/plain parsing, source-safe link normalization, scoring windows, selection rendering, and syntax-safe truncation |
-| `filtering.py` | `FilterLimits`, `RelevanceFilter` (BM25L over source windows; hybrid embedding shortlist plus router source-ID selection when `FETCH_MODEL` is set), and `MarkdownToHtml`/`PreTextToHtml` legacy normalizers |
+| `filtering.py` | `FilterLimits`; `RelevanceFilter` (ABC holding the shared pipeline) with `Bm25RelevanceFilter` (BM25L over source windows) and `LlmRelevanceFilter` (embedding shortlist plus router source-ID selection); `Chunker` protocol with `SectionChunker`, injected into every filter; and `MarkdownToHtml`/`PreTextToHtml` legacy normalizers |
 | `filtering_models.py` | `RouterPassageModels`: borrowed-client embeddings via `OpenAIEmbeddings` and a byte-bounded direct chat-selection POST, returning only validated window IDs |
 | `fetch.py` | `create_fetch`: the composition root; `build_fetch_tool`: lifespan-friendly context manager that owns the browser via `create_browser_fetch` and assembles the fetch |
 
@@ -163,9 +163,9 @@ Async web search and content fetching. The fetch tool is a chain of small classe
 generic = UrlSelector([.pdf -> HttpFetch], default = Throttled(browser) or HttpFetch)
 generic = Fallback(generic, provider)                     # when a provider is configured
 routed  = UrlSelector([restricted -> Blocked, arXiv, GitHub blob, GitHub repo], default=generic)
-fetch   = Filtered(routed, FilterChain(RelevanceFilter, Truncate))
+fetch   = Filtered(routed, FilterChain(create_page_filter(config), Truncate))
 ```
-Sources reach `RelevanceFilter` natively: HTML is rendered once, Markdown keeps its source structure, and other textual types stay plain. The arXiv and GitHub routes sit outside the `Fallback`, so they never escalate.
+`create_page_filter` walks an ordered registry in `fetch.py` (`_PAGE_FILTERS`) once at startup and returns the first implementation whose config predicate holds (`LlmRelevanceFilter` when `FETCH_MODEL`, `RAG_EMBEDDING_MODEL` and a valid router URL are set, else `Bm25RelevanceFilter`); a new implementation is one class plus one registry entry. Sources reach the filter natively: HTML is rendered once, Markdown keeps its source structure, and other textual types stay plain. The arXiv and GitHub routes sit outside the `Fallback`, so they never escalate.
 
 #### Adding a provider
 - **Fetch provider**: write a class with `async __call__(url, query=None, /) -> FetchResult` that returns `failure(url, FetchStatus.UNAVAILABLE)` when the service itself fails and declares its `mime`. Add it as a route in `create_fetch` (site-specific) or build it in `research.tools.fetch._create_provider_fallback` (unblocking fallback).
