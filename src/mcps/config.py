@@ -54,8 +54,8 @@ class ServerConfig:
     research_fast_model: str = ""
     # used for reflection and final result generation
     research_infer_model: str = ""
-    # CDP endpoint used to render generic pages; empty or unreachable falls back
-    # to a local `obscura serve`, else web_research is disabled.
+    # CDP endpoint used to render generic pages; empty or unreachable disables
+    # web_research.
     browser_cdp_url: str = ""
     # Commercial unblocking provider for blocked (401/403/429), empty, timeout,
     # or browser-unavailable pages: "scrape_do", "bright_data", or "" (disabled).

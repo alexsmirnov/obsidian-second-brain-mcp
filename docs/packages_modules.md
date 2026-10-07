@@ -151,7 +151,7 @@ Async web search and content fetching. The fetch tool is a chain of small classe
 | `google.py`, `duckduckgo.py` | `Search` factories |
 | `default.py` | `HttpFetch`: the single owner of page GETs (shared or owned client, browser-like Chrome headers) and of content-type extraction; HTML stays `text/html`, Markdown stays `text/markdown`, every other supported textual type and raw PDF text is `text/plain` |
 | `arxiv.py`, `github.py` | `ArxivFetch` (HTML, then PDF, then abstract), `GitHubBlobFetch`, `GitHubRepoFetch` (README): thin wrappers over an injected `Fetch`; results are retargeted at the requested GitHub URL |
-| `browser.py` | `BrowserFetch` renders pages on an open crawl4ai crawler; `create_browser_fetch` owns the whole browser lifecycle (connects to `BROWSER_CDP_URL` or spawns a local Obscura, starts one crawler, closes both on exit) so fetches never reconnect |
+| `browser.py` | `BrowserFetch` renders pages on an open crawl4ai crawler; `create_browser_fetch` opens one crawler on `BROWSER_CDP_URL` (yields `None` when unset or unreachable) and closes it on exit, so fetches never reconnect |
 | `scrape_do.py`, `bright_data.py` | `ScrapeDoFetch`, `BrightDataFetch`: commercial unblocking fallbacks |
 | `filtering_content.py` | Pure source-mapped helpers: HTML rendering, native Markdown/plain parsing, source-safe link normalization, scoring windows, selection rendering, and syntax-safe truncation |
 | `filtering.py` | `FilterLimits`, `RelevanceFilter` (BM25L over source windows; hybrid embedding shortlist plus router source-ID selection when `FETCH_MODEL` is set), and `MarkdownToHtml`/`PreTextToHtml` legacy normalizers |

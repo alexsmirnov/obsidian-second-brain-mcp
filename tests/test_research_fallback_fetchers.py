@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import html
 import json
-import shutil
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from types import SimpleNamespace
@@ -116,8 +115,7 @@ class FakeAsyncWebCrawler:
     Each construction consumes the next item of :attr:`script`: ``None`` uses a
     fresh successful :class:`FakeCrawler`; a :class:`FakeCrawler` is used as-is;
     a :class:`_ConstructFailure` raises while constructing; any exception is
-    raised from ``__aenter__``. This lets a test script the probe (first
-    construction) separately from the persistent crawler.
+    raised from ``__aenter__``.
     """
 
     script: ClassVar[list[Any]] = []
@@ -322,7 +320,7 @@ async def test_github_plain_code_is_not_markdown(
 
 async def test_browser_fetch_repeated_requests_reuse_open_connection(monkeypatch):
     crawler = FakeCrawler(result=crawl_result(cleaned_html="<h1>X</h1>"))
-    _script_crawlers(monkeypatch, None, crawler)
+    _script_crawlers(monkeypatch, crawler)
 
     async with create_browser_fetch(_browser_config()) as browser:
         assert browser is not None
@@ -358,7 +356,7 @@ async def test_browser_fetch_overlapping_requests_share_connection():
 
 async def test_browser_fetch_failure_keeps_connection_for_next_request(monkeypatch):
     crawler = FakeCrawler(error=ConnectionError("cdp hiccup"))
-    _script_crawlers(monkeypatch, None, crawler)
+    _script_crawlers(monkeypatch, crawler)
 
     async with create_browser_fetch(_browser_config()) as browser:
         assert browser is not None
@@ -381,14 +379,13 @@ async def test_browser_fetch_failure_keeps_connection_for_next_request(monkeypat
     ],
 )
 async def test_browser_fetch_startup_failure_yields_none(monkeypatch, item: Any):
-    _script_crawlers(monkeypatch, None, item)
+    _script_crawlers(monkeypatch, item)
 
     async with create_browser_fetch(_browser_config()) as browser:
         assert browser is None
 
 
 async def test_browser_fetch_without_endpoint_opens_no_connection(monkeypatch):
-    monkeypatch.setattr(shutil, "which", lambda _name: None)
     _script_crawlers(monkeypatch)
 
     async with create_browser_fetch(ServerConfig(browser_cdp_url="")) as browser:
@@ -399,7 +396,7 @@ async def test_browser_fetch_without_endpoint_opens_no_connection(monkeypatch):
 
 async def test_browser_fetch_exceptional_exit_closes_connection(monkeypatch):
     crawler = FakeCrawler()
-    _script_crawlers(monkeypatch, None, crawler)
+    _script_crawlers(monkeypatch, crawler)
 
     with pytest.raises(ValueError, match="body boom"):
         async with create_browser_fetch(_browser_config()):
@@ -410,7 +407,7 @@ async def test_browser_fetch_exceptional_exit_closes_connection(monkeypatch):
 
 async def test_browser_fetch_cancellation_closes_connection(monkeypatch):
     crawler = FakeCrawler()
-    _script_crawlers(monkeypatch, None, crawler)
+    _script_crawlers(monkeypatch, crawler)
     entered = asyncio.Event()
 
     async def consume() -> None:
@@ -550,7 +547,6 @@ async def test_bright_data_maps_outcomes(
 async def test_fetch_tool_escalates_blocked_page_to_configured_provider(
     monkeypatch, httpx_mock: HTTPXMock, client: httpx.AsyncClient
 ):
-    monkeypatch.setattr(shutil, "which", lambda _name: None)
     httpx_mock.add_response(url=TARGET, status_code=403)
     httpx_mock.add_response(
         url=httpx.URL(
@@ -579,7 +575,6 @@ async def test_fetch_tool_escalates_blocked_page_to_configured_provider(
 async def test_fetch_tool_escalates_blocked_page_to_bright_data(
     monkeypatch, httpx_mock: HTTPXMock, client: httpx.AsyncClient
 ):
-    monkeypatch.setattr(shutil, "which", lambda _name: None)
     httpx_mock.add_response(url=TARGET, status_code=403)
     httpx_mock.add_response(
         url="https://api.brightdata.com/request",
@@ -627,7 +622,6 @@ async def test_unusable_provider_config_keeps_target_failure(
     client: httpx.AsyncClient,
     config_kwargs: dict[str, Any],
 ):
-    monkeypatch.setattr(shutil, "which", lambda _name: None)
     httpx_mock.add_response(url=TARGET, status_code=403)
     config = ServerConfig(browser_cdp_url="", **config_kwargs)
 
@@ -641,7 +635,6 @@ async def test_unusable_provider_config_keeps_target_failure(
 async def test_build_fetch_tool_wires_both_models_and_preserves_borrowed_client(
     monkeypatch,
 ):
-    monkeypatch.setattr(shutil, "which", lambda _name: None)
     crawler = FakeCrawler(
         result=crawl_result(
             cleaned_html=(
@@ -653,7 +646,7 @@ async def test_build_fetch_tool_wires_both_models_and_preserves_borrowed_client(
             )
         )
     )
-    _script_crawlers(monkeypatch, None, crawler)
+    _script_crawlers(monkeypatch, crawler)
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:

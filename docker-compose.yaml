@@ -14,11 +14,29 @@ services:
       - "127.0.0.1:8000:8000"
     restart: unless-stopped
 
+  # The Obscura image is distroless (no shell/curl/wget), so readiness of its
+  # CDP endpoint is checked from this sidecar sharing the browser's loopback.
+  browser-health:
+    image: busybox:1.37
+    command: ["sleep", "infinity"]
+    network_mode: "service:browser"
+    depends_on:
+      - browser
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:9222/json/version"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 30s
+      start_interval: 1s
+    restart: unless-stopped
+
   mcps:
     build: .
     network_mode: "service:browser"
     depends_on:
-      - browser
+      browser-health:
+        condition: service_healthy
     env_file:
       - path: .env
         required: false

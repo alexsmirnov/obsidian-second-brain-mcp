@@ -44,8 +44,8 @@ async def main():
         async with build_research_config(server_config, http_client) as config:
             if config is None:
                 raise RuntimeError(
-                    "No browser available: set BROWSER_CDP_URL or install Obscura "
-                    "on PATH before running the evaluation."
+                    "No browser available: set BROWSER_CDP_URL to a reachable CDP "
+                    "browser before running the evaluation."
                 )
             judge = create_judge_model(server_config, http_client=http_client)
 

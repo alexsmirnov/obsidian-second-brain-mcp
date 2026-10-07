@@ -101,7 +101,7 @@ Contract tests for the browser (fake crawl4ai crawler), Scrape.do and Bright Dat
 Contract tests for `RelevanceFilter`: native plain/Markdown/HTML source preservation, source-safe link normalization, BM25L selection windows, input/window limits, unsupported media, `FILTER_FAILED`, and the retained `MarkdownToHtml`/`PreTextToHtml` normalizers. Model mode is exercised through a real `OpenAIEmbeddings` adapter and a scripted `httpx.MockTransport` router boundary: hybrid semantic shortlisting, strict source-ID validation, invalid embeddings, HTTP failure and retry recovery, budget/deadline failures, cancellation, and shared concurrency.
 
 ### [tests/test_browser_runtime.py](../tests/test_browser_runtime.py)
-Tests for `create_browser_fetch` (configured CDP, local Obscura spawn), the lifespan enabling/disabling only `web_research`, and the research lifespan owning one browser crawler (reused across fetches, closed before the local Obscura process is terminated).
+Tests for `create_browser_fetch` (configured, unset, and unreachable CDP), the lifespan enabling/disabling only `web_research`, and the research lifespan owning one browser crawler (reused across fetches, closed on exit).
 
 ### [tests/test_web_fetch_evaluation.py](../tests/test_web_fetch_evaluation.py)
 Contract tests for `load_cases` and `summarize` of the fetch evaluation script, including loading the shipped case files.
@@ -155,7 +155,7 @@ DRACO benchmark (`perplexity-ai/draco`, Technology + Academic domains) for the d
 ### [tests/web_fetch_evaluation.py](../tests/web_fetch_evaluation.py)
 Replays JSONL fetch cases through the production `fetch(url, query)` and prints failure counts (restricted domains are not failures) and mean response size versus the saved baseline. Cases: `tests/evaluation/data/fetch-cases-smoke.jsonl` (8, default) and `fetch-cases-baseline.jsonl` (279).
 
-**Run**: `uv run tests/web_fetch_evaluation.py --output tmp/fetch-smoke.jsonl [--cases tests/evaluation/data/fetch-cases-baseline.jsonl]`. Requires a CDP browser or Obscura on `PATH`.
+**Run**: `uv run tests/web_fetch_evaluation.py --output tmp/fetch-smoke.jsonl [--cases tests/evaluation/data/fetch-cases-baseline.jsonl]`. Requires a reachable CDP browser (`BROWSER_CDP_URL`).
 
 ### [tests/vault_evaluation.py](../tests/vault_evaluation.py)
 Comprehensive evaluation test for vault search functionality measuring precision, recall, and F-score.
