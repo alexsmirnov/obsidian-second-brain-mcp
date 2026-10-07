@@ -101,11 +101,11 @@ def _content_result(url: str, mime: str, content: str) -> FetchResult:
 
 def _to_fetch_result(url: str, crawl: CrawlResult) -> FetchResult:
     """Map a crawl4ai ``CrawlResult`` to typed source content or a failure."""
-    if crawl.status_code is not None and crawl.status_code >= 400:
-        return failure(url, FetchStatus.HTTP_ERROR, crawl.status_code)
     if not crawl.success:
         logger.warning("Browser fetch failed for %s: %s", url, crawl.error_message)
         return failure(url, FetchStatus.UNAVAILABLE)
+    if crawl.status_code is not None and crawl.status_code >= 400:
+        return failure(url, FetchStatus.HTTP_ERROR, crawl.status_code)
 
     headers = {
         key.lower(): value for key, value in (crawl.response_headers or {}).items()
