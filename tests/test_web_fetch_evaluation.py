@@ -4,7 +4,16 @@ import json
 from pathlib import Path
 
 import pytest
-from web_fetch_evaluation import CASES_DIR, FetchCase, load_cases, summarize
+from web_fetch_evaluation import (
+    CASES_DIR,
+    FetchCase,
+    load_cases,
+    save_baseline,
+    summarize,
+)
+
+from mcps.research.tools.common import failure
+from mcps.research.tools.models import FetchResult, FetchStatus
 
 BASELINE_OK = {
     "observations": [
@@ -86,3 +95,43 @@ def test_shipped_case_files_load():
         cases = load_cases(CASES_DIR / name)
         assert cases
         assert all(isinstance(c, FetchCase) and c.url for c in cases)
+
+
+@pytest.mark.parametrize(
+    ("mime", "name"),
+    [
+        ("text/html", "baseline-3.html"),
+        ("text/markdown", "baseline-3.md"),
+        ("text/plain", "baseline-3.txt"),
+    ],
+)
+def test_save_baseline_writes_raw_content_by_mime(
+    tmp_path: Path, mime: str, name: str
+):
+    result = FetchResult(
+        url="https://a.example", status=FetchStatus.OK, mime=mime, content="<p>x</p>"
+    )
+
+    path = save_baseline(tmp_path, 3, result)
+
+    assert path == tmp_path / name
+    assert path.read_text(encoding="utf-8") == "<p>x</p>"
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        failure("https://a.example", FetchStatus.HTTP_ERROR, 404),
+        FetchResult(
+            url="https://a.example",
+            status=FetchStatus.OK,
+            mime="text/html",
+            content="  ",
+        ),
+    ],
+)
+def test_save_baseline_skips_errors_and_blank_content(
+    tmp_path: Path, result: FetchResult
+):
+    assert save_baseline(tmp_path, 1, result) is None
+    assert not any(tmp_path.iterdir())
