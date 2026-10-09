@@ -84,11 +84,11 @@ def _error_label(result: FetchResult) -> str | None:
     return str(result.status)
 
 
-def save_baseline(folder: Path, number: int, result: FetchResult) -> Path | None:
+def save_baseline(folder: Path, case_id: str, result: FetchResult) -> Path | None:
     """Write a successful raw result to ``folder``; errors write nothing."""
     if not result.ok or not result.content.strip():
         return None
-    path = folder / f"baseline-{number}.{_EXTENSIONS.get(result.mime, 'txt')}"
+    path = folder / f"{case_id}.{_EXTENSIONS.get(result.mime, 'txt')}"
     path.write_text(result.content, encoding="utf-8")
     return path
 
@@ -186,7 +186,7 @@ async def _run_case(
     started = time.perf_counter()
     result = await fetch(case.url, case.query)
     if save:
-        save_baseline(save, number, result)
+        save_baseline(save, case.case_id, result)
     content = result.content
     elapsed_ms = (time.perf_counter() - started) * 1000
     logger.info(
