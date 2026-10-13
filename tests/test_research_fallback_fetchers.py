@@ -17,14 +17,18 @@ from pytest_httpx import HTTPXMock
 
 from mcps.config import ServerConfig
 from mcps.research.tools import browser as browser_module
+from mcps.research.tools.bm25_filter import Bm25Filter
 from mcps.research.tools.bright_data import BrightDataFetch
 from mcps.research.tools.browser import BrowserFetch, create_browser_fetch
 from mcps.research.tools.default import HttpFetch
+from mcps.research.tools.default_extractor import DefaultExtractor
 from mcps.research.tools.fetch import build_fetch_tool, create_page_filter
-from mcps.research.tools.filtering import Bm25RelevanceFilter, LlmRelevanceFilter
+from mcps.research.tools.filtering import RelevanceFilter
 from mcps.research.tools.github import GitHubBlobFetch
+from mcps.research.tools.llm_filter import LlmFilter
 from mcps.research.tools.models import FetchResult, FetchStatus
 from mcps.research.tools.scrape_do import ScrapeDoFetch
+from mcps.research.tools.semantic_chunker import SemanticChunker
 
 TARGET = "https://blocked.example/article"
 
@@ -723,10 +727,10 @@ ROUTER = "http://router/v1"
 @pytest.mark.parametrize(
     ("config_kwargs", "expected", "warns"),
     [
-        pytest.param({}, Bm25RelevanceFilter, False, id="unset"),
+        pytest.param({}, Bm25Filter, False, id="unset"),
         pytest.param(
             {"rag_embedding_model": "e", "router_api_base": ROUTER},
-            Bm25RelevanceFilter,
+            Bm25Filter,
             False,
             id="no-fetch-model",
         ),
@@ -736,19 +740,19 @@ ROUTER = "http://router/v1"
                 "rag_embedding_model": "e",
                 "router_api_base": ROUTER,
             },
-            LlmRelevanceFilter,
+            LlmFilter,
             False,
             id="fully-configured",
         ),
         pytest.param(
             {"fetch_model": "m", "router_api_base": ROUTER},
-            Bm25RelevanceFilter,
+            Bm25Filter,
             True,
             id="no-embedding-model",
         ),
         pytest.param(
             {"fetch_model": "m", "rag_embedding_model": "e", "router_api_base": ""},
-            Bm25RelevanceFilter,
+            Bm25Filter,
             True,
             id="empty-router",
         ),
@@ -758,7 +762,7 @@ ROUTER = "http://router/v1"
                 "rag_embedding_model": "e",
                 "router_api_base": "ftp://router",
             },
-            Bm25RelevanceFilter,
+            Bm25Filter,
             True,
             id="bad-router-scheme",
         ),
@@ -775,6 +779,9 @@ async def test_create_page_filter_selects_by_config(
 
     page_filter = create_page_filter(ServerConfig(**config_kwargs), client)
 
-    assert type(page_filter) is expected
+    assert isinstance(page_filter, RelevanceFilter)
+    assert isinstance(page_filter.extractor, DefaultExtractor)
+    assert isinstance(page_filter.chunker, SemanticChunker)
+    assert type(page_filter.passage_filter) is expected
     warnings = [r for r in caplog.records if "FETCH_MODEL" in r.getMessage()]
     assert bool(warnings) is warns

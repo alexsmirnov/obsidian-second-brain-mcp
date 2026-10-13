@@ -37,7 +37,7 @@ Arrow columnar data format used by LanceDB for schemas and table operations.
 ### markdown
 Python Markdown parser.
 **Version**: `>=3.10.0`
-**Used by**: document processing pipeline and the retained `MarkdownToHtml` legacy normalizer.
+**Used by**: (currently unused by application code; the legacy `MarkdownToHtml` normalizer was removed in the filter pipeline refactor)
 **Docs**: [python-markdown.github.io](https://python-markdown.github.io/)
 
 ### markdown-it-py
@@ -47,9 +47,9 @@ CommonMark parser with block source maps and reference-definition tracking, used
 **Docs**: [markdown-it-py.readthedocs.io](https://markdown-it-py.readthedocs.io/)
 
 ### rank_bm25
-BM25 keyword relevance scoring. The filter uses `BM25L` over source-mapped scoring windows, which avoids zero/negative-IDF loss on small corpora.
+BM25 keyword relevance scoring. The `Bm25Filter` uses `BM25L` over source-mapped scoring windows, which avoids zero/negative-IDF loss on small corpora.
 **Version**: unpinned
-**Used by**: [src/mcps/research/tools/filtering.py](../src/mcps/research/tools/filtering.py)
+**Used by**: [src/mcps/research/tools/bm25_filter.py](../src/mcps/research/tools/bm25_filter.py)
 **Docs**: [github.com/dorianbrown/rank_bm25](https://github.com/dorianbrown/rank_bm25)
 
 ### python-dotenv

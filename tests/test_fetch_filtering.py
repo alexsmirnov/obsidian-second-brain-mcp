@@ -3,24 +3,28 @@
 from __future__ import annotations
 
 import asyncio
-import html
 import json
 from typing import Any
 
 import httpx
 import pytest
 
+from mcps.research.tools.bm25_filter import Bm25Filter
+from mcps.research.tools.default_extractor import DefaultExtractor
 from mcps.research.tools.filtering import (
-    Bm25RelevanceFilter,
+    Chunker,
     FilterLimits,
-    LlmRelevanceFilter,
-    MarkdownToHtml,
-    PreTextToHtml,
-    SectionChunker,
+    RelevanceFilter,
 )
-from mcps.research.tools.filtering_content import ScoringWindow, prepare_document
+from mcps.research.tools.filtering_content import (
+    ContentDocument,
+    ScoringWindow,
+    prepare_document,
+)
 from mcps.research.tools.filtering_models import RouterPassageModels
+from mcps.research.tools.llm_filter import LlmFilter
 from mcps.research.tools.models import FetchResult, FetchStatus
+from mcps.research.tools.semantic_chunker import SemanticChunker
 
 TOPIC_HTML = (
     "<html><body><h2>Quantum optimization</h2><p>"
@@ -40,15 +44,16 @@ def page(
     )
 
 
-def bm25() -> Bm25RelevanceFilter:
-    return Bm25RelevanceFilter()
+def bm25(
+    limits: FilterLimits | None = None, *, chunker: Chunker | None = None
+) -> RelevanceFilter:
+    return RelevanceFilter(
+        DefaultExtractor(limits),
+        chunker or SemanticChunker(limits),
+        Bm25Filter(limits),
+        limits=limits,
+    )
 
-MARKDOWN_PAGE = (
-    "## Quantum\n\n"
-    + "quantum optimization improves routing " * 30
-    + "[paper](/paper)\n\n## Recipes\n\n"
-    + "bread flour baking kitchen " * 30
-)
 
 PLAIN_LITERAL = "  # Not a heading\n\n    value = 2 < 3\n    keep   spaces\n\n"
 
@@ -127,7 +132,7 @@ def large_markdown() -> str:
 
 
 async def test_blank_query_returns_unfiltered_markdown():
-    page_filter = Bm25RelevanceFilter()
+    page_filter = bm25()
 
     for query in (None, "", "  "):
         result = await page_filter(page(TOPIC_HTML), query)
@@ -158,39 +163,6 @@ async def test_no_match_is_ok_with_empty_content():
     result = await bm25()(page(TOPIC_HTML), "zzzz unrelated")
 
     assert (result.status, result.content) == (FetchStatus.OK, "")
-
-
-async def test_markdown_to_html_makes_markdown_filterable():
-    source = page(MARKDOWN_PAGE, mime="text/markdown")
-
-    converted = await MarkdownToHtml()(source)
-    result = await bm25()(converted, "quantum optimization")
-
-    assert converted.mime == "text/html"
-    assert "<h2>Quantum</h2>" in converted.content
-    assert "https://source.example/paper" in result.content
-    assert "bread flour" not in result.content
-
-
-async def test_pre_text_page_is_converted_to_filterable_html():
-    pre_page = f"<html><body><pre>{html.escape(MARKDOWN_PAGE)}</pre></body></html>"
-
-    converted = await PreTextToHtml()(page(pre_page))
-    result = await bm25()(converted, "quantum optimization")
-
-    assert "https://source.example/paper" in result.content
-    assert "bread flour" not in result.content
-
-
-@pytest.mark.parametrize(
-    "content",
-    [TOPIC_HTML, "<html><body><h2>x</h2><pre>code</pre></body></html>"],
-    ids=["html", "pre-with-sibling"],
-)
-async def test_pre_text_leaves_regular_html_unchanged(content: str):
-    result = await PreTextToHtml()(page(content))
-
-    assert result.content == content
 
 
 # ---------------------------------------------------------------------------
@@ -314,10 +286,8 @@ async def test_filter_large_markdown_keeps_start_middle_end_evidence():
     assert "[Content truncated]" not in content
 
 
-def budgeted(max_output_chars: int) -> Bm25RelevanceFilter:
-    return Bm25RelevanceFilter(
-        limits=FilterLimits(max_output_chars=max_output_chars)
-    )
+def budgeted(max_output_chars: int) -> RelevanceFilter:
+    return bm25(FilterLimits(max_output_chars=max_output_chars))
 
 
 async def test_filter_output_budget_keeps_highest_scoring_blocks_in_source_order():
@@ -358,8 +328,8 @@ async def test_filter_output_budget_keeps_oversized_top_block_alone():
     assert result.content == top + "\n\n[Content truncated]"
 
 
-def unit_filter(unit_chars: int) -> Bm25RelevanceFilter:
-    return Bm25RelevanceFilter(limits=FilterLimits(unit_chars=unit_chars))
+def unit_filter(unit_chars: int) -> RelevanceFilter:
+    return bm25(FilterLimits(unit_chars=unit_chars))
 
 
 BREAD_SENTENCE = "Bread flour needs warm water. "
@@ -401,9 +371,7 @@ async def test_filter_paragraph_split_never_cuts_inside_link_syntax():
         f"[{name} quantum paper](https://source.example/papers/{name})"
         for name in names
     )
-    page_filter = Bm25RelevanceFilter(
-        limits=FilterLimits(unit_chars=100, max_output_chars=100)
-    )
+    page_filter = bm25(FilterLimits(unit_chars=100, max_output_chars=100))
 
     result = await page_filter(page(source, mime="text/markdown"), "zeta")
 
@@ -793,7 +761,7 @@ async def router_harness():
         yield harness
 
 
-def make_ai_filter(harness: RouterHarness, **overrides: Any) -> LlmRelevanceFilter:
+def make_ai_filter(harness: RouterHarness, **overrides: Any) -> RelevanceFilter:
     limits = overrides.pop("limits", None) or small_limits()
     models = RouterPassageModels(
         overrides.pop("http_client", harness.client),
@@ -805,7 +773,12 @@ def make_ai_filter(harness: RouterHarness, **overrides: Any) -> LlmRelevanceFilt
         concurrency=limits.model_concurrency,
         max_response_bytes=limits.max_response_bytes,
     )
-    return LlmRelevanceFilter(models, limits=limits)
+    return RelevanceFilter(
+        DefaultExtractor(limits),
+        SemanticChunker(limits),
+        LlmFilter(models, limits=limits),
+        limits=limits,
+    )
 
 
 async def test_filter_hybrid_keeps_semantic_only_source_and_excludes_distractor(
@@ -1498,7 +1471,7 @@ async def test_bm25_filter_uses_injected_chunker():
     chunker = AlphaWindowChunker()
     source = page("alpha paragraph\n\nquantum paragraph", mime="text/plain")
 
-    result = await Bm25RelevanceFilter(chunker=chunker)(source, "quantum")
+    result = await bm25(chunker=chunker)(source, "quantum")
 
     assert result.status is FetchStatus.OK
     assert result.content == "alpha paragraph"
@@ -1509,7 +1482,7 @@ async def test_filter_chunker_failure_returns_filter_failed():
     def failing_chunker(document):
         raise ValueError("boom")
 
-    result = await Bm25RelevanceFilter(chunker=failing_chunker)(
+    result = await bm25(chunker=failing_chunker)(
         page("quantum paragraph", mime="text/plain"), "quantum"
     )
 
@@ -1526,7 +1499,7 @@ def test_section_chunker_windows_reference_unit_blocks():
         page(text, mime="text/plain"), max_input_chars=10_000, window_chars=120
     )
 
-    chunked, windows = SectionChunker(limits)(document)
+    chunked, windows = SemanticChunker(limits)(document)
 
     assert len(chunked.blocks) > 1
     assert len(windows) > 1
@@ -1534,7 +1507,7 @@ def test_section_chunker_windows_reference_unit_blocks():
 
 
 async def test_filter_overlong_query_fails_before_preparation():
-    result = await Bm25RelevanceFilter(limits=FilterLimits(max_query_chars=5))(
+    result = await bm25(FilterLimits(max_query_chars=5))(
         page("x", mime="image/png"), "quantum"
     )
 
@@ -1549,3 +1522,129 @@ async def test_llm_filter_blank_query_makes_no_router_calls(
     assert result.status is FetchStatus.OK
     assert "Quantum optimization" in result.content
     assert router_harness.requests == []
+
+
+# ---------------------------------------------------------------------------
+# Pipeline composition: injected extractor and passage filter
+# ---------------------------------------------------------------------------
+
+
+class StubExtractor:
+    """Extractor returning a prepared document and recording calls."""
+
+    def __init__(self, document: ContentDocument) -> None:
+        self.document = document
+        self.calls = 0
+
+    def __call__(self, result: FetchResult) -> ContentDocument:
+        self.calls += 1
+        return self.document
+
+
+class FailingExtractor:
+    """Extractor raising a fixed error to exercise pipeline error mapping."""
+
+    def __init__(self, error: Exception) -> None:
+        self.error = error
+
+    def __call__(self, result: FetchResult) -> ContentDocument:
+        raise self.error
+
+
+class StubPassageFilter:
+    """Passage filter returning a fixed selection and recording calls."""
+
+    def __init__(self, selected: set[int], *, dropped: bool = False) -> None:
+        self.selected = selected
+        self.dropped = dropped
+        self.calls = 0
+
+    async def __call__(
+        self,
+        document: ContentDocument,
+        windows: tuple[ScoringWindow, ...],
+        query: str,
+    ) -> tuple[set[int], bool]:
+        self.calls += 1
+        return self.selected, self.dropped
+
+
+async def test_relevance_filter_uses_injected_extractor_and_passage_filter():
+    document = prepare_document(
+        page("alpha paragraph\n\nbeta paragraph", mime="text/plain"),
+        max_input_chars=10_000,
+        window_chars=2_000,
+    )
+    extractor = StubExtractor(document)
+    passage_filter = StubPassageFilter({0}, dropped=True)
+
+    result = await RelevanceFilter(
+        extractor, AlphaWindowChunker(), passage_filter
+    )(page("ignored source"), "query")
+
+    assert result.status is FetchStatus.OK
+    assert result.mime == "text/plain"
+    assert result.content == "alpha paragraph\n\n[Content truncated]"
+    assert extractor.calls == 1
+    assert passage_filter.calls == 1
+
+
+async def test_relevance_filter_extractor_errors_map_to_status():
+    unsupported = RelevanceFilter(
+        FailingExtractor(LookupError("image/png")),
+        SemanticChunker(),
+        StubPassageFilter(set()),
+    )
+    failed = RelevanceFilter(
+        FailingExtractor(RuntimeError("boom")),
+        SemanticChunker(),
+        StubPassageFilter(set()),
+    )
+
+    unsupported_result = await unsupported(page("x"), "query")
+    failed_result = await failed(page("x"), "query")
+
+    assert unsupported_result.status is FetchStatus.UNSUPPORTED
+    assert failed_result.status is FetchStatus.FILTER_FAILED
+
+
+async def test_relevance_filter_skips_extractor_for_overlong_query():
+    extractor = StubExtractor(
+        prepare_document(
+            page("alpha", mime="text/plain"),
+            max_input_chars=10_000,
+            window_chars=2_000,
+        )
+    )
+    page_filter = RelevanceFilter(
+        extractor,
+        SemanticChunker(),
+        StubPassageFilter(set()),
+        limits=FilterLimits(max_query_chars=5),
+    )
+
+    result = await page_filter(page("x"), "long query")
+
+    assert result.status is FetchStatus.FILTER_FAILED
+    assert extractor.calls == 0
+
+
+async def test_relevance_filter_skips_extractor_for_error_result():
+    extractor = StubExtractor(
+        prepare_document(
+            page("alpha", mime="text/plain"),
+            max_input_chars=10_000,
+            window_chars=2_000,
+        )
+    )
+    page_filter = RelevanceFilter(
+        extractor, SemanticChunker(), StubPassageFilter(set())
+    )
+    error = FetchResult(
+        url=BASE, status=FetchStatus.HTTP_ERROR, mime="", http_status=403
+    )
+
+    result = await page_filter(error, "query")
+
+    assert result is error
+    assert extractor.calls == 0

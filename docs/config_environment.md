@@ -245,7 +245,7 @@ Chat model used for hybrid source-window selection through the router. Empty sel
 **Type**: str
 **Default**: `""`
 **Environment**: `FETCH_MODEL`
-**Used by**: [src/mcps/research/tools/fetch.py](../src/mcps/research/tools/fetch.py), [src/mcps/research/tools/filtering.py](../src/mcps/research/tools/filtering.py), [src/mcps/research/tools/filtering_models.py](../src/mcps/research/tools/filtering_models.py)
+**Used by**: [src/mcps/research/tools/fetch.py](../src/mcps/research/tools/fetch.py), [src/mcps/research/tools/llm_filter.py](../src/mcps/research/tools/llm_filter.py), [src/mcps/research/tools/filtering_models.py](../src/mcps/research/tools/filtering_models.py)
 
 #### `fetch_restricted_domains` #config
 Comma-separated hostnames; the hostname itself and its subdomains are never fetched (status `RESTRICTED`).

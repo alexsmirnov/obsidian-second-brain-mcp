@@ -11,6 +11,7 @@ import httpx
 
 from mcps.config import ServerConfig
 from mcps.research.tools.arxiv import ArxivFetch, is_arxiv_url
+from mcps.research.tools.bm25_filter import Bm25Filter
 from mcps.research.tools.bright_data import BrightDataFetch
 from mcps.research.tools.browser import create_browser_fetch
 from mcps.research.tools.combinators import (
@@ -23,10 +24,11 @@ from mcps.research.tools.combinators import (
     UrlSelector,
 )
 from mcps.research.tools.default import HttpFetch
+from mcps.research.tools.default_extractor import DefaultExtractor
 from mcps.research.tools.filtering import (
-    Bm25RelevanceFilter,
     FilterLimits,
-    LlmRelevanceFilter,
+    PassageFilter,
+    RelevanceFilter,
 )
 from mcps.research.tools.filtering_models import (
     RouterPassageModels,
@@ -38,8 +40,10 @@ from mcps.research.tools.github import (
     is_github_blob_url,
     is_github_repo_url,
 )
+from mcps.research.tools.llm_filter import LlmFilter
 from mcps.research.tools.models import Fetch, Filter
 from mcps.research.tools.scrape_do import ScrapeDoFetch
+from mcps.research.tools.semantic_chunker import SemanticChunker
 
 __all__ = ["build_fetch_tool", "create_fetch", "create_page_filter"]
 
@@ -134,7 +138,9 @@ def _create_provider_fallback(
     return None
 
 
-PageFilterBuilder = Callable[[ServerConfig, httpx.AsyncClient], Filter]
+PassageFilterBuilder = Callable[
+    [ServerConfig, httpx.AsyncClient, FilterLimits], PassageFilter
+]
 
 
 def _llm_configured(config: ServerConfig) -> bool:
@@ -151,8 +157,9 @@ def _llm_configured(config: ServerConfig) -> bool:
     return False
 
 
-def _llm_filter(config: ServerConfig, http_client: httpx.AsyncClient) -> Filter:
-    limits = FilterLimits()
+def _llm_filter(
+    config: ServerConfig, http_client: httpx.AsyncClient, limits: FilterLimits
+) -> PassageFilter:
     models = RouterPassageModels(
         http_client,
         router_url=config.router_api_base,
@@ -163,16 +170,20 @@ def _llm_filter(config: ServerConfig, http_client: httpx.AsyncClient) -> Filter:
         concurrency=limits.model_concurrency,
         max_response_bytes=limits.max_response_bytes,
     )
-    return LlmRelevanceFilter(models, limits=limits)
+    return LlmFilter(models, limits=limits)
 
 
-def _bm25_filter(config: ServerConfig, http_client: httpx.AsyncClient) -> Filter:
-    return Bm25RelevanceFilter()
+def _bm25_filter(
+    config: ServerConfig, http_client: httpx.AsyncClient, limits: FilterLimits
+) -> PassageFilter:
+    return Bm25Filter(limits=limits)
 
 
-# Ordered registry: the first entry whose predicate holds builds the filter.
-# To add an implementation, append an entry before the BM25 catch-all.
-_PAGE_FILTERS: tuple[tuple[Callable[[ServerConfig], bool], PageFilterBuilder], ...] = (
+# Ordered registry: the first entry whose predicate holds builds the passage
+# filter. To add an implementation, append an entry before the BM25 catch-all.
+_PAGE_FILTERS: tuple[
+    tuple[Callable[[ServerConfig], bool], PassageFilterBuilder], ...
+] = (
     (_llm_configured, _llm_filter),
     (lambda _: True, _bm25_filter),
 )
@@ -180,11 +191,17 @@ _PAGE_FILTERS: tuple[tuple[Callable[[ServerConfig], bool], PageFilterBuilder], .
 
 def create_page_filter(
     config: ServerConfig, http_client: httpx.AsyncClient
-) -> Filter:
-    """Build the relevance filter selected by ``config``, once at startup."""
+) -> RelevanceFilter:
+    """Build the extractor, chunker, and passage filter for ``config``."""
+    limits = FilterLimits()
     for is_configured, build in _PAGE_FILTERS:
         if is_configured(config):
-            return build(config, http_client)
+            return RelevanceFilter(
+                DefaultExtractor(limits),
+                SemanticChunker(limits),
+                build(config, http_client, limits),
+                limits=limits,
+            )
     raise AssertionError("page filter registry lacks a catch-all entry")
 
 

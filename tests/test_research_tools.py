@@ -17,10 +17,13 @@ from mcps.research.tools import (
     create_google_search,
 )
 from mcps.research.tools.arxiv import ArxivFetch
+from mcps.research.tools.bm25_filter import Bm25Filter
 from mcps.research.tools.default import HttpFetch
-from mcps.research.tools.filtering import Bm25RelevanceFilter
+from mcps.research.tools.default_extractor import DefaultExtractor
+from mcps.research.tools.filtering import RelevanceFilter
 from mcps.research.tools.github import GitHubBlobFetch, GitHubRepoFetch
 from mcps.research.tools.models import FetchResult, FetchStatus
+from mcps.research.tools.semantic_chunker import SemanticChunker
 
 _ERROR_SCRIPTS = {
     "ERROR: http code 403": (FetchStatus.HTTP_ERROR, 403),
@@ -114,7 +117,9 @@ async def client() -> AsyncIterator[httpx.AsyncClient]:
 
 @pytest.fixture
 def bm25():
-    return Bm25RelevanceFilter()
+    return RelevanceFilter(
+        DefaultExtractor(), SemanticChunker(), Bm25Filter()
+    )
 
 
 def _pdf_bytes(text: str) -> bytes:
