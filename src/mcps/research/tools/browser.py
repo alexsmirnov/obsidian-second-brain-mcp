@@ -11,7 +11,7 @@ import logging
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator, cast
 
-from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig, CrawlResult, DefaultMarkdownGenerator, PruningContentFilterLXML
+from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig, CrawlResult
 from lxml import html as lxml_html
 
 from mcps.config import ServerConfig
@@ -22,6 +22,7 @@ from mcps.research.tools.common import (
     failure,
     textual_mime,
 )
+from mcps.research.tools.html_markdown import create_markdown_generator
 from mcps.research.tools.models import FetchResult, FetchStatus
 
 __all__ = [
@@ -147,10 +148,7 @@ class BrowserFetch:
                 process_iframes=False,       # Prevents recursively crawling deep iframe trees
                 wait_for_images=False,       # Cuts down on event loops monitoring image states
                 # user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-                markdown_generator=DefaultMarkdownGenerator(
-                    content_filter=PruningContentFilterLXML(threshold=0.6),
-                    options={"ignore_links": True}
-                )
+                markdown_generator=create_markdown_generator(),
             )
             crawl = await self._crawler.arun(url, config=crawler_config)
         except Exception as error:

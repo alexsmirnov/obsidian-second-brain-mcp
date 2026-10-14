@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from collections.abc import Callable, Sequence
 from dataclasses import replace
 
 from mcps.research.tools.common import TRUNCATION_MARKER
-from mcps.research.tools.filtering_content import truncate_content
 from mcps.research.tools.models import Fetch, FetchResult, FetchStatus, Filter
 
 __all__ = [
@@ -145,8 +145,30 @@ class Blocked:
         return FetchResult(url=url, status=FetchStatus.RESTRICTED, mime="")
 
 
+_URL_RE = re.compile(r"https?://[^\s]+", re.IGNORECASE)
+
+
+def _url_safe_cut(content: str, max_chars: int) -> int:
+    """Return a cut position that never splits an HTTP(S) URL token."""
+    for match in _URL_RE.finditer(content):
+        if match.start() >= max_chars:
+            break
+        if match.end() > max_chars:
+            return match.start()
+    return max_chars
+
+
+def _prefix(content: str, max_chars: int) -> str:
+    """Longest prefix ending at a word or newline boundary, never splitting a URL."""
+    if max_chars <= 0:
+        return ""
+    candidate = content[: _url_safe_cut(content, max_chars)]
+    boundary = max(candidate.rfind(separator) for separator in "\n \t")
+    return candidate[:boundary] if boundary > 0 else candidate
+
+
 class Truncate:
-    """Filter cutting content beyond ``max_chars`` at a safe boundary."""
+    """Filter cutting content beyond ``max_chars`` at a word boundary."""
 
     def __init__(self, max_chars: int) -> None:
         if max_chars < 0:
@@ -158,12 +180,7 @@ class Truncate:
     ) -> FetchResult:
         logger.info("Fetch %d chars from url %s", len(result.content), result.url)
         body = result.content.removesuffix(TRUNCATION_MARKER)
-        premarked = len(body) < len(result.content)
         if len(body) <= self._max_chars:
             return result
-        content, omitted = await asyncio.to_thread(
-            truncate_content, body, result.mime, self._max_chars
-        )
-        if not (omitted or premarked):
-            return result
+        content = _prefix(body, self._max_chars)
         return replace(result, content=content + TRUNCATION_MARKER)

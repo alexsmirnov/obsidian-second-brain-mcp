@@ -153,13 +153,12 @@ Async web search and content fetching. The fetch tool is a chain of small classe
 | `arxiv.py`, `github.py`, `wikipedia.py` | `ArxivFetch` (HTML, then PDF, then abstract), `GitHubBlobFetch`, `GitHubRepoFetch` (README), `WikipediaFetch` (raw wikitext via `action=raw` for `wikipedia.org` and its subdomains): thin wrappers over an injected `Fetch`; results are retargeted at the requested URL |
 | `browser.py` | `BrowserFetch` renders pages on an open crawl4ai crawler; `create_browser_fetch` opens one crawler on `BROWSER_CDP_URL` (yields `None` when unset or unreachable) and closes it on exit, so fetches never reconnect |
 | `scrape_do.py`, `bright_data.py` | `ScrapeDoFetch`, `BrightDataFetch`: commercial unblocking fallbacks |
-| `filtering_content.py` | Pure source-mapped helpers: HTML rendering, native Markdown/plain parsing, source-safe link normalization, scoring windows, selection rendering, and syntax-safe truncation |
-| `filtering.py` | `FilterLimits`; the `Extractor`, `Chunker`, and `PassageFilter` step protocols; and `RelevanceFilter`, the concrete pipeline composing an extractor, a chunker, and a passage filter |
-| `default_extractor.py` | `DefaultExtractor`: prepares a fetch result natively into a source-mapped `ContentDocument` |
-| `semantic_chunker.py` | `SemanticChunker`: groups sections into selection units and builds scoring windows |
-| `bm25_filter.py` | `Bm25Filter` and `lexical_scores`: local BM25L ranking of source windows within the output budget |
-| `llm_filter.py` | `LlmFilter` and `select_hybrid_candidates`: embedding shortlist plus router source-ID selection |
-| `filtering_models.py` | `RouterPassageModels`: borrowed-client embeddings via `OpenAIEmbeddings` and a byte-bounded direct chat-selection POST, returning only validated window IDs |
+| `html_markdown.py` | `create_markdown_generator` (the crawl4ai generator shared with `browser.py`: pruning filter, links kept), `is_html`, and `HtmlToMarkdown`, the filter converting an HTML result to Markdown |
+| `filtering.py` | The `Chunker` (text to fragments) and `Ranker` (fragments to relevant indices) protocols, and `RelevanceFilter`, which chunks a textual result, ranks the fragments, and joins the selected ones in document order |
+| `markdown_chunker.py` | `MarkdownChunker`: one fragment per paragraph, fence or table, prefixed with its own H1-H3 heading; oversized paragraphs split at lines, then spaces |
+| `bm25_ranker.py` | `Bm25Ranker` and `lexical_scores`: local BM25L ranking of fragments |
+| `llm_ranker.py` | `LlmRanker`: BM25 plus embedding shortlist, then router-model selection by fragment index |
+| `filtering_models.py` | `RouterPassageModels`: borrowed-client embeddings via `OpenAIEmbeddings` and a byte-bounded direct chat-selection POST, returning only validated fragment IDs |
 | `fetch.py` | `create_fetch`: the composition root; `build_fetch_tool`: lifespan-friendly context manager that owns the browser via `create_browser_fetch` and assembles the fetch |
 
 #### Composition ([fetch.py](../src/mcps/research/tools/fetch.py)) #architecture
@@ -167,9 +166,9 @@ Async web search and content fetching. The fetch tool is a chain of small classe
 generic = UrlSelector([.pdf -> HttpFetch], default = Throttled(browser) or HttpFetch)
 generic = Fallback(generic, provider)                     # when a provider is configured
 routed  = UrlSelector([restricted -> Blocked, arXiv, GitHub blob, GitHub repo, Wikipedia], default=generic)
-fetch   = Filtered(routed, FilterChain(create_page_filter(config), Truncate))
+fetch   = Filtered(routed, FilterChain(FilterSelector([html -> HtmlToMarkdown]), create_page_filter(config), Truncate))
 ```
-`create_page_filter` walks an ordered registry in `fetch.py` (`_PAGE_FILTERS`) once at startup and returns a `RelevanceFilter` combining a `DefaultExtractor`, a `SemanticChunker`, and the first passage filter whose config predicate holds (`LlmFilter` when `FETCH_MODEL`, `RAG_EMBEDDING_MODEL` and a valid router URL are set, else `Bm25Filter`); a new passage filter is one class plus one registry entry. Sources reach the filter natively: HTML is rendered once, Markdown keeps its source structure, and other textual types stay plain. The arXiv, GitHub and Wikipedia routes sit outside the `Fallback`, so they never escalate.
+`create_page_filter` walks an ordered registry in `fetch.py` (`_RANKERS`) once at startup and returns a `RelevanceFilter` combining a `MarkdownChunker` with the first ranker whose config predicate holds (`LlmRanker` when `FETCH_MODEL`, `RAG_EMBEDDING_MODEL` and a valid router URL are set, else `Bm25Ranker`); a new ranker is one class plus one registry entry. HTML is converted to Markdown once by `HtmlToMarkdown` before the filter, other textual types pass through, and output size is bounded only by `Truncate`. The arXiv, GitHub and Wikipedia routes sit outside the `Fallback`, so they never escalate.
 
 #### Adding a provider
 - **Fetch provider**: write a class with `async __call__(url, query=None, /) -> FetchResult` that returns `failure(url, FetchStatus.UNAVAILABLE)` when the service itself fails and declares its `mime`. Add it as a route in `create_fetch` (site-specific) or build it in `research.tools.fetch._create_provider_fallback` (unblocking fallback).

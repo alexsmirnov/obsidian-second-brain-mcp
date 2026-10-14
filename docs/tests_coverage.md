@@ -97,8 +97,11 @@ Contract tests for search parsing (Google, DuckDuckGo), the composed `create_fet
 ### [tests/test_research_fallback_fetchers.py](../tests/test_research_fallback_fetchers.py)
 Contract tests for the browser (fake crawl4ai crawler), Scrape.do and Bright Data fallbacks: request shape, target vs. provider status mapping, provider selection from `ServerConfig`, and crawler connection lifetime (reuse across repeated and overlapping fetches, no replacement on failure, single open/close, startup failure yielding no crawler).
 
-### [tests/test_fetch_filtering.py](../tests/test_fetch_filtering.py)
-Contract tests for the `RelevanceFilter` pipeline (`DefaultExtractor`, `SemanticChunker`, `Bm25Filter`, `LlmFilter`) and config-driven `create_page_filter` selection with BM25 fallback warnings: native plain/Markdown/HTML source preservation, source-safe link normalization, BM25L selection windows, input/window limits, unsupported media, `FILTER_FAILED`, injected extractor/chunker/passage-filter stages, and pipeline error mapping. Model mode is exercised through a real `OpenAIEmbeddings` adapter and a scripted `httpx.MockTransport` router boundary: hybrid semantic shortlisting, strict source-ID validation, invalid embeddings, HTTP failure and retry recovery, budget/deadline failures, cancellation, and shared concurrency.
+### [tests/test_markdown_chunker.py](../tests/test_markdown_chunker.py), [tests/test_html_markdown.py](../tests/test_html_markdown.py), [tests/test_relevance_filter.py](../tests/test_relevance_filter.py), [tests/test_bm25_ranker.py](../tests/test_bm25_ranker.py)
+Contract tests for the filter pipeline units: `MarkdownChunker` (paragraph fragments, own heading, fences, tables, size limits, order), `HtmlToMarkdown` (conversion, links kept, selector pass-through, error mapping), `RelevanceFilter` with fake chunker and ranker (guards, blank query, empty selection, document order, failure mapping), and `Bm25Ranker`.
+
+### [tests/test_llm_ranker.py](../tests/test_llm_ranker.py)
+Contract tests for `LlmRanker` through a real `OpenAIEmbeddings` adapter and a scripted `httpx.MockTransport` router boundary: hybrid shortlisting, strict fragment-ID validation, invalid embeddings, HTTP failure and retry recovery, budget and deadline failures, cancellation, redirects, and shared concurrency.
 
 ### [tests/test_browser_runtime.py](../tests/test_browser_runtime.py)
 Tests for `create_browser_fetch` (configured, unset, and unreachable CDP), the lifespan enabling/disabling only `web_research`, and the research lifespan owning one browser crawler (reused across fetches, closed on exit).

@@ -17,13 +17,12 @@ from mcps.research.tools import (
     create_google_search,
 )
 from mcps.research.tools.arxiv import ArxivFetch
-from mcps.research.tools.bm25_filter import Bm25Filter
+from mcps.research.tools.bm25_ranker import Bm25Ranker
 from mcps.research.tools.default import HttpFetch
-from mcps.research.tools.default_extractor import DefaultExtractor
 from mcps.research.tools.filtering import RelevanceFilter
 from mcps.research.tools.github import GitHubBlobFetch, GitHubRepoFetch
 from mcps.research.tools.models import FetchResult, FetchStatus
-from mcps.research.tools.semantic_chunker import SemanticChunker
+from mcps.research.tools.markdown_chunker import MarkdownChunker
 from mcps.research.tools.wikipedia import WikipediaFetch
 
 _ERROR_SCRIPTS = {
@@ -118,9 +117,7 @@ async def client() -> AsyncIterator[httpx.AsyncClient]:
 
 @pytest.fixture
 def bm25():
-    return RelevanceFilter(
-        DefaultExtractor(), SemanticChunker(), Bm25Filter()
-    )
+    return RelevanceFilter(MarkdownChunker(), Bm25Ranker())
 
 
 def _pdf_bytes(text: str) -> bytes:
@@ -259,7 +256,7 @@ async def test_declared_markdown_via_browser_is_filtered(bm25, client):
 
     result = await fetch("https://source.example/notes.md", "quantum optimization")
 
-    assert "https://source.example/paper" in result.content
+    assert "[paper](/paper)" in result.content
     assert "bread flour" not in result.content
     assert provider.calls == []
 
@@ -316,7 +313,7 @@ async def test_specialized_sources_filter_and_never_escalate(
     github = await fetch("https://github.com/org/project", "quantum optimization")
     arxiv = await fetch("https://arxiv.org/abs/2406.02530", "quantum optimization")
 
-    assert "https://github.com/paper" in github.content
+    assert "[paper](/paper)" in github.content
     assert "bread flour" not in github.content
     assert (arxiv.status, arxiv.http_status) == (FetchStatus.HTTP_ERROR, 403)
     assert browser.calls == []
@@ -568,7 +565,6 @@ async def test_fetch_default_html_is_converted_once(
     result = await fetch("https://site.example/page", None)
 
     assert "Use <style>alpha</style> carefully" in result.content
-    assert "![Fig](https://site.example/fig.png)" in result.content
 
 
 async def test_arxiv_html_is_converted_once(
@@ -584,7 +580,6 @@ async def test_arxiv_html_is_converted_once(
     result = await fetch("https://arxiv.org/abs/2401.00002", None)
 
     assert "Use <style>alpha</style> carefully" in result.content
-    assert "![Fig](https://arxiv.org/fig.png)" in result.content
 
 
 async def test_pdf_keeps_extracted_text(
@@ -614,40 +609,6 @@ async def test_pdf_keeps_extracted_text(
     assert "col_a   col_b" in filtered.content
     assert filtered.mime == "text/plain"
     assert "bread flour" not in filtered.content
-
-
-async def test_github_repo_links_resolve_against_requested_url(
-    bm25, httpx_mock: HTTPXMock, client: httpx.AsyncClient
-):
-    httpx_mock.add_response(
-        url="https://raw.githubusercontent.com/org/project/main/README.md",
-        text="See [guide](docs/guide.md) and [root](/paper).",
-    )
-    fetch = create_fetch(
-        http_client=client, browser=None, provider=None, page_filter=bm25
-    )
-
-    result = await fetch("https://github.com/org/project", None)
-
-    assert result.url == "https://github.com/org/project"
-    assert "https://github.com/org/docs/guide.md" in result.content
-    assert "https://github.com/paper" in result.content
-
-
-async def test_github_blob_relative_link_resolves_in_directory(
-    bm25, httpx_mock: HTTPXMock, client: httpx.AsyncClient
-):
-    httpx_mock.add_response(
-        url="https://raw.githubusercontent.com/o/r/main/docs/README.md",
-        text="See [guide](guide.md).",
-    )
-    fetch = create_fetch(
-        http_client=client, browser=None, provider=None, page_filter=bm25
-    )
-
-    result = await fetch("https://github.com/o/r/blob/main/docs/README.md", None)
-
-    assert "https://github.com/o/r/blob/main/docs/guide.md" in result.content
 
 
 async def test_filter_yielding_nothing_stays_ok_with_empty_content(bm25, client):

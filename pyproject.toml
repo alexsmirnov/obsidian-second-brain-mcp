@@ -25,7 +25,6 @@ dependencies = [
     "langchain-google-genai>=4.2.5",
     "pandas>=3.0.3",
     "crawl4ai>=0.7",
-    "markdown-it-py>=4.2.0,<5",
     "langchain-typesafe>=0.0.1a3",
 ]
 [tool.uv]

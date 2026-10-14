@@ -11,7 +11,7 @@ import httpx
 
 from mcps.config import ServerConfig
 from mcps.research.tools.arxiv import ArxivFetch, is_arxiv_url
-from mcps.research.tools.bm25_filter import Bm25Filter
+from mcps.research.tools.bm25_ranker import Bm25Ranker
 from mcps.research.tools.bright_data import BrightDataFetch
 from mcps.research.tools.browser import create_browser_fetch
 from mcps.research.tools.combinators import (
@@ -19,17 +19,13 @@ from mcps.research.tools.combinators import (
     Fallback,
     FilterChain,
     Filtered,
+    FilterSelector,
     Throttled,
     Truncate,
     UrlSelector,
 )
 from mcps.research.tools.default import HttpFetch
-from mcps.research.tools.default_extractor import DefaultExtractor
-from mcps.research.tools.filtering import (
-    FilterLimits,
-    PassageFilter,
-    RelevanceFilter,
-)
+from mcps.research.tools.filtering import Ranker, RelevanceFilter
 from mcps.research.tools.filtering_models import (
     RouterPassageModels,
     valid_router_url,
@@ -40,10 +36,15 @@ from mcps.research.tools.github import (
     is_github_blob_url,
     is_github_repo_url,
 )
-from mcps.research.tools.llm_filter import LlmFilter
+from mcps.research.tools.html_markdown import (
+    HtmlToMarkdown,
+    create_markdown_generator,
+    is_html,
+)
+from mcps.research.tools.llm_ranker import LlmRanker
+from mcps.research.tools.markdown_chunker import MarkdownChunker
 from mcps.research.tools.models import Fetch, Filter
 from mcps.research.tools.scrape_do import ScrapeDoFetch
-from mcps.research.tools.semantic_chunker import SemanticChunker
 from mcps.research.tools.wikipedia import (
     WIKIPEDIA_HEADERS,
     WikipediaFetch,
@@ -89,8 +90,9 @@ def create_fetch(
     available) every other URL use the httpx extractor; all remaining URLs are
     rendered in the browser, at most ``concurrency`` at a time. A blocked,
     empty, timed-out, or unavailable generic result escalates once to
-    ``provider`` when configured. Every successful native source is passed
-    through ``page_filter`` and truncated to ``max_chars``.
+    ``provider`` when configured. Every successful source is converted to
+    Markdown when HTML, passed through ``page_filter`` and truncated to
+    ``max_chars``.
     """
     http = HttpFetch(http_client)
     wikipedia_http = HttpFetch(http_client, WIKIPEDIA_HEADERS)
@@ -109,7 +111,12 @@ def create_fetch(
         ],
         default=generic,
     )
-    return Filtered(routed, FilterChain(page_filter, Truncate(max_chars)))
+    to_markdown = FilterSelector(
+        [(is_html, HtmlToMarkdown(create_markdown_generator()))]
+    )
+    return Filtered(
+        routed, FilterChain(to_markdown, page_filter, Truncate(max_chars))
+    )
 
 
 def _create_provider_fallback(
@@ -145,9 +152,7 @@ def _create_provider_fallback(
     return None
 
 
-PassageFilterBuilder = Callable[
-    [ServerConfig, httpx.AsyncClient, FilterLimits], PassageFilter
-]
+RankerBuilder = Callable[[ServerConfig, httpx.AsyncClient], Ranker]
 
 
 def _llm_configured(config: ServerConfig) -> bool:
@@ -164,9 +169,7 @@ def _llm_configured(config: ServerConfig) -> bool:
     return False
 
 
-def _llm_filter(
-    config: ServerConfig, http_client: httpx.AsyncClient, limits: FilterLimits
-) -> PassageFilter:
+def _llm_ranker(config: ServerConfig, http_client: httpx.AsyncClient) -> Ranker:
     models = RouterPassageModels(
         http_client,
         router_url=config.router_api_base,
@@ -174,42 +177,30 @@ def _llm_filter(
         fetch_model=config.fetch_model,
         embedding_model=config.rag_embedding_model,
         embedding_dimensions=config.rag_embedding_dimensions,
-        concurrency=limits.model_concurrency,
-        max_response_bytes=limits.max_response_bytes,
     )
-    return LlmFilter(models, limits=limits)
+    return LlmRanker(models)
 
 
-def _bm25_filter(
-    config: ServerConfig, http_client: httpx.AsyncClient, limits: FilterLimits
-) -> PassageFilter:
-    return Bm25Filter(limits=limits)
+def _bm25_ranker(config: ServerConfig, http_client: httpx.AsyncClient) -> Ranker:
+    return Bm25Ranker()
 
 
-# Ordered registry: the first entry whose predicate holds builds the passage
-# filter. To add an implementation, append an entry before the BM25 catch-all.
-_PAGE_FILTERS: tuple[
-    tuple[Callable[[ServerConfig], bool], PassageFilterBuilder], ...
-] = (
-    (_llm_configured, _llm_filter),
-    (lambda _: True, _bm25_filter),
+# Ordered registry: the first entry whose predicate holds builds the ranker.
+# To add an implementation, append an entry before the BM25 catch-all.
+_RANKERS: tuple[tuple[Callable[[ServerConfig], bool], RankerBuilder], ...] = (
+    (_llm_configured, _llm_ranker),
+    (lambda _: True, _bm25_ranker),
 )
 
 
 def create_page_filter(
     config: ServerConfig, http_client: httpx.AsyncClient
 ) -> RelevanceFilter:
-    """Build the extractor, chunker, and passage filter for ``config``."""
-    limits = FilterLimits()
-    for is_configured, build in _PAGE_FILTERS:
+    """Build the chunker and the first ranker whose predicate holds for ``config``."""
+    for is_configured, build in _RANKERS:
         if is_configured(config):
-            return RelevanceFilter(
-                DefaultExtractor(limits),
-                SemanticChunker(limits),
-                build(config, http_client, limits),
-                limits=limits,
-            )
-    raise AssertionError("page filter registry lacks a catch-all entry")
+            return RelevanceFilter(MarkdownChunker(), build(config, http_client))
+    raise AssertionError("ranker registry lacks a catch-all entry")
 
 
 @asynccontextmanager

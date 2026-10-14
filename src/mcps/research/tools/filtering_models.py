@@ -3,7 +3,7 @@
 The adapter borrows the caller's async :class:`httpx.AsyncClient`; it never
 constructs or closes an HTTP client of its own. Embeddings use a configured
 ``OpenAIEmbeddings`` instance against the router, while chat selection is a
-direct, non-redirecting, byte-bounded HTTP POST. Only validated source-window
+direct, non-redirecting, byte-bounded HTTP POST. Only validated fragment
 IDs ever leave this module.
 """
 
@@ -12,14 +12,13 @@ from __future__ import annotations
 import asyncio
 import json
 import math
+from collections.abc import Sequence
 from urllib.parse import urlparse
 
 import httpx
 from langchain_openai import OpenAIEmbeddings
 from openai import APIError
 from pydantic import SecretStr
-
-from mcps.research.tools.filtering_content import ScoringWindow
 
 __all__ = [
     "FilterModelError",
@@ -55,15 +54,14 @@ def valid_router_url(router_url: str) -> bool:
 
 
 def build_selection_payload(
-    fetch_model: str, query: str, windows: tuple[ScoringWindow, ...]
+    fetch_model: str, query: str, fragments: Sequence[tuple[int, str]]
 ) -> dict[str, object]:
     """Build the direct chat payload for one selection batch."""
     user_content = json.dumps(
         {
             "query": query,
             "windows": [
-                {"id": window.window_id, "text": window.text}
-                for window in windows
+                {"id": index, "text": text} for index, text in fragments
             ],
         },
         ensure_ascii=False,
@@ -112,8 +110,8 @@ class RouterPassageModels:
         fetch_model: str,
         embedding_model: str,
         embedding_dimensions: int,
-        concurrency: int,
-        max_response_bytes: int,
+        concurrency: int = 4,
+        max_response_bytes: int = 4_000_000,
     ) -> None:
         if embedding_dimensions < 0:
             raise ValueError("embedding_dimensions must be nonnegative")
@@ -166,14 +164,14 @@ class RouterPassageModels:
         ]
 
     async def select(
-        self, query: str, windows: tuple[ScoringWindow, ...]
+        self, query: str, fragments: Sequence[tuple[int, str]]
     ) -> set[int]:
         """Run one bounded direct-HTTP chat batch and return validated IDs."""
-        if not windows:
+        if not fragments:
             return set()
-        payload = build_selection_payload(self._fetch_model, query, windows)
+        payload = build_selection_payload(self._fetch_model, query, fragments)
         body = await self._post_chat(payload)
-        return _parse_selection(body, {window.window_id for window in windows})
+        return _parse_selection(body, {index for index, _ in fragments})
 
     async def _post_chat(self, payload: dict[str, object]) -> object:
         headers = {"content-type": "application/json"}

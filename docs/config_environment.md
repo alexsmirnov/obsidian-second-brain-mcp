@@ -241,11 +241,11 @@ Bright Data API key and Web Unlocker zone name. Both required when `SCRAPER_PROV
 **Used by**: [src/mcps/research/tools/bright_data.py](../src/mcps/research/tools/bright_data.py)
 
 #### `fetch_model` #config
-Chat model used for hybrid source-window selection through the router. Empty selects local-only lexical filtering. When set, `RAG_EMBEDDING_MODEL` and a valid router URL are also required; if either is missing, `create_page_filter` logs a startup warning and uses lexical filtering instead. Otherwise both model calls run against the shared router client; model failures return `FILTER_FAILED` and never fall back to lexical output. Constructor budgets (`FilterLimits`) bound input size, windows, batching, concurrency, response bytes, and a total model deadline that also covers SDK embedding retries. Embedding responses must be returned in input order; embedding redirects follow the borrowed client, while the direct chat request never redirects and enforces its response-byte cap.
+Chat model used for hybrid fragment selection through the router. Empty selects local-only lexical filtering. When set, `RAG_EMBEDDING_MODEL` and a valid router URL are also required; if either is missing, `create_page_filter` logs a startup warning and uses lexical filtering instead. Otherwise both model calls run against the shared router client; model failures return `FILTER_FAILED` and never fall back to lexical output. Constructor budgets on `LlmRanker` and `RouterPassageModels` bound batching, concurrency, response bytes, and a total model deadline that also covers SDK embedding retries. Embedding responses must be returned in input order; embedding redirects follow the borrowed client, while the direct chat request never redirects and enforces its response-byte cap.
 **Type**: str
 **Default**: `""`
 **Environment**: `FETCH_MODEL`
-**Used by**: [src/mcps/research/tools/fetch.py](../src/mcps/research/tools/fetch.py), [src/mcps/research/tools/llm_filter.py](../src/mcps/research/tools/llm_filter.py), [src/mcps/research/tools/filtering_models.py](../src/mcps/research/tools/filtering_models.py)
+**Used by**: [src/mcps/research/tools/fetch.py](../src/mcps/research/tools/fetch.py), [src/mcps/research/tools/llm_ranker.py](../src/mcps/research/tools/llm_ranker.py), [src/mcps/research/tools/filtering_models.py](../src/mcps/research/tools/filtering_models.py)
 
 #### `fetch_restricted_domains` #config
 Comma-separated hostnames; the hostname itself and its subdomains are never fetched (status `RESTRICTED`).

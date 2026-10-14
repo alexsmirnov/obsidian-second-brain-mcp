@@ -40,16 +40,10 @@ Python Markdown parser.
 **Used by**: (currently unused by application code; the legacy `MarkdownToHtml` normalizer was removed in the filter pipeline refactor)
 **Docs**: [python-markdown.github.io](https://python-markdown.github.io/)
 
-### markdown-it-py
-CommonMark parser with block source maps and reference-definition tracking, used to preserve native Markdown structure during filtering and truncation.
-**Version**: `>=4.2.0,<5`
-**Used by**: [src/mcps/research/tools/filtering_content.py](../src/mcps/research/tools/filtering_content.py)
-**Docs**: [markdown-it-py.readthedocs.io](https://markdown-it-py.readthedocs.io/)
-
 ### rank_bm25
-BM25 keyword relevance scoring. The `Bm25Filter` uses `BM25L` over source-mapped scoring windows, which avoids zero/negative-IDF loss on small corpora.
+BM25 keyword relevance scoring. The `Bm25Ranker` uses `BM25L` over fragments, which avoids zero/negative-IDF loss on small corpora.
 **Version**: unpinned
-**Used by**: [src/mcps/research/tools/bm25_filter.py](../src/mcps/research/tools/bm25_filter.py)
+**Used by**: [src/mcps/research/tools/bm25_ranker.py](../src/mcps/research/tools/bm25_ranker.py)
 **Docs**: [github.com/dorianbrown/rank_bm25](https://github.com/dorianbrown/rank_bm25)
 
 ### python-dotenv
@@ -83,9 +77,9 @@ Shared async HTTP client for model router and web requests.
 **Used by**: [src/mcps/server.py:7](../src/mcps/server.py#L7), [src/mcps/tools/obsidian_vault.py:9](../src/mcps/tools/obsidian_vault.py#L9), [src/mcps/research/tools/](../src/mcps/research/tools/common.py)
 
 ### crawl4ai
-Mandatory dependency. Renders generic pages in a CDP browser (Obscura) and provides the HTML-to-Markdown generator used to render actual HTML once before native filtering. Content filtering and model selection no longer run inside crawl4ai.
+Mandatory dependency. Renders generic pages in a CDP browser (Obscura) and provides the HTML-to-Markdown generator (pruning filter, links kept) shared by the browser fetch and `HtmlToMarkdown`. Content filtering and model selection do not run inside crawl4ai.
 **Version**: `>=0.7`
-**Used by**: [src/mcps/research/tools/browser.py](../src/mcps/research/tools/browser.py), [src/mcps/research/tools/filtering_content.py](../src/mcps/research/tools/filtering_content.py)
+**Used by**: [src/mcps/research/tools/browser.py](../src/mcps/research/tools/browser.py), [src/mcps/research/tools/html_markdown.py](../src/mcps/research/tools/html_markdown.py)
 
 ### pydantic
 Data validation and modeling.

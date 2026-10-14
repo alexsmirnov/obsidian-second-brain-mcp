@@ -354,65 +354,16 @@ async def test_truncate_cuts_content_over_limit_and_marks_it():
     assert result.status is FetchStatus.OK
 
 
-# ---------------------------------------------------------------------------
-# Phase 4: syntax-safe final truncation
-# ---------------------------------------------------------------------------
-
 PREFIX = "Intro."
 FENCE = "```python\nprint('quantum')\n```"
-MARKDOWN = PREFIX + "\n\n" + FENCE + "\n\nTail."
-TABLE = "| a | b |\n| --- | --- |\n| 1 | 2 |"
-LINKED = "See [paper](https://source.example/paper)."
-REFERENCED = (
-    "Read [paper][p].\n\nUnrelated tail.\n\n"
-    "[p]: https://source.example/paper\n"
-)
 
 
-async def test_truncate_markdown_stops_before_partial_fence():
-    cap = len(PREFIX) + 2 + 8
+async def test_truncate_never_splits_a_url():
+    source = "see https://source.example/some/long/path for more"
 
-    result = await Truncate(cap)(ok(MARKDOWN, "text/markdown"))
+    result = await Truncate(20)(ok(source, "text/markdown"))
 
-    assert result.content == PREFIX + MARKER
-    assert result.status is FetchStatus.OK
-
-
-@pytest.mark.parametrize(
-    "source", [FENCE, TABLE, LINKED], ids=["fence", "table", "linked"]
-)
-async def test_truncate_markdown_first_oversized_atomic_block_returns_marker_only(
-    source: str,
-):
-    result = await Truncate(5)(ok(source, "text/markdown"))
-
-    assert result.content == MARKER
-
-
-async def test_truncate_markdown_counts_required_reference_definition():
-    retained = "Read [paper][p].\n\n[p]: https://source.example/paper"
-    cap = len(retained)
-
-    result = await Truncate(cap)(ok(REFERENCED, "text/markdown"))
-
-    assert result.content == retained + MARKER
-
-
-async def test_truncate_markdown_omits_link_if_definition_cannot_fit():
-    cap = len("Read [paper][p].")
-
-    result = await Truncate(cap)(ok(REFERENCED, "text/markdown"))
-
-    assert result.content == MARKER
-
-
-async def test_truncate_markdown_does_not_leave_orphan_heading():
-    source = "## Quantum\n\n" + FENCE
-    cap = len("## Quantum") + 2 + 4
-
-    result = await Truncate(cap)(ok(source, "text/markdown"))
-
-    assert result.content == MARKER
+    assert result.content == "see" + MARKER
 
 
 async def test_truncate_plain_text_prefers_complete_word_boundary():
@@ -456,16 +407,6 @@ async def test_truncate_zero_limit_marks_nonempty_content():
     result = await Truncate(0)(ok("body", "text/plain"))
 
     assert result.content == MARKER
-
-
-async def test_truncate_keeps_whole_table_that_fits():
-    source = TABLE + "\n\nTail."
-
-    result = await Truncate(len(TABLE))(
-        ok(source, "text/markdown")
-    )
-
-    assert result.content == TABLE + MARKER
 
 
 async def test_truncate_keeps_whole_fence_that_fits():
