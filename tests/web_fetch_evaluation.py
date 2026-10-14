@@ -48,6 +48,7 @@ def _configure_logging() -> None:
         level=logging.INFO,
         format="%(asctime)s - %(name)s:%(lineno)d - %(levelname)s - %(message)s",
     )
+    logging.getLogger("mcps").setLevel(logging.DEBUG)
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
 

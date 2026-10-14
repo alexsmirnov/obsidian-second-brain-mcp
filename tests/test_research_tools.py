@@ -24,6 +24,7 @@ from mcps.research.tools.filtering import RelevanceFilter
 from mcps.research.tools.github import GitHubBlobFetch, GitHubRepoFetch
 from mcps.research.tools.models import FetchResult, FetchStatus
 from mcps.research.tools.semantic_chunker import SemanticChunker
+from mcps.research.tools.wikipedia import WikipediaFetch
 
 _ERROR_SCRIPTS = {
     "ERROR: http code 403": (FetchStatus.HTTP_ERROR, 403),
@@ -279,19 +280,15 @@ async def test_browser_html_pre_code_survives_rendering(bm25):
     assert "    return 1" in result.content
 
 
-async def test_reddit_and_wikipedia_use_browser(bm25, httpx_mock: HTTPXMock):
+async def test_reddit_uses_browser(bm25, httpx_mock: HTTPXMock):
     browser = FakeBrowser(TOPIC_HTML)
     fetch = create_fetch(
         http_client=None, browser=browser, provider=None, page_filter=bm25
     )
 
     await fetch("https://www.reddit.com/r/x/comments/1/t/", None)
-    await fetch("https://en.wikipedia.org/wiki/Physics", None)
 
-    assert browser.calls == [
-        "https://www.reddit.com/r/x/comments/1/t/",
-        "https://en.wikipedia.org/wiki/Physics",
-    ]
+    assert browser.calls == ["https://www.reddit.com/r/x/comments/1/t/"]
     assert httpx_mock.get_requests() == []
 
 
@@ -748,8 +745,9 @@ class ExplodingClient:
         (lambda c: GitHubRepoFetch(HttpFetch(c)), "https://github.com/o/r"),
         (lambda c: ArxivFetch(HttpFetch(c)), "https://arxiv.org/abs/2401.00001"),
         (lambda c: ArxivFetch(HttpFetch(c)), "https://arxiv.org/list/cs/new"),
+        (lambda c: WikipediaFetch(HttpFetch(c)), "https://en.wikipedia.org/wiki/X"),
     ],
-    ids=["http", "github-blob", "github-repo", "arxiv", "arxiv-no-id"],
+    ids=["http", "github-blob", "github-repo", "arxiv", "arxiv-no-id", "wikipedia"],
 )
 async def test_unexpected_exception_becomes_unsupported_result(build, url: str):
     fetch = build(ExplodingClient())
@@ -1227,3 +1225,131 @@ async def test_truncated_markdown_does_not_leak_discarded_links(
     assert result.content.endswith("[Content truncated]")
     assert "https://source.example/recipe" not in result.content
     assert "Baking" not in result.content
+
+
+async def test_wikipedia_requests_raw_action_and_returns_markdown(
+    httpx_mock: HTTPXMock, client: httpx.AsyncClient
+):
+    httpx_mock.add_response(
+        url="https://en.wikipedia.org/wiki/Python?action=raw",
+        text="'''Python''' is a language.",
+        headers={"content-type": "text/x-wiki; charset=UTF-8"},
+    )
+    url = "https://en.wikipedia.org/wiki/Python"
+
+    result = await WikipediaFetch(HttpFetch(client))(url)
+
+    assert (result.status, result.mime, result.content) == (
+        FetchStatus.OK,
+        "text/markdown",
+        "'''Python''' is a language.",
+    )
+    assert result.url == url
+
+
+async def test_wikipedia_keeps_query_and_drops_fragment(
+    httpx_mock: HTTPXMock, client: httpx.AsyncClient
+):
+    httpx_mock.add_response(
+        url="https://en.wikipedia.org/w/index.php?title=Python&action=raw",
+        text="text",
+        headers={"content-type": "text/x-wiki"},
+    )
+    url = "https://en.wikipedia.org/w/index.php?title=Python#History"
+
+    result = await WikipediaFetch(HttpFetch(client))(url)
+
+    assert (result.status, result.url) == (FetchStatus.OK, url)
+
+
+async def test_wikipedia_replaces_existing_action(
+    httpx_mock: HTTPXMock, client: httpx.AsyncClient
+):
+    httpx_mock.add_response(
+        url="https://en.wikipedia.org/w/index.php?title=Python&action=raw",
+        text="text",
+        headers={"content-type": "text/x-wiki"},
+    )
+
+    result = await WikipediaFetch(HttpFetch(client))(
+        "https://en.wikipedia.org/w/index.php?action=edit&title=Python"
+    )
+
+    assert result.status is FetchStatus.OK
+
+
+async def test_wikipedia_blank_body_is_empty(
+    httpx_mock: HTTPXMock, client: httpx.AsyncClient
+):
+    httpx_mock.add_response(
+        url="https://en.wikipedia.org/wiki/Blank?action=raw",
+        text="  \n",
+        headers={"content-type": "text/x-wiki"},
+    )
+
+    result = await WikipediaFetch(HttpFetch(client))(
+        "https://en.wikipedia.org/wiki/Blank"
+    )
+
+    assert result.status is FetchStatus.EMPTY
+
+
+async def test_wikipedia_http_error_reports_requested_url(
+    httpx_mock: HTTPXMock, client: httpx.AsyncClient
+):
+    httpx_mock.add_response(
+        url="https://en.wikipedia.org/wiki/Missing?action=raw", status_code=404
+    )
+    url = "https://en.wikipedia.org/wiki/Missing"
+
+    result = await WikipediaFetch(HttpFetch(client))(url)
+
+    assert (result.status, result.http_status, result.url) == (
+        FetchStatus.HTTP_ERROR,
+        404,
+        url,
+    )
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://wikipedia.org/wiki/X",
+        "https://en.wikipedia.org/wiki/X",
+        "https://de.m.wikipedia.org/wiki/X",
+    ],
+)
+async def test_wikipedia_domain_and_subdomains_route_to_raw(
+    bm25, httpx_mock: HTTPXMock, client: httpx.AsyncClient, url: str
+):
+    httpx_mock.add_response(
+        url=f"{url}?action=raw",
+        text="wikitext",
+        headers={"content-type": "text/x-wiki"},
+    )
+    fetch = create_fetch(
+        http_client=client, browser=None, provider=None, page_filter=bm25
+    )
+
+    result = await fetch(url, None)
+
+    assert result.content == "wikitext"
+
+
+async def test_lookalike_domain_is_not_routed_to_wikipedia(
+    bm25, httpx_mock: HTTPXMock, client: httpx.AsyncClient
+):
+    httpx_mock.add_response(
+        url="https://notwikipedia.org/wiki/X",
+        text="plain page",
+        headers={"content-type": "text/plain"},
+    )
+    fetch = create_fetch(
+        http_client=client, browser=None, provider=None, page_filter=bm25
+    )
+
+    await fetch("https://notwikipedia.org/wiki/X", None)
+
+    assert [str(r.url) for r in httpx_mock.get_requests()] == [
+        "https://notwikipedia.org/wiki/X"
+    ]

@@ -11,12 +11,13 @@ import logging
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator, cast
 
-from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig, CrawlResult
+from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig, CrawlResult, DefaultMarkdownGenerator, PruningContentFilterLXML
 from lxml import html as lxml_html
 
 from mcps.config import ServerConfig
 from mcps.research.tools.common import (
     MIME_HTML,
+    MIME_MARKDOWN,
     MIME_PLAIN,
     failure,
     textual_mime,
@@ -45,7 +46,7 @@ def _new_crawler(cdp_url: str) -> AsyncWebCrawler:
         enable_stealth=False,
         verbose=False,
         text_mode=True,
-        light_mode=True,
+        # light_mode=True,
         avoid_ads=True,
         memory_saving_mode=True,
         cdp_cleanup_on_close=True,
@@ -106,7 +107,11 @@ def _to_fetch_result(url: str, crawl: CrawlResult) -> FetchResult:
     if content_type and declared is None:
         logger.warning("Browser fetch failed for %s: unsupported type", url)
         return failure(url, FetchStatus.UNSUPPORTED)
+    if crawl.markdown :
+        logger.debug("Markdown result, size %d",len(crawl.markdown))
+        return _content_result(page_url, MIME_MARKDOWN, crawl.markdown.fit_markdown)
     if declared == MIME_HTML:
+        logger.debug("Html result, size %d",len(rendered_html))
         return _content_result(page_url, MIME_HTML, rendered_html)
 
     unwrapped = _unwrap_sole_pre(crawl.html or rendered_html)
@@ -142,6 +147,10 @@ class BrowserFetch:
                 process_iframes=False,       # Prevents recursively crawling deep iframe trees
                 wait_for_images=False,       # Cuts down on event loops monitoring image states
                 # user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+                markdown_generator=DefaultMarkdownGenerator(
+                    content_filter=PruningContentFilterLXML(threshold=0.6),
+                    options={"ignore_links": True}
+                )
             )
             crawl = await self._crawler.arun(url, config=crawler_config)
         except Exception as error:

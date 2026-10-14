@@ -63,7 +63,7 @@ class BrightDataFetch:
         body = {"zone": self._zone, "url": url, "format": "json"}
         try:
             response = await self._http_client.post(
-                self._api_url, headers=self._headers, json=body, timeout=60.0
+                self._api_url, headers=self._headers, json=body, timeout=180.0
             )
         except httpx.HTTPError as error:
             logger.warning("Bright Data unavailable for %s: %r", url, error)

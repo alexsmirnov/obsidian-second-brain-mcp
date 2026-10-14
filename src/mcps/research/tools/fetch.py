@@ -44,6 +44,7 @@ from mcps.research.tools.llm_filter import LlmFilter
 from mcps.research.tools.models import Fetch, Filter
 from mcps.research.tools.scrape_do import ScrapeDoFetch
 from mcps.research.tools.semantic_chunker import SemanticChunker
+from mcps.research.tools.wikipedia import WikipediaFetch, is_wikipedia_url
 
 __all__ = ["build_fetch_tool", "create_fetch", "create_page_filter"]
 
@@ -79,8 +80,8 @@ def create_fetch(
 ) -> Fetch:
     """Compose the page fetch returning query-relevant Markdown.
 
-    A restricted host is refused without I/O. GitHub and arXiv use their
-    specialized fetcher and never fall back. ``.pdf`` and (when no browser is
+    A restricted host is refused without I/O. GitHub, arXiv and Wikipedia use
+    their specialized fetcher and never fall back. ``.pdf`` and (when no browser is
     available) every other URL use the httpx extractor; all remaining URLs are
     rendered in the browser, at most ``concurrency`` at a time. A blocked,
     empty, timed-out, or unavailable generic result escalates once to
@@ -99,6 +100,7 @@ def create_fetch(
             (is_arxiv_url, ArxivFetch(http)),
             (is_github_blob_url, GitHubBlobFetch(http)),
             (is_github_repo_url, GitHubRepoFetch(http)),
+            (is_wikipedia_url, WikipediaFetch(http)),
         ],
         default=generic,
     )

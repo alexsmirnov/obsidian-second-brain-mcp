@@ -23,7 +23,7 @@ MIME_PLAIN = "text/plain"
 
 TRUNCATION_MARKER = "\n\n[Content truncated]"
 
-_MARKDOWN_MIMES = frozenset([MIME_MARKDOWN, "text/x-markdown"])
+_MARKDOWN_MIMES = frozenset([MIME_MARKDOWN, "text/x-markdown", "text/x-wiki"])
 _HTML_MIMES = frozenset([MIME_HTML, "application/xhtml+xml"])
 _JSON_XML_MIMES = frozenset(["application/json", "application/xml"])
 

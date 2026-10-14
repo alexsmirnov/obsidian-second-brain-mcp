@@ -150,7 +150,7 @@ Async web search and content fetching. The fetch tool is a chain of small classe
 | `common.py` | `MIME_HTML`/`MIME_MARKDOWN`/`MIME_PLAIN` constants, `normalize_mime`/`textual_mime` classifiers, the `failure` result builder, and `extract_hostname` |
 | `google.py`, `duckduckgo.py` | `Search` factories |
 | `default.py` | `HttpFetch`: the single owner of page GETs (shared or owned client, browser-like Chrome headers) and of content-type extraction; HTML stays `text/html`, Markdown stays `text/markdown`, every other supported textual type and raw PDF text is `text/plain` |
-| `arxiv.py`, `github.py` | `ArxivFetch` (HTML, then PDF, then abstract), `GitHubBlobFetch`, `GitHubRepoFetch` (README): thin wrappers over an injected `Fetch`; results are retargeted at the requested GitHub URL |
+| `arxiv.py`, `github.py`, `wikipedia.py` | `ArxivFetch` (HTML, then PDF, then abstract), `GitHubBlobFetch`, `GitHubRepoFetch` (README), `WikipediaFetch` (raw wikitext via `action=raw` for `wikipedia.org` and its subdomains): thin wrappers over an injected `Fetch`; results are retargeted at the requested URL |
 | `browser.py` | `BrowserFetch` renders pages on an open crawl4ai crawler; `create_browser_fetch` opens one crawler on `BROWSER_CDP_URL` (yields `None` when unset or unreachable) and closes it on exit, so fetches never reconnect |
 | `scrape_do.py`, `bright_data.py` | `ScrapeDoFetch`, `BrightDataFetch`: commercial unblocking fallbacks |
 | `filtering_content.py` | Pure source-mapped helpers: HTML rendering, native Markdown/plain parsing, source-safe link normalization, scoring windows, selection rendering, and syntax-safe truncation |
@@ -166,10 +166,10 @@ Async web search and content fetching. The fetch tool is a chain of small classe
 ```
 generic = UrlSelector([.pdf -> HttpFetch], default = Throttled(browser) or HttpFetch)
 generic = Fallback(generic, provider)                     # when a provider is configured
-routed  = UrlSelector([restricted -> Blocked, arXiv, GitHub blob, GitHub repo], default=generic)
+routed  = UrlSelector([restricted -> Blocked, arXiv, GitHub blob, GitHub repo, Wikipedia], default=generic)
 fetch   = Filtered(routed, FilterChain(create_page_filter(config), Truncate))
 ```
-`create_page_filter` walks an ordered registry in `fetch.py` (`_PAGE_FILTERS`) once at startup and returns a `RelevanceFilter` combining a `DefaultExtractor`, a `SemanticChunker`, and the first passage filter whose config predicate holds (`LlmFilter` when `FETCH_MODEL`, `RAG_EMBEDDING_MODEL` and a valid router URL are set, else `Bm25Filter`); a new passage filter is one class plus one registry entry. Sources reach the filter natively: HTML is rendered once, Markdown keeps its source structure, and other textual types stay plain. The arXiv and GitHub routes sit outside the `Fallback`, so they never escalate.
+`create_page_filter` walks an ordered registry in `fetch.py` (`_PAGE_FILTERS`) once at startup and returns a `RelevanceFilter` combining a `DefaultExtractor`, a `SemanticChunker`, and the first passage filter whose config predicate holds (`LlmFilter` when `FETCH_MODEL`, `RAG_EMBEDDING_MODEL` and a valid router URL are set, else `Bm25Filter`); a new passage filter is one class plus one registry entry. Sources reach the filter natively: HTML is rendered once, Markdown keeps its source structure, and other textual types stay plain. The arXiv, GitHub and Wikipedia routes sit outside the `Fallback`, so they never escalate.
 
 #### Adding a provider
 - **Fetch provider**: write a class with `async __call__(url, query=None, /) -> FetchResult` that returns `failure(url, FetchStatus.UNAVAILABLE)` when the service itself fails and declares its `mime`. Add it as a route in `create_fetch` (site-specific) or build it in `research.tools.fetch._create_provider_fallback` (unblocking fallback).

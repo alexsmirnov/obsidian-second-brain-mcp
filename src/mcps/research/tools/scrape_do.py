@@ -72,7 +72,7 @@ class ScrapeDoFetch:
             "render": "true",
         }
         try:
-            response = await self._http_client.get(self._api_url, params=params)
+            response = await self._http_client.get(self._api_url, params=params, timeout=180.0)
         except httpx.HTTPError as error:
             logger.warning("Scrape.do unavailable for %s: %r", url, error)
             return failure(url, FetchStatus.UNAVAILABLE)
