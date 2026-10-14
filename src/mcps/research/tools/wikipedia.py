@@ -9,11 +9,14 @@ from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 from mcps.research.tools.common import failure
 from mcps.research.tools.models import Fetch, FetchResult, FetchStatus
 
-__all__ = ["WikipediaFetch", "is_wikipedia_url"]
+__all__ = ["WIKIPEDIA_HEADERS", "WikipediaFetch", "is_wikipedia_url"]
 
 logger = logging.getLogger(__name__)
 
 _DOMAIN = "wikipedia.org"
+
+# Wikimedia requires an identifying User-Agent
+WIKIPEDIA_HEADERS = {"User-Agent": "WebResearchBot/1.0 (asmirnov@alexsmirnov.link)"}
 
 
 def is_wikipedia_url(url: str) -> bool:

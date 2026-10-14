@@ -212,11 +212,11 @@ async def test_duckduckgo_search_http_error_returns_empty(
 # ---------------------------------------------------------------------------
 
 
-async def test_restricted_domain_is_restricted_without_io(bm25):
+async def test_restricted_domain_is_restricted_without_io(bm25, client):
     browser = FakeBrowser(TOPIC_HTML)
     provider = FakeProvider(TOPIC_HTML)
     fetch = create_fetch(
-        http_client=None,
+        http_client=client,
         browser=browser,
         provider=provider,
         page_filter=bm25,
@@ -234,10 +234,12 @@ async def test_restricted_domain_is_restricted_without_io(bm25):
     assert provider.calls == []
 
 
-async def test_generic_url_uses_browser_and_filters(bm25, httpx_mock: HTTPXMock):
+async def test_generic_url_uses_browser_and_filters(
+    bm25, httpx_mock: HTTPXMock, client
+):
     browser = FakeBrowser(TOPIC_HTML)
     fetch = create_fetch(
-        http_client=None, browser=browser, provider=None, page_filter=bm25
+        http_client=client, browser=browser, provider=None, page_filter=bm25
     )
 
     result = await fetch(GENERIC, "quantum optimization")
@@ -248,11 +250,11 @@ async def test_generic_url_uses_browser_and_filters(bm25, httpx_mock: HTTPXMock)
     assert httpx_mock.get_requests() == []
 
 
-async def test_declared_markdown_via_browser_is_filtered(bm25):
+async def test_declared_markdown_via_browser_is_filtered(bm25, client):
     browser = MarkdownBrowser(MARKDOWN_PAGE)
     provider = FakeProvider(TOPIC_HTML)
     fetch = create_fetch(
-        http_client=None, browser=browser, provider=provider, page_filter=bm25
+        http_client=client, browser=browser, provider=provider, page_filter=bm25
     )
 
     result = await fetch("https://source.example/notes.md", "quantum optimization")
@@ -262,7 +264,7 @@ async def test_declared_markdown_via_browser_is_filtered(bm25):
     assert provider.calls == []
 
 
-async def test_browser_html_pre_code_survives_rendering(bm25):
+async def test_browser_html_pre_code_survives_rendering(bm25, client):
     code = "def quantum():\n    return 1"
     page = (
         "<html><body><h2>Quantum</h2><pre><code>"
@@ -271,7 +273,7 @@ async def test_browser_html_pre_code_survives_rendering(bm25):
     )
     browser = FakeBrowser(page)
     fetch = create_fetch(
-        http_client=None, browser=browser, provider=None, page_filter=bm25
+        http_client=client, browser=browser, provider=None, page_filter=bm25
     )
 
     result = await fetch(GENERIC, "quantum")
@@ -280,10 +282,10 @@ async def test_browser_html_pre_code_survives_rendering(bm25):
     assert "    return 1" in result.content
 
 
-async def test_reddit_uses_browser(bm25, httpx_mock: HTTPXMock):
+async def test_reddit_uses_browser(bm25, httpx_mock: HTTPXMock, client):
     browser = FakeBrowser(TOPIC_HTML)
     fetch = create_fetch(
-        http_client=None, browser=browser, provider=None, page_filter=bm25
+        http_client=client, browser=browser, provider=None, page_filter=bm25
     )
 
     await fetch("https://www.reddit.com/r/x/comments/1/t/", None)
@@ -349,11 +351,13 @@ async def test_pdf_uses_http_extractor(
         "ERROR: fetcher unavailable",
     ],
 )
-async def test_blocked_page_escalates_to_provider_filtered(bm25, browser_error: str):
+async def test_blocked_page_escalates_to_provider_filtered(
+    bm25, browser_error: str, client
+):
     browser = FakeBrowser(browser_error)
     provider = FakeProvider(TOPIC_HTML)
     fetch = create_fetch(
-        http_client=None, browser=browser, provider=provider, page_filter=bm25
+        http_client=client, browser=browser, provider=provider, page_filter=bm25
     )
 
     result = await fetch(GENERIC, "quantum optimization")
@@ -363,10 +367,10 @@ async def test_blocked_page_escalates_to_provider_filtered(bm25, browser_error: 
     assert provider.calls == [GENERIC]
 
 
-async def test_non_blocking_errors_do_not_escalate(bm25):
+async def test_non_blocking_errors_do_not_escalate(bm25, client):
     provider = FakeProvider("provider content")
     doomed = create_fetch(
-        http_client=None,
+        http_client=client,
         browser=FakeBrowser("ERROR: http code 404"),
         provider=provider,
         page_filter=bm25,
@@ -379,7 +383,7 @@ async def test_non_blocking_errors_do_not_escalate(bm25):
     assert provider.calls == []
 
     no_provider = create_fetch(
-        http_client=None,
+        http_client=client,
         browser=FakeBrowser("ERROR: http code 403"),
         provider=None,
         page_filter=bm25,
@@ -392,7 +396,7 @@ async def test_non_blocking_errors_do_not_escalate(bm25):
 
     unavailable = FakeProvider("ERROR: fetcher unavailable")
     keeps_error = create_fetch(
-        http_client=None,
+        http_client=client,
         browser=FakeBrowser("ERROR: http code 403"),
         provider=unavailable,
         page_filter=bm25,
@@ -402,10 +406,10 @@ async def test_non_blocking_errors_do_not_escalate(bm25):
     assert unavailable.calls == [GENERIC]
 
 
-async def test_output_truncated_after_filter(bm25):
+async def test_output_truncated_after_filter(bm25, client):
     long_html = "<html><body><p>" + "quantum " * 8000 + "</p></body></html>"
     fetch = create_fetch(
-        http_client=None,
+        http_client=client,
         browser=FakeBrowser(long_html),
         provider=None,
         page_filter=bm25,
@@ -417,11 +421,11 @@ async def test_output_truncated_after_filter(bm25):
     assert result.content.endswith("[Content truncated]")
 
 
-async def test_browser_concurrency_is_limited(bm25):
+async def test_browser_concurrency_is_limited(bm25, client):
     gate = asyncio.Event()
     browser = FakeBrowser(TOPIC_HTML, gate=gate)
     fetch = create_fetch(
-        http_client=None,
+        http_client=client,
         browser=browser,
         provider=None,
         page_filter=bm25,
@@ -612,21 +616,6 @@ async def test_pdf_keeps_extracted_text(
     assert "bread flour" not in filtered.content
 
 
-async def test_blank_html_is_empty_response(
-    bm25, httpx_mock: HTTPXMock, client: httpx.AsyncClient
-):
-    httpx_mock.add_response(
-        url="https://site.example/blank", html="<html><body>  </body></html>"
-    )
-    fetch = create_fetch(
-        http_client=client, browser=None, provider=None, page_filter=bm25
-    )
-
-    result = await fetch("https://site.example/blank", None)
-
-    assert result.status is FetchStatus.EMPTY
-
-
 async def test_github_repo_links_resolve_against_requested_url(
     bm25, httpx_mock: HTTPXMock, client: httpx.AsyncClient
 ):
@@ -661,9 +650,9 @@ async def test_github_blob_relative_link_resolves_in_directory(
     assert "https://github.com/o/r/blob/main/docs/guide.md" in result.content
 
 
-async def test_filter_yielding_nothing_stays_ok_with_empty_content(bm25):
+async def test_filter_yielding_nothing_stays_ok_with_empty_content(bm25, client):
     fetch = create_fetch(
-        http_client=None,
+        http_client=client,
         browser=FakeBrowser(TOPIC_HTML),
         provider=None,
         page_filter=bm25,
@@ -693,10 +682,10 @@ async def test_blocked_pdf_skips_browser_and_escalates_to_provider(
     assert provider.calls == [pdf_url]
 
 
-async def test_restricted_url_never_reaches_provider(bm25):
+async def test_restricted_url_never_reaches_provider(bm25, client):
     provider = FakeProvider(TOPIC_HTML)
     fetch = create_fetch(
-        http_client=None,
+        http_client=client,
         browser=FakeBrowser("ERROR: http code 403"),
         provider=provider,
         page_filter=bm25,
@@ -709,7 +698,7 @@ async def test_restricted_url_never_reaches_provider(bm25):
     assert provider.calls == []
 
 
-async def test_provider_html_is_filtered_once(bm25):
+async def test_provider_html_is_filtered_once(bm25, client):
     provider_html = (
         "<html><body><h2>Quantum optimization</h2><p>"
         + "quantum optimization improves routing " * 30
@@ -718,7 +707,7 @@ async def test_provider_html_is_filtered_once(bm25):
         + "</p></body></html>"
     )
     fetch = create_fetch(
-        http_client=None,
+        http_client=client,
         browser=FakeBrowser("ERROR: http code 403"),
         provider=FakeProvider(provider_html),
         page_filter=bm25,

@@ -44,7 +44,11 @@ from mcps.research.tools.llm_filter import LlmFilter
 from mcps.research.tools.models import Fetch, Filter
 from mcps.research.tools.scrape_do import ScrapeDoFetch
 from mcps.research.tools.semantic_chunker import SemanticChunker
-from mcps.research.tools.wikipedia import WikipediaFetch, is_wikipedia_url
+from mcps.research.tools.wikipedia import (
+    WIKIPEDIA_HEADERS,
+    WikipediaFetch,
+    is_wikipedia_url,
+)
 
 __all__ = ["build_fetch_tool", "create_fetch", "create_page_filter"]
 
@@ -70,7 +74,7 @@ def _is_pdf_url(url: str) -> bool:
 
 def create_fetch(
     *,
-    http_client: httpx.AsyncClient | None = None,
+    http_client: httpx.AsyncClient,
     browser: Fetch | None = None,
     provider: Fetch | None = None,
     page_filter: Filter,
@@ -89,6 +93,7 @@ def create_fetch(
     through ``page_filter`` and truncated to ``max_chars``.
     """
     http = HttpFetch(http_client)
+    wikipedia_http = HttpFetch(http_client, WIKIPEDIA_HEADERS)
     generic: Fetch = Throttled(browser, concurrency) if browser else http
     generic = UrlSelector([(_is_pdf_url, http)], default=generic)
     if provider is not None:
@@ -100,7 +105,7 @@ def create_fetch(
             (is_arxiv_url, ArxivFetch(http)),
             (is_github_blob_url, GitHubBlobFetch(http)),
             (is_github_repo_url, GitHubRepoFetch(http)),
-            (is_wikipedia_url, WikipediaFetch(http)),
+            (is_wikipedia_url, WikipediaFetch(wikipedia_http)),
         ],
         default=generic,
     )

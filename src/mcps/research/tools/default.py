@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 
 import httpx
 import pymupdf
-from lxml import html as lxml_html
 
 from mcps.research.tools.common import (
     MIME_HTML,
@@ -17,12 +17,12 @@ from mcps.research.tools.common import (
 )
 from mcps.research.tools.models import FetchResult, FetchStatus
 
-__all__ = ["HttpFetch"]
+__all__ = ["CHROME_HEADERS", "HttpFetch"]
 
 logger = logging.getLogger(__name__)
 
 # Collected from actual Chrome request headers
-_CHROME_HEADERS = {
+CHROME_HEADERS = {
     "accept": (
         "text/html,application/xhtml+xml,application/xml;"
         "q=0.9,image/avif,image/webp,image/apng,*/*;"
@@ -78,15 +78,6 @@ def _convert_pdf_to_text(pdf_bytes: bytes) -> str:
     return "\n\n".join(page_text).strip()
 
 
-def _extract_html_response(response: httpx.Response) -> Extracted:
-    # ponytail: <script>/<style> text counts as content; browser path handles JS shells
-    try:
-        text = lxml_html.document_fromstring(response.text).text_content()
-    except Exception:
-        return None
-    return (response.text, MIME_HTML) if text.strip() else None
-
-
 def _extract_pdf_response(response: httpx.Response) -> Extracted:
     if not response.content:
         return None
@@ -117,7 +108,7 @@ def _extract_without_content_type(response: httpx.Response) -> Extracted:
     if response.content and _looks_like_pdf(response.content):
         return _extract_pdf_response(response)
     if response.text and _looks_like_html(response.text):
-        return _extract_html_response(response)
+        return _extract_plain_text_response(response, MIME_HTML)
     return _extract_plain_text_response(response, MIME_PLAIN)
 
 
@@ -131,8 +122,6 @@ def _extract(response: httpx.Response) -> Extracted:
     classified = textual_mime(content_type)
     if classified is None:
         raise LookupError(content_type)
-    if classified == MIME_HTML:
-        return _extract_html_response(response)
     return _extract_plain_text_response(response, classified)
 
 
@@ -148,8 +137,13 @@ def _error_result(url: str, error: Exception) -> FetchResult:
 class HttpFetch:
     """Fetch ``url`` with browser-like headers and return its extracted content."""
 
-    def __init__(self, http_client: httpx.AsyncClient | None) -> None:
+    def __init__(
+        self,
+        http_client: httpx.AsyncClient,
+        headers: Mapping[str, str] = CHROME_HEADERS,
+    ) -> None:
         self._http_client = http_client
+        self._headers = headers
 
     async def __call__(self, url: str, query: str | None = None, /) -> FetchResult:
         try:
@@ -175,12 +169,7 @@ class HttpFetch:
         return FetchResult(url=url, status=FetchStatus.OK, mime=mime, content=content)
 
     async def _request_get(self, url: str) -> httpx.Response:
-        """GET ``url`` with the shared client (or an owned one) and raise on 4xx/5xx."""
-        if self._http_client is not None:
-            response = await self._http_client.get(url, headers=_CHROME_HEADERS)
-            response.raise_for_status()
-            return response
-        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as owned:
-            response = await owned.get(url, headers=_CHROME_HEADERS)
-            response.raise_for_status()
-            return response
+        """GET ``url`` with the shared client and raise on 4xx/5xx."""
+        response = await self._http_client.get(url, headers=self._headers)
+        response.raise_for_status()
+        return response
