@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import math
 from typing import Any
 
 import httpx
@@ -42,22 +41,6 @@ HYBRID_TEXT = (
     "SEMANTIC_ONLY: entangled processors accelerate path selection.\n\n"
     "DISTRACTOR: bread flour needs water."
 )
-
-
-def small_limits(**overrides: Any) -> FilterLimits:
-    values: dict[str, Any] = {
-        "window_chars": 120,
-        "overlap_chars": 20,
-        "embedding_batch_size": 2,
-        "embedding_request_chars": 2000,
-        "semantic_candidates": 2,
-        "llm_batch_size": 2,
-        "llm_request_chars": 8000,
-        "max_llm_batches": 20,
-        "model_concurrency": 2,
-    }
-    values.update(overrides)
-    return FilterLimits(**values)
 
 
 def _vector_for(text: str) -> list[float]:
@@ -359,7 +342,7 @@ def make_filter(
     options: dict[str, Any] = {
         "embedding_batch_size": 2,
         "embedding_request_chars": 2000,
-        "semantic_candidates": 2,
+        "similarity_threshold": 0.5,
         "llm_batch_size": 2,
         "llm_request_chars": 8000,
     }
@@ -569,7 +552,9 @@ async def test_ranker_embeds_every_fragment_before_shortlisting(
     )
 
     assert result.content == SEMANTIC
-    transmitted = " ".join(t for batch in router_harness.embedding_inputs for t in batch)
+    transmitted = " ".join(
+        t for batch in router_harness.embedding_inputs for t in batch
+    )
     assert all(f"filler paragraph {n}" in transmitted for n in range(199))
 
 
@@ -582,7 +567,7 @@ async def test_ranker_embedding_batches_respect_request_bounds(
 
     for batch in router_harness.embedding_inputs:
         assert len(batch) <= 2
-        assert sum(len(text.encode("utf-8")) for text in batch) <= 2000
+        assert sum(len(text) for text in batch) <= 2000
 
 
 async def test_ranker_selection_batch_budget_exhaustion_returns_filter_failed(
@@ -595,37 +580,104 @@ async def test_ranker_selection_batch_budget_exhaustion_returns_filter_failed(
     assert result.status is FetchStatus.FILTER_FAILED
 
 
-async def test_ranker_model_deadline_returns_filter_failed():
-    harness = RouterHarness()
-    transport = GatedTransport(harness.handler)
-    async with httpx.AsyncClient(transport=transport) as client:
-        harness.client = client
-        page_filter = make_filter(harness, timeout_seconds=0.05)
-
-        result = await asyncio.wait_for(
-            page_filter(page(HYBRID_TEXT), HYBRID_QUERY), timeout=2
-        )
-
-    assert result.status is FetchStatus.FILTER_FAILED
-    assert transport.active == 0
-
-
-async def test_ranker_model_deadline_logs_stalled_stage(
-    caplog: pytest.LogCaptureFixture,
+async def test_ranker_filters_candidates_by_cosine_similarity_threshold(
+    router_harness: RouterHarness,
 ):
-    harness = RouterHarness()
-    transport = GatedTransport(harness.handler)
-    async with httpx.AsyncClient(transport=transport) as client:
-        harness.client = client
-        page_filter = make_filter(harness, timeout_seconds=0.05)
+    # QUANTUM_LEXICAL has cosine 0.8; SEMANTIC_ONLY has cosine 1.0.
+    # With similarity_threshold=0.9, QUANTUM_LEXICAL is excluded.
+    filter_fn = make_filter(router_harness, similarity_threshold=0.9)
+    result = await filter_fn(page(HYBRID_TEXT), HYBRID_QUERY)
 
-        with caplog.at_level(logging.WARNING):
-            await asyncio.wait_for(
-                page_filter(page(HYBRID_TEXT), HYBRID_QUERY), timeout=2
-            )
+    assert result.status is FetchStatus.OK
+    assert result.content == SEMANTIC
+    assert len(router_harness.chat_payloads) == 1
+    user = json.loads(router_harness.chat_payloads[0]["messages"][1]["content"])
+    assert len(user["windows"]) == 1
+    assert "SEMANTIC_ONLY" in user["windows"][0]["text"]
 
-    warnings = "\n".join(r.getMessage() for r in caplog.records)
-    assert "model deadline during embedding" in warnings
+
+async def test_ranker_counts_sizes_by_characters_not_bytes(
+    router_harness: RouterHarness,
+):
+    # 3-byte unicode characters: character length 10, UTF-8 byte length 30
+    multibyte_text = "日本語" * 3 + "a"  # 10 characters, 28 bytes
+    # embedding_request_chars = 15: fits within 15 chars, but > 15 bytes
+    router_harness.vector_fn = lambda texts: [[1.0, 0.0, 0.0] for _ in texts]
+
+    filter_fn = make_filter(
+        router_harness,
+        embedding_request_chars=15,
+        similarity_threshold=0.5,
+    )
+    result = await filter_fn(page(multibyte_text), "query")
+
+    assert result.status is FetchStatus.OK
+
+
+async def test_ranker_no_lexical_filter_when_similarity_below_threshold(
+    router_harness: RouterHarness,
+):
+    # Text has lexical overlap with query, but its vector is orthogonal (cosine 0.0)
+    query = "quantum routing"
+    text = "quantum routing reduces latency"
+    router_harness.vector_fn = lambda texts: [
+        [1.0, 0.0, 0.0] if text == query else [0.0, 1.0, 0.0]
+        for text in texts
+    ]
+
+    filter_fn = make_filter(router_harness, similarity_threshold=0.5)
+    result = await filter_fn(page(text), query)
+
+    assert result.status is FetchStatus.OK
+    assert result.content == ""
+    assert router_harness.chat_payloads == []
+
+
+def test_ranker_similarity_threshold_boundary():
+    class DummyModels:
+        pass
+
+    ranker = LlmRanker(DummyModels(), similarity_threshold=0.5)  # type: ignore[arg-type]
+    fragments = ["exact", "below", "above"]
+    query_vec = [1.0, 0.0]
+    vectors = [
+        [0.5, 0.8660254037844386],
+        [0.49, 0.8717224328879],
+        [0.51, 0.8601744009211],
+    ]
+    candidates = ranker._shortlist(fragments, vectors, query_vec)
+    assert [idx for idx, _ in candidates] == [0, 2]
+
+
+def test_ranker_similarity_threshold_validation():
+    class DummyModels:
+        pass
+
+    with pytest.raises(ValueError, match="range"):
+        LlmRanker(DummyModels(), similarity_threshold=1.5)  # type: ignore[arg-type]
+
+    with pytest.raises(ValueError, match="range"):
+        LlmRanker(DummyModels(), similarity_threshold=-1.5)  # type: ignore[arg-type]
+
+
+async def test_ranker_empty_fragments_returns_empty_without_calls(
+    router_harness: RouterHarness,
+):
+    assert router_harness.client is not None
+    models = RouterPassageModels(
+        router_harness.client,
+        router_url=ROUTER_BASE,
+        router_key=ROUTER_KEY,
+        fetch_model=FETCH_MODEL,
+        embedding_model=EMBED_MODEL,
+        embedding_dimensions=EMBED_DIM,
+    )
+    ranker = LlmRanker(models)
+    result = await ranker([], "test query")
+
+    assert result == []
+    assert router_harness.embedding_bodies == []
+    assert router_harness.chat_payloads == []
 
 
 async def test_ranker_cancellation_releases_model_work_without_closing_client():

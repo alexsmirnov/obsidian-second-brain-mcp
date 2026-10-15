@@ -1,14 +1,11 @@
-"""Hybrid ranker: embedding shortlist plus router-model fragment selection."""
+"""Ranker: embedding similarity shortlist plus router-model fragment selection."""
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import math
-from dataclasses import dataclass
 
-from mcps.research.tools.bm25_ranker import lexical_scores
 from mcps.research.tools.filtering_models import (
     FilterModelError,
     RouterPassageModels,
@@ -20,13 +17,6 @@ __all__ = ["LlmRanker"]
 logger = logging.getLogger(__name__)
 
 Candidate = tuple[int, str]
-
-
-@dataclass
-class _Progress:
-    """The ranking stage in flight, reported when the deadline expires."""
-
-    stage: str = "start"
 
 
 def _cosine(left: list[float], right: list[float]) -> float:
@@ -41,17 +31,17 @@ def _cosine(left: list[float], right: list[float]) -> float:
 
 
 def _batches(
-    items: list[str], max_items: int, max_bytes: int
+    items: list[str], max_items: int, max_chars: int
 ) -> list[list[str]]:
-    """Pack texts into batches bounded by item count and UTF-8 byte size."""
+    """Pack texts into batches bounded by item count and character count."""
     batches: list[list[str]] = []
     current: list[str] = []
     size = 0
     for item in items:
-        length = len(item.encode("utf-8"))
-        if length > max_bytes:
+        length = len(item)
+        if length > max_chars:
             raise FilterModelError("embedding input exceeds request budget")
-        if current and (len(current) >= max_items or size + length > max_bytes):
+        if current and (len(current) >= max_items or size + length > max_chars):
             batches.append(current)
             current = []
             size = 0
@@ -63,53 +53,41 @@ def _batches(
 
 
 class LlmRanker:
-    """Ranker shortlisting with BM25 and embeddings, then selecting with a model.
+    """Ranker shortlisting by embedding similarity, then selecting with a model.
 
-    Any model or budget failure raises :class:`FilterModelError`; it never falls
-    back to lexical ranking.
+    Any model or budget failure raises :class:`FilterModelError`.
     """
 
     def __init__(
         self,
         models: RouterPassageModels,
         *,
-        semantic_candidates: int = 48,
+        similarity_threshold: float = 0.5,
         embedding_batch_size: int = 32,
         embedding_request_chars: int = 64_000,
         llm_batch_size: int = 16,
         llm_request_chars: int = 40_000,
         max_llm_batches: int = 128,
-        timeout_seconds: float = 120.0,
     ) -> None:
+        if not -1.0 <= similarity_threshold <= 1.0:
+            raise ValueError("similarity_threshold must be in the range [-1.0, 1.0]")
         self._models = models
-        self._semantic_candidates = semantic_candidates
+        self._similarity_threshold = similarity_threshold
         self._embedding_batch_size = embedding_batch_size
         self._embedding_request_chars = embedding_request_chars
         self._llm_batch_size = llm_batch_size
         self._llm_request_chars = llm_request_chars
         self._max_llm_batches = max_llm_batches
-        self._timeout_seconds = timeout_seconds
+
+    @property
+    def similarity_threshold(self) -> float:
+        return self._similarity_threshold
 
     async def __call__(self, fragments: list[str], query: str) -> list[int]:
-        progress = _Progress()
-        try:
-            async with asyncio.timeout(self._timeout_seconds):
-                return await self._rank(fragments, query, progress)
-        except TimeoutError:
-            logger.warning(
-                "Ranking %d fragments exceeded the %.0f s model deadline during %s",
-                len(fragments),
-                self._timeout_seconds,
-                progress.stage,
-            )
-            raise FilterModelError("model deadline exceeded") from None
-
-    async def _rank(
-        self, fragments: list[str], query: str, progress: _Progress
-    ) -> list[int]:
-        progress.stage = "embedding"
+        if not fragments:
+            return []
         vectors, query_vector = await self._embed(fragments, query)
-        candidates = self._shortlist(fragments, query, vectors, query_vector)
+        candidates = self._shortlist(fragments, vectors, query_vector)
         batches = self._selection_batches(candidates, query)
         logger.info(
             "Selecting from %d of %d fragments in %d model batches",
@@ -118,8 +96,7 @@ class LlmRanker:
             len(batches),
         )
         selected: set[int] = set()
-        for number, batch in enumerate(batches, start=1):
-            progress.stage = f"selection batch {number} of {len(batches)}"
+        for batch in batches:
             selected |= await self._models.select(query, batch)
         return sorted(selected)
 
@@ -143,25 +120,15 @@ class LlmRanker:
     def _shortlist(
         self,
         fragments: list[str],
-        query: str,
         vectors: list[list[float]],
         query_vector: list[float],
     ) -> list[Candidate]:
-        """Union every lexical match with the best semantic matches."""
-        chosen = {
-            index
-            for index, score in enumerate(lexical_scores(fragments, query))
-            if score > 0.0
-        }
-        similarities = sorted(
-            (
-                (-similarity, index)
-                for index, vector in enumerate(vectors)
-                if (similarity := _cosine(query_vector, vector)) > 0.0
-            )
-        )
-        chosen.update(index for _, index in similarities[: self._semantic_candidates])
-        return [(index, fragments[index]) for index in sorted(chosen)]
+        """Select candidate fragments matching the similarity threshold."""
+        return [
+            (index, fragments[index])
+            for index, vector in enumerate(vectors)
+            if _cosine(query_vector, vector) >= self._similarity_threshold
+        ]
 
     def _selection_batches(
         self, candidates: list[Candidate], query: str
@@ -190,4 +157,5 @@ class LlmRanker:
 
     def _payload_size(self, query: str, batch: list[Candidate]) -> int:
         payload = build_selection_payload(query, batch)
-        return len(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
+        return len(json.dumps(payload, ensure_ascii=False))
+
