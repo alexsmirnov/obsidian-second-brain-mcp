@@ -1,0 +1,169 @@
+{
+  "baseline-001": {
+    "file": "baseline-001.md",
+    "mime": "text/markdown",
+    "relevant": [
+      "this estimator can be biased for the ATT when there is treatment effect heterogeneity over time since treatment",
+      "They highlight that the estimators differ in which units they use when forming the comparison group",
+      "trade-offs between efficiency and the strength of the corresponding parallel trends assumption",
+      "when there are concerns about the validity of the parallel trends assumption over longer time periods",
+      "Larger breakdown values indicate more robustness of the analysis to violations of the conditional parallel trends",
+      "Although this assumption can be relaxed to allow for some anticipation behaviour"
+    ],
+    "irrelevant": [
+      "Department of Health Services Research and Policy, London School of Hygiene and Tropical Medicine",
+      "K.E. was funded by the National Institute for Health and Care Research",
+      "Physicians under pressure: Evidence from antibiotics prescribing in England",
+      "How is primary care access changing? A retrospective, repeated cross-sectional study of patient-initiated demand",
+      "Oxford University Press is a department of the University of Oxford"
+    ]
+  },
+  "baseline-003": {
+    "file": "baseline-003.md",
+    "mime": "text/markdown",
+    "relevant": [
+      "it adjusts the path of outcomes for newly treated units by the path of outcomes for already treated units",
+      "it is possible to come up with examples where the effect of participating in the treatment is positive for all units",
+      "Unfortunately, this robustness to treatment effect heterogeneity does not continue to hold",
+      "this assumption does restrict some pre-treatment trends across different groups",
+      "you can estimate the ATT(g,t)'s using outcome-regressions, inverse probability weighting, or doubly-robust methods",
+      "a natural way to aggregate the group-time average treatment effect to highlight treatment effect dynamics"
+    ],
+    "irrelevant": [
+      "Revisiting Event Study Designs: Robust and Efficient Estimation",
+      "Journal of the Association of Environmental and Resource Economists, Vol. 8, No. 2",
+      "American Economic Review 110.9 (2020): 2964-96.",
+      "This vignette has covered basic background issues on DiD with multiple periods.",
+      "A vignette for how to use the `did` package is available"
+    ]
+  },
+  "baseline-015": {
+    "file": "baseline-015.txt",
+    "mime": "text/plain",
+    "relevant": [
+      "advances in econometric theory show that such designs are likely to be biased in the presence",
+      "opposite sign compared to the true ATE or ATT, even when the researcher is able to randomize",
+      "average treatment eﬀects,” and proposes a two-step estimation strategy with a bootstrap procedure",
+      "indicators may be biased, because the weights assigned to the diﬀerent CATTs need not be positive",
+      "estimate each CATTg,k, which they call an “interaction-weighted” (IW) estimator. The DiD using",
+      "comparison units are those that are never-treated (or the last treated group, which is then never"
+    ],
+    "irrelevant": [
+      "Funding for this research was provided in part by Harvard Business School.",
+      "We thank David Childers, Andrew Goodman-Bacon, Kirill Borusyak, Pamela Jakiela, Pedro Sant’Ana (discussant),",
+      "Biden, J. (2016). How Short-Termism Saps the Economy. Wall Street Journal, September 27,",
+      "Karpoﬀ, J. M. and M. D. Wittry (2018). Institutional and Legal Context in Natural Experiments:",
+      "Fried, J. M. and C. C. Y. Wang (2019). Short-Termism and Capital Flows. Review of Corporate",
+      "the Glenn and Mary Jane Creamer Associate Professor of Business Administration at Harvard Business School."
+    ]
+  },
+  "baseline-019": {
+    "file": "baseline-019.md",
+    "mime": "text/markdown",
+    "relevant": [
+      "It is tailored for staggered adoption design and relaxes the parallel trend assumption",
+      "imputing potential outcomes using observed untreated responses within a fixed effect model framework",
+      "weighted Average Treatment Effect on the Treated in scenarios featuring heterogeneous causal effects",
+      "assuming parallel trends and the absence of anticipation effects",
+      "methods such as DiD and DiD Imputation, which rely on this assumption, fail to accurately estimate treatment effect"
+    ],
+    "irrelevant": [
+      "arXiv is now an independent nonprofit!",
+      "Interrupted time series analysis using autoregressive integrated moving average (arima) models",
+      "The tree prior put a strong regularization on tree depth",
+      "XBART generates entirely new trees with each iteration",
+      "An evaluation of the swedish system of active labor market programs in the 1990s"
+    ]
+  },
+  "baseline-027": {
+    "file": "baseline-027.md",
+    "mime": "text/markdown",
+    "relevant": [
+      "This paper synthesizes recent advances in the econometrics of difference-in-differences (DiD)",
+      "articulating a simple set of “canonical” assumptions under which the econometrics of DiD are well-understood",
+      "recent advances in DiD methods can be broadly classified as relaxing some components of the canonical DiD setup",
+      "with a focus on (i) multiple periods and variation in treatment timing,(i i) potential violations of parallel trends",
+      "(i i i) alternative frameworks for inference",
+      "helps to clarify when each of the papers will be relevant for empirical work"
+    ],
+    "irrelevant": [
+      "The system can't perform the operation now. Try again later.",
+      "J Roth, PHC Sant'Anna, A Bilinski, J Poe - Preprint posted January, 2022",
+      "J Roth, PHC Sant'Anna, A Bilinski, J Poe - arXiv preprint arxiv.2201.01194, 2022",
+      "J Roth, PH Sant'Anna, A Bilinski, J Poe - arXiv preprint arXiv:2201.01194"
+    ]
+  },
+  "baseline-046": {
+    "file": "baseline-046.md",
+    "mime": "text/markdown",
+    "relevant": [
+      "pre-trends test, we can calculate its ex ante power: how big would a",
+      "minimal detectable effect (MDE) size commonly reported for RCTs.",
+      "approach imposes that the post-treatment violations of parallel trends",
+      "forms confidence intervals for the treatment effect that take into",
+      "can accommodate an event-study from any asymptotically normal estimator,",
+      "column is that if we only analyze our event-study conditional on not"
+    ],
+    "irrelevant": [
+      "You can install the released version of pretrends from Github using the",
+      "If you’re not an R user, you may also be interested in the associated",
+      "(Please cite the paper if you enjoy the package!)",
+      "We first load the pretrends package."
+    ]
+  },
+  "baseline-079": {
+    "file": "baseline-079.md",
+    "mime": "text/markdown",
+    "relevant": [
+      "However, Recall, mAP50, mAP, and decreased by 1.199, 0.263, 0.232, and 0.387 percentage points, respectively",
+      "the model file size decreased from 19.2 MB to 11.9 MB, corresponding to a reduction of approximately 38.0%",
+      "the selected YOLOv11s model was applied to an unlabeled Raw-Subset of approximately 800 images to generate pseudo-labels",
+      "EPR-YOLO achieves an mAP50 of 71.654%, improving the YOLOv11s baseline by 0.854 percentage points",
+      "Independent test results show that quantization introduces only limited performance degradation"
+    ],
+    "irrelevant": [
+      "Multiple requests from the same IP address are counted as one view.",
+      "This research received no external funding.",
+      "Department of Crop and Soil Sciences, College of Agriculture and Environmental Sciences, University of Georgia",
+      "The authors declare no conflicts of interest.",
+      "Licensee MDPI, Basel, Switzerland. This article is an open access article distributed under the terms",
+      "the authors used ChatGPT 5.6 (OpenAI) solely for English language polishing and improving grammatical clarity"
+    ]
+  },
+  "baseline-172": {
+    "file": "baseline-172.md",
+    "mime": "text/markdown",
+    "relevant": [
+      "For combinatorial optimization problems no proven exponential speed up has ever been found.",
+      "The relative speed-up of the quantum algorithm is an open research question.",
+      "However, it is an open question whether this can be done in a feasible way.",
+      "A rigorous comparison of QAOA with classical algorithms can give estimates on depth",
+      "therefore, this does not establish a general exponential quantum advantage for low-rank SDPs",
+      "The goals of these approaches include overcoming hardware connectivity limitations"
+    ],
+    "irrelevant": [
+      "Implementation of the QAOA algorithm for the knapsack problem with Classiq",
+      "title = Quantum-inspired sublinear algorithm for solving low-rank semidefinite programming",
+      "the bit string 0101 represents a cover consisting of the second and fourth vertex",
+      "The fit's quality is measured by some criteria, usually the distance between the function and the data points.",
+      "title = Quantum SDP Solvers: Large Speed-ups, Optimality, and Applications to Quantum Learning"
+    ]
+  },
+  "baseline-263": {
+    "file": "baseline-263.md",
+    "mime": "text/markdown",
+    "relevant": [
+      "we investigate a problem of substantial commercial value, multi-truck vehicle routing for supply chain logistics",
+      "We test our methods using simulated annealing and the D-Wave Hybrid solver as a place-holder",
+      "demonstrate that the quantum annealer significantly outperforms classical methods in terms of runtime",
+      "real-time optimized solutions for use at the second largest container terminal at the Port of Los Angeles",
+      "weekly manual efforts for initial scheduling creation was reduced by ~80%"
+    ],
+    "irrelevant": [
+      "D-Wave Launches Gate-Model Simulator Beta Program",
+      "NEC reveals its plans to drive higher sustained performance using D-Wave’s quantum technologies",
+      "Computed tomography (CT) is an important imaging technique used in medical analysis",
+      "The HP model has favorable interactions between adjacent, not directly bound hydrophobic residues."
+    ]
+  }
+}

@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import math
+from dataclasses import dataclass
 
 from mcps.research.tools.bm25_ranker import lexical_scores
 from mcps.research.tools.filtering_models import (
@@ -15,7 +17,16 @@ from mcps.research.tools.filtering_models import (
 
 __all__ = ["LlmRanker"]
 
+logger = logging.getLogger(__name__)
+
 Candidate = tuple[int, str]
+
+
+@dataclass
+class _Progress:
+    """The ranking stage in flight, reported when the deadline expires."""
+
+    stage: str = "start"
 
 
 def _cosine(left: list[float], right: list[float]) -> float:
@@ -80,17 +91,35 @@ class LlmRanker:
         self._timeout_seconds = timeout_seconds
 
     async def __call__(self, fragments: list[str], query: str) -> list[int]:
+        progress = _Progress()
         try:
             async with asyncio.timeout(self._timeout_seconds):
-                return await self._rank(fragments, query)
+                return await self._rank(fragments, query, progress)
         except TimeoutError:
+            logger.warning(
+                "Ranking %d fragments exceeded the %.0f s model deadline during %s",
+                len(fragments),
+                self._timeout_seconds,
+                progress.stage,
+            )
             raise FilterModelError("model deadline exceeded") from None
 
-    async def _rank(self, fragments: list[str], query: str) -> list[int]:
+    async def _rank(
+        self, fragments: list[str], query: str, progress: _Progress
+    ) -> list[int]:
+        progress.stage = "embedding"
         vectors, query_vector = await self._embed(fragments, query)
         candidates = self._shortlist(fragments, query, vectors, query_vector)
+        batches = self._selection_batches(candidates, query)
+        logger.info(
+            "Selecting from %d of %d fragments in %d model batches",
+            len(candidates),
+            len(fragments),
+            len(batches),
+        )
         selected: set[int] = set()
-        for batch in self._selection_batches(candidates, query):
+        for number, batch in enumerate(batches, start=1):
+            progress.stage = f"selection batch {number} of {len(batches)}"
             selected |= await self._models.select(query, batch)
         return sorted(selected)
 
@@ -160,5 +189,5 @@ class LlmRanker:
         return batches
 
     def _payload_size(self, query: str, batch: list[Candidate]) -> int:
-        payload = build_selection_payload(self._models.fetch_model, query, batch)
+        payload = build_selection_payload(query, batch)
         return len(json.dumps(payload, ensure_ascii=False).encode("utf-8"))

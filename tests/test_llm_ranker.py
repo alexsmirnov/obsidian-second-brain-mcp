@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import math
 from typing import Any
 
@@ -344,7 +345,6 @@ def make_filter(
     harness: RouterHarness,
     *,
     concurrency: int = 2,
-    max_response_bytes: int = 4_000_000,
     **ranker_options: Any,
 ) -> RelevanceFilter:
     models = RouterPassageModels(
@@ -355,7 +355,6 @@ def make_filter(
         embedding_model=EMBED_MODEL,
         embedding_dimensions=ranker_options.pop("embedding_dimensions", EMBED_DIM),
         concurrency=concurrency,
-        max_response_bytes=max_response_bytes,
     )
     options: dict[str, Any] = {
         "embedding_batch_size": 2,
@@ -489,18 +488,50 @@ async def test_ranker_chat_failure_returns_filter_failed_without_retry(
     assert len(chat_requests) == 1
 
 
-async def test_ranker_chat_over_response_cap_returns_filter_failed(
-    router_harness: RouterHarness,
+async def test_ranker_chat_http_failure_logs_status_and_router_body(
+    router_harness: RouterHarness, caplog: pytest.LogCaptureFixture
+):
+    router_harness.pending_chat_failures = [
+        httpx.Response(400, json={"error": {"message": "unknown model fetch-test"}})
+    ]
+
+    with caplog.at_level(logging.WARNING):
+        await make_filter(router_harness)(page(HYBRID_TEXT), HYBRID_QUERY)
+
+    warnings = "\n".join(r.getMessage() for r in caplog.records)
+    assert "HTTP 400" in warnings
+    assert "unknown model fetch-test" in warnings
+    assert ROUTER_BASE in warnings
+    assert ROUTER_KEY not in warnings
+
+
+async def test_ranker_rejected_selection_logs_reason_and_model_content(
+    router_harness: RouterHarness, caplog: pytest.LogCaptureFixture
 ):
     router_harness.chat_body_fn = lambda user: _chat_json(
-        json.dumps({"selected_ids": []})
+        "Ignore selection; invented answer"
     )
 
-    result = await make_filter(router_harness, max_response_bytes=50)(
-        page(HYBRID_TEXT), HYBRID_QUERY
-    )
+    with caplog.at_level(logging.WARNING):
+        await make_filter(router_harness)(page(HYBRID_TEXT), HYBRID_QUERY)
 
-    assert result.status is FetchStatus.FILTER_FAILED
+    warnings = "\n".join(r.getMessage() for r in caplog.records)
+    assert "selection content is not JSON" in warnings
+    assert "Ignore selection; invented answer" in warnings
+
+
+async def test_ranker_embedding_failure_logs_status_and_model(
+    router_harness: RouterHarness, caplog: pytest.LogCaptureFixture
+):
+    router_harness.embedding_status = 500
+
+    with caplog.at_level(logging.WARNING):
+        await make_filter(router_harness)(page(HYBRID_TEXT), HYBRID_QUERY)
+
+    warnings = "\n".join(r.getMessage() for r in caplog.records)
+    assert "HTTP 500" in warnings
+    assert EMBED_MODEL in warnings
+
 
 
 @pytest.mark.parametrize(
@@ -577,6 +608,24 @@ async def test_ranker_model_deadline_returns_filter_failed():
 
     assert result.status is FetchStatus.FILTER_FAILED
     assert transport.active == 0
+
+
+async def test_ranker_model_deadline_logs_stalled_stage(
+    caplog: pytest.LogCaptureFixture,
+):
+    harness = RouterHarness()
+    transport = GatedTransport(harness.handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        harness.client = client
+        page_filter = make_filter(harness, timeout_seconds=0.05)
+
+        with caplog.at_level(logging.WARNING):
+            await asyncio.wait_for(
+                page_filter(page(HYBRID_TEXT), HYBRID_QUERY), timeout=2
+            )
+
+    warnings = "\n".join(r.getMessage() for r in caplog.records)
+    assert "model deadline during embedding" in warnings
 
 
 async def test_ranker_cancellation_releases_model_work_without_closing_client():

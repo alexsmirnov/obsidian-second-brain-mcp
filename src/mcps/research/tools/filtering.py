@@ -67,8 +67,10 @@ class RelevanceFilter:
         try:
             fragments = await asyncio.to_thread(self._chunker, result.content)
             selected = await self._ranker(fragments, query) if fragments else []
-        except Exception:
-            logger.warning("Relevance filtering failed for %s", result.url)
+        except Exception as error:
+            logger.warning(
+                "Relevance filtering failed for %s: %r", result.url, error
+            )
             return failure(result.url, FetchStatus.FILTER_FAILED)
         kept = sorted({index for index in selected if 0 <= index < len(fragments)})
         return replace(result, content="\n\n".join(fragments[i] for i in kept))

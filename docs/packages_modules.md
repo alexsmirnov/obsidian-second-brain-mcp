@@ -158,7 +158,7 @@ Async web search and content fetching. The fetch tool is a chain of small classe
 | `markdown_chunker.py` | `MarkdownChunker`: one fragment per paragraph, fence or table, prefixed with its own H1-H3 heading; oversized paragraphs split at lines, then spaces |
 | `bm25_ranker.py` | `Bm25Ranker` and `lexical_scores`: local BM25L ranking of fragments |
 | `llm_ranker.py` | `LlmRanker`: BM25 plus embedding shortlist, then router-model selection by fragment index |
-| `filtering_models.py` | `RouterPassageModels`: borrowed-client embeddings via `OpenAIEmbeddings` and a byte-bounded direct chat-selection POST, returning only validated fragment IDs |
+| `filtering_models.py` | `RouterPassageModels`: borrowed-client embeddings via `OpenAIEmbeddings` and `ChatOpenAI` chat selection without retries, with warning logs for each model failure, returning only validated fragment IDs |
 | `fetch.py` | `create_fetch`: the composition root; `build_fetch_tool`: lifespan-friendly context manager that owns the browser via `create_browser_fetch` and assembles the fetch |
 
 #### Composition ([fetch.py](../src/mcps/research/tools/fetch.py)) #architecture
