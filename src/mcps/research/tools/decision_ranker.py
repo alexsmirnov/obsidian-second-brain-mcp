@@ -15,11 +15,11 @@ logger = logging.getLogger(__name__)
 _QUESTION_ID = "relevant"
 _RELEVANT = {
     _QUESTION_ID: Noul(
-        instructions="Does the passage help answer the query?",
+        instructions="Does the passage relevant to the query?",
         criteria=NoulCriteria(
-            true="The passage contains information that answers or directly "
-            "supports an answer to the query.",
-            false="The passage is off topic or only shares vocabulary with the query.",
+            true="The passage contains text from the area related to the query, "
+            "or at least from similar domain.",
+            false="The passage is completely off topic.",
         ),
     )
 }

@@ -76,7 +76,7 @@ class MarkdownChunker:
     is split at lines, then spaces. A section without a body yields nothing.
     """
 
-    def __init__(self, max_chars: int = 2_000) -> None:
+    def __init__(self, max_chars: int = 4_000) -> None:
         if max_chars <= 0:
             raise ValueError("max_chars must be positive")
         self._max_chars = max_chars

@@ -140,15 +140,17 @@ class BrowserFetch:
             crawler_config = CrawlerRunConfig(
                 simulate_user=False,  # Add user simulation
                 magic=False,  # Enable magic mode
-                wait_until="networkidle",
+                # wait_until="networkidle",
                 # Give cloudflare a moment to render the DOM elements, it waits 5 second
                 delay_before_return_html=0.2,
+                body_visibility_timeout= 15000,
                 scan_full_page=False,
                 exclude_all_images=True,
                 process_iframes=False,       # Prevents recursively crawling deep iframe trees
                 wait_for_images=False,       # Cuts down on event loops monitoring image states
                 # user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
                 markdown_generator=create_markdown_generator(),
+                verbose=False,
             )
             crawl = await self._crawler.arun(url, config=crawler_config)
         except Exception as error:

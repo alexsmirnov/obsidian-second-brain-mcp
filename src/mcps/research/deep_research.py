@@ -37,18 +37,16 @@ logger = logging.getLogger(__name__)
 # Prompts
 # ---------------------------------------------------------------------------
 
-_GENERATE_QUERY_PROMPT = """You are a search query optimizer.
-Generate exactly up to 5 short web search queries for the user question.
+_GENERATE_QUERY_PROMPT = f"""You are a web search query generator.
+Generate exactly up to 2 short web search queries for the user question.
+Current date context: Today is {datetime.now().strftime("%A, %B %d, %Y")}. Use this to evaluate time-sensitivity, version obsolescence, and real-time data validity.
 
 Hard rules:
 1) Each query MUST be 2-5 keywords. Never exceed 6 words.
 2) Each query must include at least one named entity from the question.
 3) Queries must be orthogonal — each targets a DIFFERENT facet:
-   - Facet 1: core entity + primary attribute
-   - Facet 2: core entity + secondary attribute or comparison
-   - Facet 3: related entity or alternative name
-   - Facet 4: official source or documentation
-   - Facet 5: specific data point or constraint from the question
+   - Facet 1: core entity
+   - Facet 2: related entity or alternative name
 4) Preserve source/time constraints when present:
    - Use site: filters for specified sources
    - Include year when version matters
@@ -62,17 +60,13 @@ BAD (too long, compound):
 GOOD (short, orthogonal):
   "ChatGPT Enterprise DLP integration"
   "Microsoft Purview ChatGPT"
-  "ChatGPT Enterprise security features"
-  "Copilot 365 data governance"
-  "ChatGPT Enterprise admin controls"
 
 GOOD: ( user asks about concrete page )
   "https://example.com/openai/enterprise"
-
-Output: Return only 5 query strings.
+Start with a broad area search, and adapt query strategy based on search results in next iterations.
 """
 _CLEAN_RESULT_PROMPT = """You extract evidence relevant to the user question and knowledge gap.
-Use broad relevance criteria, keep text even slyghtly related to the question. Contradiction is also important information
+Use broad relevance criteria, keep text even slightly related to the question. Contradiction is also important information
 Include links that may contain related information
 Include facts, methods, and tools that does not explicitly related to question but support, or even contradict extracted facts
 Hard constraints:
@@ -81,12 +75,12 @@ Hard constraints:
 - Remove boilerplate, ads, nav, comments, and completely unrelated text.
 - Never output conversational text (e.g., "Based on...", "Please provide...", "Here is...").
 
+If no relevant evidence exists in provided content, output exactly:
+NO_RELEVANT_EVIDENCE
+
 If relevant evidence exists, output one or more blocks in this exact format:
 - Source URL: [url]
 - Content: [verbatim relevant excerpt]
-
-If no relevant evidence exists in provided content, output exactly:
-NO_RELEVANT_EVIDENCE
 """
 
 _REFLECTION_PROMPT = f"""You are the core reasoning engine of an advanced web research agent. 
@@ -103,7 +97,6 @@ Set `is_sufficient = False` if ANY of the following conditions are met:
 - Specific empirical metrics, numerical benchmarks, software library names, or mathematical assumptions requested in the user prompt are missing.
 - Explicit user constraints (e.g., specific dates, version numbers, or site-specific restrictions) remain unverified in the gathered evidence.
 - The gathered evidence contains unresolved, active contradictions between Tier 1 sources.
-- The current evidence consists primarily of 'NO_RELEVANT_EVIDENCE'.
 
 *Exception*: For purely self-contained logic or mathematical questions, you may set `is_sufficient = True` if you provide a mathematically rigorous derivation, even if external web sources are weak.
 *Best-Effort Fallback*: If you hit your maximum reflection loops or constraints cannot be fully met, set `is_sufficient = True` under a "best-effort" policy, but you MUST explicitly declare your uncertainty metrics in the `knowledge_gap`.
@@ -121,8 +114,9 @@ Your response must strictly conform to this schema:
 }}
 
 ### 4. WEB SEARCH QUERY RULES (HARD MANIFESTO)
-If `is_sufficient = False`, generate exactly 3 follow-up queries. Each query must target ONE unresolved gap. Never combine multiple concepts.
+If `is_sufficient = False`, generate up to 3 follow-up queries. Each query must target ONE unresolved gap. Never combine multiple concepts.
 If you know exact URL that may contain some answers, put it directly instead of search query
+Concentrate of the most important knowledge gap, refine search strategy on the each iteration.
 
 1) Length: 2-5 keywords. Hard maximum of 6 words per query.
 2) Named Entities: Every query MUST contain at least one primary named entity or technical keyword from the original user question.
@@ -176,7 +170,7 @@ If the answer includes code snippets, ensure they are well-formatted and tested 
 class SearchQueryList(BaseModel):
     """Structured output for the generate_query node."""
 
-    query: list[str] = Field(description="Exactly 5 short (2-5 keyword) search queries, or exact URLs for direct fetch.")
+    query: list[str] = Field(description="up to 2 search queries, or exact URLs for direct fetch.")
 
 
 class Reflection(BaseModel):
@@ -307,7 +301,7 @@ def create_deep_research_graph(config: ResearchConfig) -> CompiledStateGraph:
     Returns:
         A compiled LangGraph runnable ready to invoke.
     """
-    return ResearchAgent(config).create_graph()
+    return ResearchAgent(config).graph
 
 
 class ResearchAgent:
