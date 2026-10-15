@@ -718,39 +718,35 @@ async def test_build_fetch_tool_wires_both_models_and_preserves_borrowed_client(
 
 
 ROUTER = "http://router/v1"
+LLM_CONFIG = {
+    "fetch_model": "m",
+    "rag_embedding_model": "e",
+    "router_api_base": ROUTER,
+    "router_api_key": "k",
+}
 
 
 @pytest.mark.parametrize(
-    ("config_kwargs", "uses_router", "warns"),
+    ("config_kwargs", "router_path", "warns"),
     [
-        pytest.param({}, False, False, id="unset"),
+        pytest.param({}, None, (), id="unset"),
         pytest.param(
             {"rag_embedding_model": "e", "router_api_base": ROUTER},
-            False,
-            False,
+            None,
+            (),
             id="no-fetch-model",
         ),
-        pytest.param(
-            {
-                "fetch_model": "m",
-                "rag_embedding_model": "e",
-                "router_api_base": ROUTER,
-                "router_api_key": "k",
-            },
-            True,
-            False,
-            id="fully-configured",
-        ),
+        pytest.param(LLM_CONFIG, "/embeddings", (), id="fully-configured"),
         pytest.param(
             {"fetch_model": "m", "router_api_base": ROUTER},
-            False,
-            True,
+            None,
+            ("FETCH_MODEL",),
             id="no-embedding-model",
         ),
         pytest.param(
             {"fetch_model": "m", "rag_embedding_model": "e", "router_api_base": ""},
-            False,
-            True,
+            None,
+            ("FETCH_MODEL",),
             id="empty-router",
         ),
         pytest.param(
@@ -759,9 +755,39 @@ ROUTER = "http://router/v1"
                 "rag_embedding_model": "e",
                 "router_api_base": "ftp://router",
             },
-            False,
-            True,
+            None,
+            ("FETCH_MODEL",),
             id="bad-router-scheme",
+        ),
+        pytest.param(
+            {"decision_model": "jev", "router_api_base": ROUTER},
+            "/v1/systemone",
+            (),
+            id="decision-only",
+        ),
+        pytest.param(
+            {**LLM_CONFIG, "decision_model": "jev"},
+            "/embeddings",
+            (),
+            id="llm-wins-over-decision",
+        ),
+        pytest.param(
+            {"fetch_model": "m", "decision_model": "jev", "router_api_base": ROUTER},
+            "/v1/systemone",
+            ("FETCH_MODEL",),
+            id="partial-llm-falls-to-decision",
+        ),
+        pytest.param(
+            {"decision_model": "jev", "router_api_base": "ftp://router"},
+            None,
+            ("DECISION_MODEL",),
+            id="decision-bad-router",
+        ),
+        pytest.param(
+            {"decision_model": "jev"},
+            None,
+            ("DECISION_MODEL",),
+            id="decision-empty-router",
         ),
     ],
 )
@@ -769,8 +795,8 @@ async def test_create_page_filter_selects_by_config(
     caplog,
     client: httpx.AsyncClient,
     config_kwargs: dict[str, Any],
-    uses_router: bool,
-    warns: bool,
+    router_path: str | None,
+    warns: tuple[str, ...],
 ):
     caplog.set_level("WARNING", logger="mcps.research.tools.fetch")
     router_calls: list[httpx.Request] = []
@@ -788,7 +814,12 @@ async def test_create_page_filter_selects_by_config(
         result = await page_filter(source, "alpha")
 
     assert isinstance(page_filter, RelevanceFilter)
-    assert bool(router_calls) is uses_router
-    assert (result.status is FetchStatus.FILTER_FAILED) is uses_router
-    warnings = [r for r in caplog.records if "FETCH_MODEL" in r.getMessage()]
-    assert bool(warnings) is warns
+    if router_path is None:
+        assert router_calls == []
+        assert result.status is not FetchStatus.FILTER_FAILED
+    else:
+        assert router_calls[0].url.path.endswith(router_path)
+        assert result.status is FetchStatus.FILTER_FAILED
+    messages = " ".join(record.getMessage() for record in caplog.records)
+    warned = {name for name in ("FETCH_MODEL", "DECISION_MODEL") if name in messages}
+    assert warned == set(warns)

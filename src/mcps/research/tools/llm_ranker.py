@@ -62,7 +62,7 @@ class LlmRanker:
         self,
         models: RouterPassageModels,
         *,
-        similarity_threshold: float = 0.5,
+        similarity_threshold: float = 0.4,
         embedding_batch_size: int = 32,
         embedding_request_chars: int = 64_000,
         llm_batch_size: int = 16,

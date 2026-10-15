@@ -16,8 +16,10 @@ import pytest
 from dotenv import find_dotenv, load_dotenv
 from web_fetch_evaluation import CASES_DIR, load_cases
 
+from mcps.common.decisions import DecisionClient
 from mcps.config import ServerConfig, create_config
 from mcps.research.tools.bm25_ranker import Bm25Ranker
+from mcps.research.tools.decision_ranker import DecisionRanker
 from mcps.research.tools.filtering import RelevanceFilter
 from mcps.research.tools.filtering_models import RouterPassageModels, valid_router_url
 from mcps.research.tools.llm_ranker import LlmRanker
@@ -62,8 +64,26 @@ def llm_filter(config: ServerConfig, http_client: httpx.AsyncClient) -> Relevanc
     return RelevanceFilter(MarkdownChunker(), LlmRanker(models))
 
 
+def decision_filter(
+    config: ServerConfig, http_client: httpx.AsyncClient
+) -> RelevanceFilter:
+    if not (config.decision_model and valid_router_url(config.router_api_base)):
+        pytest.skip("DECISION_MODEL or router settings not set")
+    client = DecisionClient(
+        http_client,
+        router_url=config.router_api_base,
+        router_key=config.router_api_key,
+        model=config.decision_model,
+    )
+    return RelevanceFilter(MarkdownChunker(), DecisionRanker(client))
+
+
 # Append an entry to compare another filter implementation on the same pages.
-FILTERS: dict[str, FilterBuilder] = {"bm25": bm25_filter, "llm": llm_filter}
+FILTERS: dict[str, FilterBuilder] = {
+    "bm25": bm25_filter,
+    "llm": llm_filter,
+    "decision": decision_filter,
+}
 
 
 def calculate_precision(tp: int, fp: int) -> float:

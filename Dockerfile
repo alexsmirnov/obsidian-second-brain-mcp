@@ -31,6 +31,9 @@ WORKDIR /app
 
 COPY --from=builder --chown=mcps:mcps /app /app
 
+# NLTK data for the BM25 fetch ranker; /usr/share/nltk_data is on NLTK's default search path.
+RUN /app/.venv/bin/python -m nltk.downloader -d /usr/share/nltk_data stopwords punkt_tab
+
 ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
     VAULT=/vault \

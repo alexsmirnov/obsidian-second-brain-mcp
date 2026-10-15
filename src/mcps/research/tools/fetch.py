@@ -9,6 +9,7 @@ from urllib.parse import urlparse
 
 import httpx
 
+from mcps.common.decisions import DecisionClient
 from mcps.config import ServerConfig
 from mcps.research.tools.arxiv import ArxivFetch, is_arxiv_url
 from mcps.research.tools.bm25_ranker import Bm25Ranker
@@ -24,6 +25,7 @@ from mcps.research.tools.combinators import (
     Truncate,
     UrlSelector,
 )
+from mcps.research.tools.decision_ranker import DecisionRanker
 from mcps.research.tools.default import HttpFetch
 from mcps.research.tools.filtering import Ranker, RelevanceFilter
 from mcps.research.tools.filtering_models import (
@@ -163,8 +165,22 @@ def _llm_configured(config: ServerConfig) -> bool:
         return True
     logger.warning(
         "FETCH_MODEL=%s requires RAG_EMBEDDING_MODEL and a valid router URL; "
-        "using BM25 filtering.",
+        "falling back to the next ranker.",
         config.fetch_model,
+    )
+    return False
+
+
+def _decision_configured(config: ServerConfig) -> bool:
+    """True when DECISION_MODEL and a valid router URL are set."""
+    if not config.decision_model:
+        return False
+    if valid_router_url(config.router_api_base):
+        return True
+    logger.warning(
+        "DECISION_MODEL=%s requires a valid router URL; "
+        "falling back to the next ranker.",
+        config.decision_model,
     )
     return False
 
@@ -181,6 +197,16 @@ def _llm_ranker(config: ServerConfig, http_client: httpx.AsyncClient) -> Ranker:
     return LlmRanker(models)
 
 
+def _decision_ranker(config: ServerConfig, http_client: httpx.AsyncClient) -> Ranker:
+    client = DecisionClient(
+        http_client,
+        router_url=config.router_api_base,
+        router_key=config.router_api_key,
+        model=config.decision_model,
+    )
+    return DecisionRanker(client)
+
+
 def _bm25_ranker(config: ServerConfig, http_client: httpx.AsyncClient) -> Ranker:
     return Bm25Ranker()
 
@@ -189,6 +215,7 @@ def _bm25_ranker(config: ServerConfig, http_client: httpx.AsyncClient) -> Ranker
 # To add an implementation, append an entry before the BM25 catch-all.
 _RANKERS: tuple[tuple[Callable[[ServerConfig], bool], RankerBuilder], ...] = (
     (_llm_configured, _llm_ranker),
+    (_decision_configured, _decision_ranker),
     (lambda _: True, _bm25_ranker),
 )
 

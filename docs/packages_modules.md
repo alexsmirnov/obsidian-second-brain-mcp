@@ -168,11 +168,19 @@ generic = Fallback(generic, provider)                     # when a provider is c
 routed  = UrlSelector([restricted -> Blocked, arXiv, GitHub blob, GitHub repo, Wikipedia], default=generic)
 fetch   = Filtered(routed, FilterChain(FilterSelector([html -> HtmlToMarkdown]), create_page_filter(config), Truncate))
 ```
-`create_page_filter` walks an ordered registry in `fetch.py` (`_RANKERS`) once at startup and returns a `RelevanceFilter` combining a `MarkdownChunker` with the first ranker whose config predicate holds (`LlmRanker` when `FETCH_MODEL`, `RAG_EMBEDDING_MODEL` and a valid router URL are set, else `Bm25Ranker`); a new ranker is one class plus one registry entry. HTML is converted to Markdown once by `HtmlToMarkdown` before the filter, other textual types pass through, and output size is bounded only by `Truncate`. The arXiv, GitHub and Wikipedia routes sit outside the `Fallback`, so they never escalate.
+`create_page_filter` walks an ordered registry in `fetch.py` (`_RANKERS`) once at startup and returns a `RelevanceFilter` combining a `MarkdownChunker` with the first ranker whose config predicate holds (`LlmRanker` when `FETCH_MODEL`, `RAG_EMBEDDING_MODEL` and a valid router URL are set; else `DecisionRanker` when `DECISION_MODEL` and a valid router URL are set; else `Bm25Ranker`); a new ranker is one class plus one registry entry. HTML is converted to Markdown once by `HtmlToMarkdown` before the filter, other textual types pass through, and output size is bounded only by `Truncate`. The arXiv, GitHub and Wikipedia routes sit outside the `Fallback`, so they never escalate.
 
 #### Adding a provider
 - **Fetch provider**: write a class with `async __call__(url, query=None, /) -> FetchResult` that returns `failure(url, FetchStatus.UNAVAILABLE)` when the service itself fails and declares its `mime`. Add it as a route in `create_fetch` (site-specific) or build it in `research.tools.fetch._create_provider_fallback` (unblocking fallback).
 - **Search provider**: write a factory returning a `Search` and add a branch in `research.config.create_search_tool`.
+
+## Sub-package: mcps.common
+
+Building blocks shared by the research and RAG packages.
+
+### [src/mcps/common/decisions/](../src/mcps/common/decisions/__init__.py) #package
+Typed decision calls to the router's TypeSafe System One endpoint, `POST /v1/systemone`. `DecisionClient(http_client, router_url=..., router_key=..., model=...)` borrows an `httpx.AsyncClient` and exposes `async decide(state, questions) -> DecisionResponse`. It makes one request, has no retries and no concurrency control; callers such as `DecisionRanker` decide how to fan out. Every failure (transport, non-2xx status, malformed or unsupported response) raises `DecisionError`, and logs never include the response body or the key. `decision_endpoint` accepts a router URL with or without the `/v1` suffix.
+Question and answer models live in `models.py`. Only `Noul` (yes/no probability) is modelled today. To add `choice` or `score`, add the models, widen the `Question` and `Answer` aliases to discriminated unions on `type`, and add a typed accessor on `DecisionResponse`; the client does not change.
 
 ## Sub-package: mcps.resources
 

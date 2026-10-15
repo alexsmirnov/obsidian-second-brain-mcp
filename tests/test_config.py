@@ -167,6 +167,15 @@ class TestValidateConfig:
         assert "ROUTER_API_BASE is empty" in caplog.text
         assert "Obsidian vault" in caplog.text
 
+    def test_warns_when_decision_model_without_router(self, caplog):
+        config = ServerConfig(decision_model="jev-latest")
+
+        with caplog.at_level("WARNING", logger="mcps.config"):
+            validate_config(config)
+
+        assert "DECISION_MODEL" in caplog.text
+        assert "ROUTER_API_BASE is empty" in caplog.text
+
     def test_warns_when_embedding_dimensions_missing(self, caplog):
         config = ServerConfig(
             router_api_base="http://localhost:4000",
@@ -302,6 +311,14 @@ class TestCreateConfigFetch:
         assert config.fetch_model == "anthropic/claude-haiku-4.5"
         assert config.fetch_restricted_domains == ("a.com", "b.org")
         assert config.fetch_concurrency == 3
+
+    def test_decision_model_defaults_to_empty_and_reads_env_var(self, monkeypatch):
+        monkeypatch.delenv("DECISION_MODEL", raising=False)
+        assert create_config().decision_model == ""
+
+        monkeypatch.setenv("DECISION_MODEL", "jev-latest")
+
+        assert create_config().decision_model == "jev-latest"
 
     def test_empty_fetch_concurrency_env_var_falls_back_to_default(self, monkeypatch):
         monkeypatch.setenv("FETCH_CONCURRENCY", "")

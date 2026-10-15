@@ -63,7 +63,7 @@ def lexical_scores(fragments: Sequence[str], query: str) -> list[float]:
 
 def _rank(fragments: list[str], query: str) -> list[int]:
     scores = lexical_scores(fragments, query)
-    matching = [index for index, score in enumerate(scores) if score > 10.0]
+    matching = [index for index, score in enumerate(scores) if score > 5.0]
     logger.info("Lexical scores: [%s] matched for %d fragments of %d",",".join([f"{num:.2f}" for num in scores]), len(matching), len(fragments))
     return matching
 

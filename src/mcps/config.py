@@ -67,6 +67,9 @@ class ServerConfig:
     # Chat model for hybrid source-window selection; empty selects local
     # lexical filtering. Requires rag_embedding_model when set.
     fetch_model: str = ""
+    # Router decision model (TypeSafe System One) for per-fragment relevance;
+    # used when the fetch_model ranker is not active. Empty disables it.
+    decision_model: str = ""
     # Hostnames (and their subdomains) fetch must never visit.
     fetch_restricted_domains: tuple[str, ...] = ()
     # Max parallel browser renders across all research branches.
@@ -146,6 +149,7 @@ def create_config(
         bright_data_api_key=os.environ.get("BRIGHT_DATA_API_KEY", ""),
         bright_data_zone=os.environ.get("BRIGHT_DATA_ZONE", ""),
         fetch_model=os.environ.get("FETCH_MODEL", ""),
+        decision_model=os.environ.get("DECISION_MODEL", ""),
         fetch_restricted_domains=_parse_restricted_domains(
             os.environ.get("FETCH_RESTRICTED_DOMAINS", "")
         ),
@@ -187,6 +191,11 @@ def validate_config(config: ServerConfig) -> None:
             logger.warning(
                 "Web research models are configured but ROUTER_API_BASE is empty. "
                 "Web research will fail until a router URL is provided."
+            )
+        if config.decision_model:
+            logger.warning(
+                "DECISION_MODEL is configured but ROUTER_API_BASE is empty. "
+                "Fetch filtering will use lexical ranking."
             )
         if config.rag_embedding_model:
             logger.warning(
