@@ -5,6 +5,9 @@ from __future__ import annotations
 # ruff: noqa: E501
 import asyncio
 import logging
+import time
+from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime
 from operator import add
 from typing import TYPE_CHECKING, Annotated, Any, Literal, NotRequired, TypedDict, cast
@@ -13,8 +16,7 @@ from urllib.parse import urlparse
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, START, StateGraph
-from langgraph.graph.message import add_messages as _add_messages
-from langgraph.types import Overwrite, Send
+from langgraph.types import Send
 from pydantic import BaseModel, Field
 
 from mcps.research.tools import FetchResult, SearchResult
@@ -26,9 +28,7 @@ if TYPE_CHECKING:
     from mcps.research.config import ResearchConfig
 
 __all__ = [
-    "RawWebResult",
     "ResearchAgent",
-    "SummarizeSourceState",
     "create_deep_research_graph",
 ]
 
@@ -65,26 +65,20 @@ GOOD: ( user asks about concrete page )
   "https://example.com/openai/enterprise"
 Start with a broad area search, and adapt query strategy based on search results in next iterations.
 """
-_CLEAN_RESULT_PROMPT = """You extract evidence relevant to the user question and knowledge gap.
-Use broad relevance criteria, keep text even slightly related to the question. Contradiction is also important information
-Include links that may contain related information
-Include facts, methods, and tools that does not explicitly related to question but support, or even contradict extracted facts
-Hard constraints:
-- Keep verbatim excerpts only. No summarization, no conclusions.
-- Keep verbatim excerpts. Do not summarize, but specifically extract sentences that contain exact quantitative metrics, software package names, mathematical assumptions, and specific methodological frameworks.
-- Remove boilerplate, ads, nav, comments, and completely unrelated text.
-- Never output conversational text (e.g., "Based on...", "Please provide...", "Here is...").
+_EXTRACT_PROMPT = """You select the verbatim lines of a fetched page that are relevant to the user question and knowledge gap.
 
-If no relevant evidence exists in provided content, output exactly:
-NO_RELEVANT_EVIDENCE
+The page is provided one line per numbered line. Every line starts with its 1-based line number.
+Return ONLY line ranges in the `ranges` field, for example "1-20, 80-210".
 
-If relevant evidence exists, output one or more blocks in this exact format:
-- Source URL: [url]
-- Content: [verbatim relevant excerpt]
+Selection rules:
+- Keep lines containing facts, methods, tools, quantitative metrics, software package names, mathematical assumptions, contradictions, or promising links.
+- Use broad relevance: keep anything that could support, contextualize, or contradict the question.
+- Never restate, summarize, or paraphrase. The ranges alone select the evidence.
+- Return an empty string when nothing in the page is relevant.
 """
 
 _REFLECTION_PROMPT = f"""You are the core reasoning engine of an advanced web research agent. 
-Your task is to audit the gathered research for correctness, sufficiency, and source integrity, and then determine the next strategic step.
+Your task is to audit the numbered evidence gathered so far for correctness, sufficiency, and source integrity, and then determine the next strategic step.
 
 ### 1. SOURCE QUALITY MATRIX
 - Tier 1: Official documentation, primary records, peer-reviewed papers, official archives.
@@ -107,11 +101,10 @@ Current date context: Today is {datetime.now().strftime("%A, %B %d, %Y")}. Use t
 Your response must strictly conform to this schema:
 {{
   "is_sufficient": boolean,
-  "findings_summary": "String. Group all supporting evidence snippets explicitly by Tier (1, 2, or 3). Include verbatim quotes. Dedicate a specific paragraph to analyzing conflicting data if present.",
-  "relevant_links": ["Array of strings. Include ONLY the valid, un-truncated URLs directly mapped to the evidence snippets above."],
   "knowledge_gap": "String. Describe the exact, concrete missing piece of data or validation step required.",
   "follow_ups": ["Array of strings. Next-step target queries conforming to the Search Query Rules below."]
 }}
+Audit only the numbered evidence blocks `[E<n>] (url)`; do not invent findings beyond them.
 
 ### 4. WEB SEARCH QUERY RULES (HARD MANIFESTO)
 If `is_sufficient = False`, generate up to 3 follow-up queries. Each query must target ONE unresolved gap. Never combine multiple concepts.
@@ -167,6 +160,44 @@ If the answer includes code snippets, ensure they are well-formatted and tested 
 # ---------------------------------------------------------------------------
 
 
+@dataclass(frozen=True, slots=True)
+class ResearchLimits:
+    """Tunable bounds for one research run."""
+
+    round_start_budget: float = 25.0  # seconds since start; no new round after it
+    max_pages_per_round: int = 8
+    max_initial_queries: int = 3
+    max_follow_ups: int = 3  # search_queries + links
+    max_triage_candidates: int = 30
+    line_wrap_chars: int = 300
+
+
+_DEFAULT_LIMITS = ResearchLimits()
+
+
+class ExtractedRanges(BaseModel):
+    """Line ranges relevant to the question, as delivered by fetch."""
+
+    ranges: str = Field(
+        default="",
+        description="Comma-separated 1-based line ranges, e.g. '1-20, 80-210'; empty when nothing relevant",
+    )
+
+
+class Evidence(TypedDict):
+    """Verbatim page slice; id is its 1-based position in state['evidence']."""
+
+    url: str
+    text: str
+
+
+class PageVisit(TypedDict):
+    """Outcome of visiting a page; ok mirrors FetchResult.ok."""
+
+    url: str
+    ok: bool
+
+
 class SearchQueryList(BaseModel):
     """Structured output for the generate_query node."""
 
@@ -178,17 +209,6 @@ class Reflection(BaseModel):
 
     is_sufficient: bool = Field(
         description="Whether gathered info is sufficient and authoritative enough to answer the question"
-    )
-    findings_summary: str = Field(
-        default="",
-        description=(
-            "Summary of research findings categorized by source authority, "
-            "with text fragments that support the answer"
-        ),
-    )
-    relevant_links: list[str] = Field(
-        default_factory=list,
-        description="URL links to relevant sources used to generate findings",
     )
     knowledge_gap: str = Field(description="What information is still missing or unverified community claims")
     follow_ups: list[str] = Field(
@@ -205,15 +225,13 @@ class Reflection(BaseModel):
 class OverallState(TypedDict):
     """Shared state for the full research graph."""
 
-    messages: Annotated[list, _add_messages]
     original_question: str
     queries: list[str]  # current queries — overwrite each generate_query
     follow_ups: list[str]  # reflection output — overwrite each loop
-    web_results: Annotated[list[str], add]
-    summarized_findings: Annotated[list[str], add]
-    findings: Annotated[list[str], add]  # accumulated across loops
+    evidence: Annotated[list[Evidence], add]  # accumulated across loops
+    visits: Annotated[list[PageVisit], add]  # accumulated across loops
     knowledge_gap: str
-    sources_gathered: Annotated[list[str], add]  # accumulated across loops
+    sources_gathered: list[str]  # written by finalize_answer
     research_loop_count: int
     max_research_loops: int
     is_sufficient: bool
@@ -237,20 +255,6 @@ class WebSearchState(TypedDict):
 
     search_query: str
     id: int
-
-
-class RawWebResult(TypedDict):
-    text: str
-    search_query: str
-    id: int
-    url: str
-
-
-class SummarizeSourceState(TypedDict):
-    raw_text: str
-    search_query: str
-    id: int
-    url: str
 
 
 class Input(TypedDict):
@@ -277,19 +281,89 @@ def _is_valid_url(url):
         return False
 
 
-def extract_text(response_content) -> str:
-    """Extract text from model response, handling Gemini's list-of-dicts format."""
-    if isinstance(response_content, str):
-        return response_content
-    if isinstance(response_content, list):
-        return "".join(
-            [
-                chunk.get("text", "")
-                for chunk in response_content
-                if isinstance(chunk, dict)
-            ]
-        )
-    return str(response_content)
+def _wrap_line(line: str, wrap: int) -> list[str]:
+    """Split ``line`` into pieces no longer than ``wrap``, keeping separators.
+
+    A split prefers the last space at or before ``wrap``; when no such space
+    exists it cuts hard. Joining the pieces rebuilds the original line.
+    """
+    if wrap <= 0 or len(line) <= wrap:
+        return [line]
+    pieces: list[str] = []
+    remaining = line
+    while len(remaining) > wrap:
+        cut = remaining.rfind(" ", 0, wrap + 1)
+        if cut <= 0:
+            cut = wrap - 1
+        pieces.append(remaining[: cut + 1])
+        remaining = remaining[cut + 1 :]
+    pieces.append(remaining)
+    return pieces
+
+
+def _number_lines(content: str, wrap: int) -> list[tuple[int, str]]:
+    """Return ``(source_line_index, piece)`` for every wrapped line of ``content``."""
+    return [
+        (index, piece)
+        for index, line in enumerate(content.split("\n"))
+        for piece in _wrap_line(line, wrap)
+    ]
+
+
+def _merge_ranges(ranges: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """Merge overlapping or adjacent 1-based inclusive ranges."""
+    merged: list[tuple[int, int]] = []
+    for start, end in ranges:
+        if merged and start <= merged[-1][1] + 1:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return merged
+
+
+def _parse_ranges(ranges: str, count: int) -> list[tuple[int, int]]:
+    """Parse 1-based inclusive ranges, dropping invalid ones and clipping ends."""
+    parsed: list[tuple[int, int]] = []
+    for token in ranges.split(","):
+        token = token.strip()
+        if not token:
+            continue
+        start_text, separator, end_text = token.partition("-")
+        try:
+            start = int(start_text.strip())
+            end = int(end_text.strip()) if separator else start
+        except ValueError:
+            continue
+        if start < 1 or end < start or start > count:
+            continue
+        parsed.append((start, min(end, count)))
+    parsed.sort()
+    return _merge_ranges(parsed)
+
+
+def _slice(lines: list[tuple[int, str]], ranges: list[tuple[int, int]]) -> list[str]:
+    """Return the text of each range, joining wrapped pieces verbatim."""
+    texts: list[str] = []
+    for start, end in ranges:
+        text = ""
+        previous_index: int | None = None
+        for index, piece in lines[start - 1 : end]:
+            if previous_index is not None and index != previous_index:
+                text += "\n"
+            text += piece
+            previous_index = index
+        stripped = text.strip()
+        if stripped:
+            texts.append(stripped)
+    return texts
+
+
+def _render_evidence(evidence: list[Evidence]) -> str:
+    """Render evidence as ``[E<n>] (url)`` blocks, never raw pages."""
+    return "\n".join(
+        f"[E{number}] ({item['url']})\n{item['text']}"
+        for number, item in enumerate(evidence, start=1)
+    )
 
 
 def create_deep_research_graph(config: ResearchConfig) -> CompiledStateGraph:
@@ -315,9 +389,13 @@ class ResearchAgent:
         self,
         config: ResearchConfig,
         *,
+        limits: ResearchLimits = _DEFAULT_LIMITS,
+        clock: Callable[[], float] = time.monotonic,
         max_research_loops: int = 3,
     ) -> None:
         self.config = config
+        self.limits = limits
+        self.clock = clock
         self.max_research_loops = max_research_loops
         self.graph = self.create_graph()
 
@@ -364,90 +442,103 @@ class ResearchAgent:
         )  # type: ignore
         logger.info("Generated queries: %d", len(result.query))
         return {
-            "messages": [SystemMessage(_REFLECTION_PROMPT)],
             "queries": result.query,
             "max_research_loops": state.get("max_research_loops", 3),
             "original_question": state["question"],
         }
 
     async def web_research(self, state: WebSearchState, config: RunnableConfig) -> dict[str, Any]:
-        """Execute a single web search and return normalized raw results."""
+        """Fetch every page of one query and extract verbatim evidence per page."""
         query = state["search_query"]
         reporter = config.get("configurable", {}).get("progress_reporter")
         if reporter:
             await reporter("Searching", 0.0, None)
-        # If query is a direct URL, fetch it directly and clean up without searching
+        # If query is a direct URL, fetch it directly without searching
         if _is_valid_url(query):
             logger.info("Direct URL fetch for query: %s", query)
-            fetch_result = await self.config.fetch(query, _fetch_query(state))
-            cleaned = await self.clean_result(
-                search_results=[SearchResult(url=query, title="", snippet="")],
-                fetch_results=[fetch_result],
-                question=state['original_question'],
-                knowledge_gap=_knowledge_gap(state),
-            )
-            return {
-                "web_results": [f"Direct URL fetch: {query}\nResult:\n{cleaned}"],
-            }
-        logger.info("Performing web search for query: %s", query)
-        search_results = await self.config.search(query)
+            search_results = [SearchResult(url=query, title="", snippet="")]
+        else:
+            logger.info("Performing web search for query: %s", query)
+            search_results = await self.config.search(query)
         if not search_results:
             logger.warning("No web search results found for query: %s", query)
-            return {
-                "web_results": [f"Web search query: {query}\nNo results found."],
-            }
+            return {"evidence": [], "visits": []}
         fetch_query = _fetch_query(state)
-        fetch_tasks = [self.config.fetch(result.url, fetch_query) for result in search_results]
-        fetch_results = await asyncio.gather(*fetch_tasks)
-        logger.info("Web search result: %d", len(fetch_results))
-        question = state['original_question']
-        clean_result = await self.clean_result(
-            search_results, fetch_results, question, _knowledge_gap(state)
+        fetch_results = await asyncio.gather(
+            *(self.config.fetch(result.url, fetch_query) for result in search_results)
         )
-        logger.info("Web search raw results: %s", clean_result[:50])
-        return {
-            "web_results": [f"Web search query: {query}\nResult:\n{clean_result}"],
-        }
+        logger.info("Web search result: %d", len(fetch_results))
+        return await self._extract_pages(search_results, fetch_results, state)
 
-    async def clean_result(
+    async def _extract_pages(
         self,
         search_results: list[SearchResult],
         fetch_results: list[FetchResult],
-        question: str,
-        knowledge_gap: str | None,
-    ) -> str:
-        success_results = [
-            f"Source URL: {sr.url}\nTitle:{sr.title}\nPage Sippet: {sr.snippet}\nCONTENT: {fr.content}"
-            for sr, fr in zip(search_results, fetch_results, strict=False)
-            if fr.ok and fr.content.strip()
-        ]
-        logger.info(
-            "Extract information from %d success and %d failed results. User question %.10s, knowledge gap: %.20s",
-            len(success_results),
-            len(search_results) - len(success_results),
-            question,
-            knowledge_gap,
+        state: WebSearchState,
+    ) -> dict[str, Any]:
+        """Extract one evidence list per fetchable page, dropping failed pages."""
+        pages = list(zip(search_results, fetch_results, strict=False))
+        visits = [PageVisit(url=result.url, ok=fetched.ok) for result, fetched in pages]
+        extracted = await asyncio.gather(
+            *(self._extract_page(result, fetched, state) for result, fetched in pages),
+            return_exceptions=True,
         )
-        knowledge_gap_section = (
-            f"KNOWLEDGE GAP: {knowledge_gap}\n" if knowledge_gap else ""
-        )
-        formatted_message = (
-            f"SEARCH QUERY: {question}\n"
-            f"{knowledge_gap_section}"
-            "Web Search results:\n"
-        )
-        if success_results:
-            response = await self.config.fast.ainvoke(
-                [
-                    SystemMessage(_CLEAN_RESULT_PROMPT),
-                    HumanMessage(formatted_message + "\n\n".join(success_results)),
-                ]
-            )
-            clean_fetch_result = extract_text(response.content)
-        else:
-            clean_fetch_result = "NO_RELEVANT_EVIDENCE"
-        return clean_fetch_result
+        evidence: list[Evidence] = []
+        for (result, _), item in zip(pages, extracted, strict=False):
+            if isinstance(item, asyncio.CancelledError):
+                raise item
+            if isinstance(item, BaseException):
+                logger.warning("Extraction failed for %s: %s", result.url, item)
+                continue
+            evidence.extend(item)
+        return {"evidence": evidence, "visits": visits}
 
+    async def _extract_page(
+        self,
+        result: SearchResult,
+        fetched: FetchResult,
+        state: WebSearchState,
+    ) -> list[Evidence]:
+        """Extract verbatim evidence from one successfully fetched page."""
+        if not fetched.ok or not fetched.content.strip():
+            return []
+        return await self._extract(
+            url=result.url,
+            title=result.title,
+            content=fetched.content,
+            question=state["original_question"],
+            gap=_knowledge_gap(state),
+        )
+
+    async def _extract(
+        self,
+        url: str,
+        title: str,
+        content: str,
+        question: str,
+        gap: str | None,
+    ) -> list[Evidence]:
+        """Ask the fast model for relevant line ranges and slice them verbatim."""
+        numbered = _number_lines(content, self.limits.line_wrap_chars)
+        numbered_text = "\n".join(
+            f"{number}: {piece}"
+            for number, (_, piece) in enumerate(numbered, start=1)
+        )
+        gap_section = f"KNOWLEDGE GAP: {gap}\n" if gap else ""
+        prompt = (
+            f"QUESTION: {question}\n"
+            f"{gap_section}"
+            f"URL: {url}\n"
+            f"TITLE: {title}\n"
+            f"{numbered_text}"
+        )
+        chain = self.config.fast.with_structured_output(ExtractedRanges)
+        predicted = cast(
+            ExtractedRanges,
+            await chain.ainvoke([SystemMessage(_EXTRACT_PROMPT), HumanMessage(prompt)]),
+        )
+        ranges = _parse_ranges(predicted.ranges, len(numbered))
+        return [Evidence(url=url, text=text) for text in _slice(numbered, ranges)]
 
     async def reflection(self, state: OverallState, config: RunnableConfig) -> dict[str, Any]:
         """Evaluate research completeness and identify knowledge gaps."""
@@ -460,46 +551,29 @@ class ResearchAgent:
                 float(loop_count),
                 max_loops,
             )
-        research_content = "\n\n".join(state.get("web_results", []))
-        research_msg = HumanMessage(
-            content=(
-                f"Question: {state['original_question']}\n\n"
-                f"Research:\n{research_content}"
-            ),
-            name="research_aggregator",
+        gap = state.get("knowledge_gap", "").strip()
+        gap_section = f"\nKnowledge gap: {gap}" if gap else ""
+        human = (
+            f"Question: {state['original_question']}{gap_section}\n\n"
+            f"Evidence:\n{_render_evidence(state.get('evidence', []))}"
         )
-        chain = self.config.small.with_structured_output(
+        chain = self.config.small.with_structured_output(Reflection)
+        parsed = cast(
             Reflection,
-            include_raw=True,
-            method="json_schema"
+            await chain.ainvoke([SystemMessage(_REFLECTION_PROMPT), HumanMessage(human)]),
         )
-        result = cast(
-            dict[str, Any],
-            await chain.ainvoke([*state.get("messages", []), research_msg]),
-        )
-        raw_message = result["raw"]
-        parsed = cast(Reflection, result["parsed"])
         logger.info(
-            (
-                "Reflection loop %d: is_sufficient=%s, findings: %s, "
-                "follow_ups=%d, knowledge_gap=%s"
-            ),
+            "Reflection loop %d: is_sufficient=%s, follow_ups=%d, knowledge_gap=%s",
             loop_count,
             parsed.is_sufficient,
-            parsed.findings_summary[:1200],
             len(parsed.follow_ups),
             parsed.knowledge_gap[:1200],
         )
         return {
-            "messages": [research_msg, raw_message],
             "research_loop_count": loop_count,
             "is_sufficient": parsed.is_sufficient,
             "follow_ups": parsed.follow_ups,
-            "findings": [parsed.findings_summary],
             "knowledge_gap": parsed.knowledge_gap,
-            "sources_gathered": parsed.relevant_links,
-            "web_results": Overwrite(value=[]),
-            "summarized_findings": Overwrite(value=[]),
         }
 
     async def finalize_answer(self, state: OverallState, config: RunnableConfig) -> dict[str, Any]:
@@ -507,18 +581,29 @@ class ResearchAgent:
         reporter = config.get("configurable", {}).get("progress_reporter")
         if reporter:
             await reporter("Synthesizing final answer...", 0.0, None)
+        evidence = state.get("evidence", [])
+        gap = state.get("knowledge_gap", "").strip()
+        gap_section = f"\n\nKnowledge gap: {gap}" if gap else ""
+        human = (
+            f"Question: {state['original_question']}\n\n"
+            f"Evidence:\n{_render_evidence(evidence)}{gap_section}"
+        )
         response = cast(
             Result,
-            await self.config.small.with_structured_output(
-            Result
-            ).ainvoke(state["messages"] + [HumanMessage(_FINALIZE_PROMPT)]),
+            await self.config.small.with_structured_output(Result).ainvoke(
+                [SystemMessage(_FINALIZE_PROMPT), HumanMessage(human)]
+            ),
         )
-        sources_gathered = list(dict.fromkeys(state.get("sources_gathered", [])))
-        logger.info("Final answer generated: %s. Explanation: %s", response["answer"], response.get("explanation", "")[:1000]  )
+        sources_gathered = list(dict.fromkeys(item["url"] for item in evidence))
+        logger.info(
+            "Final answer generated: %s. Explanation: %s",
+            response["answer"],
+            response.get("explanation", "")[:1000],
+        )
         return {
             "answer": response["answer"],
             "explanation": response.get("explanation", ""),
-            "sources_gathered": Overwrite(value=sources_gathered),
+            "sources_gathered": sources_gathered,
         }
 
     def continue_to_web_research(self, state: OverallState) -> list[Send]:

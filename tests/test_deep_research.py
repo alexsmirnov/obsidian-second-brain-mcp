@@ -6,6 +6,7 @@ All tests mock LLM and HTTP calls — no real network access.
 from __future__ import annotations
 
 import shutil
+from collections.abc import Callable
 from typing import Any, cast
 
 import httpx
@@ -14,7 +15,6 @@ from langchain_core.language_models.fake_chat_models import (
     FakeMessagesListChatModel,
 )
 from langchain_core.messages import AIMessage
-from pydantic import Field
 
 from mcps.config import ServerConfig, create_config
 from mcps.research.agent import create_researcher
@@ -22,7 +22,13 @@ from mcps.research.config import (
     ResearchConfig,
     build_research_config,
 )
-from mcps.research.deep_research import ResearchAgent
+from mcps.research.deep_research import (
+    ExtractedRanges,
+    Reflection,
+    ResearchAgent,
+    ResearchLimits,
+    Result,
+)
 from mcps.research.tools import SearchResult
 from mcps.research.tools.models import FetchResult, FetchStatus
 
@@ -311,14 +317,40 @@ _SEARCH_RESULTS = [
 ]
 
 
-class _RecordingModel(FakeMessagesListChatModel):
-    """Fake chat model that keeps every message list it was invoked with."""
+class _StructuredRunnable:
+    """Records one structured-output invocation and delegates to a handler."""
 
-    calls: list[list[Any]] = Field(default_factory=list)
+    def __init__(self, model: _StructuredModel, schema: Any) -> None:
+        self._model = model
+        self._schema = schema
 
-    def _generate(self, messages, *args, **kwargs):
-        self.calls.append(messages)
-        return super()._generate(messages, *args, **kwargs)
+    async def ainvoke(self, messages: list[Any]) -> Any:
+        self._model.calls.append((self._schema, messages))
+        return self._model.handlers[self._schema](messages)
+
+
+class _StructuredModel:
+    """Fake chat model serving structured-output handlers and recording calls.
+
+    ``calls`` holds ``(schema, messages)`` tuples; unstructured ``ainvoke``
+    records ``(None, messages)`` so single-call legacy nodes still run.
+    """
+
+    def __init__(
+        self,
+        handlers: dict[Any, Callable[[list[Any]], Any]],
+    ) -> None:
+        self.handlers = handlers
+        self.calls: list[tuple[Any, list[Any]]] = []
+
+    def with_structured_output(
+        self, schema: Any, **_kwargs: Any
+    ) -> _StructuredRunnable:
+        return _StructuredRunnable(self, schema)
+
+    async def ainvoke(self, messages: list[Any], **_kwargs: Any) -> AIMessage:
+        self.calls.append((None, messages))
+        return AIMessage("UNSTRUCTURED")
 
 
 _FAILED = FetchResult("", FetchStatus.HTTP_ERROR, "", http_status=403)
@@ -328,7 +360,31 @@ def _fetched(content: str) -> FetchResult:
     return FetchResult("", FetchStatus.OK, "text/markdown", content)
 
 
-def _make_agent(fetch_results: dict[str, FetchResult] | None = None):
+_PAGE = "alpha\nbeta\ngamma\ndelta\nepsilon"
+_DEFAULT_LIMITS = ResearchLimits()
+
+
+def _ranges_by_url(mapping: dict[str, str]) -> Callable[[list[Any]], ExtractedRanges]:
+    """Handler returning the range string mapped to whichever URL is in the prompt."""
+
+    def handler(messages: list[Any]) -> ExtractedRanges:
+        text = str(messages[-1].content)
+        for url, ranges in mapping.items():
+            if url in text:
+                return ExtractedRanges(ranges=ranges)
+        raise AssertionError(f"no URL from {list(mapping)} in extraction prompt")
+
+    return handler
+
+
+def _make_agent(
+    fetch_results: dict[str, FetchResult] | None = None,
+    *,
+    extract: Callable[[list[Any]], ExtractedRanges] | None = None,
+    answer: Callable[[list[Any]], Result] | None = None,
+    reflect: Callable[[list[Any]], Reflection] | None = None,
+    limits: ResearchLimits = _DEFAULT_LIMITS,
+):
     fetch_calls: list[tuple[str, str | None]] = []
     results = fetch_results or {}
 
@@ -339,12 +395,25 @@ def _make_agent(fetch_results: dict[str, FetchResult] | None = None):
     async def fake_search(query: str) -> list[SearchResult]:
         return _SEARCH_RESULTS
 
-    fast = _RecordingModel(responses=[AIMessage("CLEANED")] * 4)
-    small = FakeMessagesListChatModel(responses=[AIMessage("CLEANED")])
-    agent = ResearchAgent(
-        ResearchConfig(fast=fast, small=small, search=fake_search, fetch=fake_fetch)
+    extract_handler = extract or (lambda _messages: ExtractedRanges(ranges="1"))
+    answer_handler = answer or (
+        lambda _messages: Result(answer="x", explanation="y", sources_gathered=[])
     )
-    return agent, fast, fetch_calls
+    reflect_handler = reflect or (
+        lambda _messages: Reflection(is_sufficient=True, knowledge_gap="")
+    )
+    fast = _StructuredModel({ExtractedRanges: extract_handler})
+    small = _StructuredModel({Reflection: reflect_handler, Result: answer_handler})
+    agent = ResearchAgent(
+        ResearchConfig(
+            fast=cast(Any, fast),
+            small=cast(Any, small),
+            search=fake_search,
+            fetch=fake_fetch,
+        ),
+        limits=limits,
+    )
+    return agent, fast, small, fetch_calls
 
 
 def _state(**overrides: Any) -> Any:
@@ -353,15 +422,17 @@ def _state(**overrides: Any) -> Any:
 
 
 class TestWebResearchFetch:
+    """Per-page verbatim evidence extraction from the web_research node."""
+
     async def test_initial_branch_uses_original_question(self):
-        agent, _, fetch_calls = _make_agent()
+        agent, _, _, fetch_calls = _make_agent()
 
         await agent.web_research(_state(), {})
 
         assert [q for _, q in fetch_calls] == [_QUESTION] * 3
 
     async def test_follow_up_uses_knowledge_gap(self):
-        agent, _, fetch_calls = _make_agent()
+        agent, _, _, fetch_calls = _make_agent()
 
         await agent.web_research(
             _state(knowledge_gap="What are the latency limits?"), {}
@@ -373,7 +444,7 @@ class TestWebResearchFetch:
         assert queries == ["What are the latency limits?"] * 3 + [_QUESTION] * 6
 
     async def test_direct_url_passes_query(self):
-        agent, _, fetch_calls = _make_agent()
+        agent, _, _, fetch_calls = _make_agent()
 
         await agent.web_research(
             _state(search_query="https://source.example/page"), {}
@@ -381,51 +452,167 @@ class TestWebResearchFetch:
 
         assert fetch_calls == [("https://source.example/page", _QUESTION)]
 
-    async def test_failed_and_empty_fetches_are_not_evidence(self):
-        agent, fast, _ = _make_agent(
+    async def test_extracted_ranges_become_verbatim_evidence_per_page(self):
+        agent, fast, _, _ = _make_agent(
             {
-                "https://a.example": _fetched("content A"),
-                "https://b.example": _FAILED,
-                "https://c.example": _fetched(""),
-            }
+                "https://a.example": _fetched(_PAGE),
+                "https://b.example": _fetched(_PAGE),
+                "https://c.example": _fetched(_PAGE),
+            },
+            extract=_ranges_by_url(
+                {
+                    "https://a.example": "2-3",
+                    "https://b.example": "",
+                    "https://c.example": "5",
+                }
+            ),
         )
 
-        result = await agent.web_research(_state(), {})
+        out = await agent.web_research(_state(), {})
+
+        assert out["evidence"] == [
+            {"url": "https://a.example", "text": "beta\ngamma"},
+            {"url": "https://c.example", "text": "epsilon"},
+        ]
+        assert len(fast.calls) == 3
+        for _schema, messages in fast.calls:
+            text = str(messages[-1].content)
+            assert "1: alpha" in text
+            urls = ("https://a.example", "https://b.example", "https://c.example")
+            assert sum(url in text for url in urls) == 1
+
+    async def test_long_lines_are_wrapped_for_ranges_and_sliced_verbatim(self):
+        long_line = " ".join(f"word{i:02d}" for i in range(12))
+        agent, fast, _, _ = _make_agent(
+            {
+                "https://a.example": _fetched(long_line),
+                "https://b.example": _FAILED,
+                "https://c.example": _FAILED,
+            },
+            extract=_ranges_by_url({"https://a.example": "2-3"}),
+            limits=ResearchLimits(line_wrap_chars=20),
+        )
+
+        out = await agent.web_research(_state(), {})
+
+        assert "4: " in str(fast.calls[0][1][-1].content)
+        evidence_text = out["evidence"][0]["text"]
+        assert evidence_text in long_line
+        assert 0 < len(evidence_text) < len(long_line)
+
+    async def test_invalid_ranges_are_ignored_clipped_or_merged(self):
+        agent, _, _, _ = _make_agent(
+            {
+                "https://a.example": _fetched(_PAGE),
+                "https://b.example": _FAILED,
+                "https://c.example": _FAILED,
+            },
+            extract=_ranges_by_url({"https://a.example": "abc, 2-2, 4-99, 9-12, 3-1"}),
+        )
+
+        out = await agent.web_research(_state(), {})
+
+        assert [e["text"] for e in out["evidence"]] == ["beta", "delta\nepsilon"]
+
+        merged_agent, _, _, _ = _make_agent(
+            {
+                "https://a.example": _fetched(_PAGE),
+                "https://b.example": _FAILED,
+                "https://c.example": _FAILED,
+            },
+            extract=_ranges_by_url({"https://a.example": "1-2, 2-3, 4-4"}),
+        )
+
+        merged_out = await merged_agent.web_research(_state(), {})
+
+        assert [e["text"] for e in merged_out["evidence"]] == [
+            "alpha\nbeta\ngamma\ndelta"
+        ]
+
+    async def test_failed_and_blank_fetches_skip_extraction_and_are_recorded(self):
+        agent, fast, _, _ = _make_agent(
+            {
+                "https://a.example": _fetched(_PAGE),
+                "https://b.example": _FAILED,
+                "https://c.example": _fetched("  "),
+            },
+            extract=_ranges_by_url({"https://a.example": "1"}),
+        )
+
+        out = await agent.web_research(_state(), {})
 
         assert len(fast.calls) == 1
-        human_text = str(fast.calls[0][-1].content)
-        assert "https://a.example" in human_text
-        assert "b.example" not in human_text
-        assert "c.example" not in human_text
-        assert "CLEANED" in result["web_results"][0]
+        assert out["visits"] == [
+            {"url": "https://a.example", "ok": True},
+            {"url": "https://b.example", "ok": False},
+            {"url": "https://c.example", "ok": True},
+        ]
+
+    async def test_extraction_error_drops_only_that_page(self):
+        def extract(messages: list[Any]) -> ExtractedRanges:
+            if "https://b.example" in str(messages[-1].content):
+                raise RuntimeError("extraction failed")
+            return ExtractedRanges(ranges="1")
+
+        agent, _, _, _ = _make_agent(
+            {
+                "https://a.example": _fetched(_PAGE),
+                "https://b.example": _fetched(_PAGE),
+                "https://c.example": _fetched(_PAGE),
+            },
+            extract=extract,
+        )
+
+        out = await agent.web_research(_state(), {})
+
+        assert [e["url"] for e in out["evidence"]] == [
+            "https://a.example",
+            "https://c.example",
+        ]
 
     @pytest.mark.parametrize(
-        "state_extra", [{}, {"knowledge_gap": "N/A"}, {"knowledge_gap": " "}]
+        ("state_extra", "expected"),
+        [
+            ({}, "absent"),
+            ({"knowledge_gap": "N/A"}, "absent"),
+            ({"knowledge_gap": " "}, "absent"),
+            ({"knowledge_gap": "latency limits"}, "KNOWLEDGE GAP: latency limits"),
+        ],
     )
-    async def test_absent_knowledge_gap_is_skipped_in_prompt(self, state_extra):
-        agent, fast, _ = _make_agent()
+    async def test_knowledge_gap_header_only_when_present(
+        self, state_extra: dict[str, Any], expected: str
+    ):
+        agent, fast, _, _ = _make_agent()
 
         await agent.web_research(_state(**state_extra), {})
 
-        assert "KNOWLEDGE GAP" not in str(fast.calls[0][-1].content)
+        assert len(fast.calls) == 3
+        for _schema, messages in fast.calls:
+            text = str(messages[-1].content)
+            if expected == "absent":
+                assert "KNOWLEDGE GAP" not in text
+            else:
+                assert expected in text
 
-    async def test_present_knowledge_gap_is_in_prompt(self):
-        agent, fast, _ = _make_agent()
+    async def test_reflection_and_finalize_see_numbered_evidence_only(self):
+        agent, _, small, _ = _make_agent()
+        state: Any = {
+            "original_question": _QUESTION,
+            "evidence": [
+                {"url": "https://a.example", "text": "beta"},
+                {"url": "https://b.example", "text": "gamma"},
+            ],
+            "research_loop_count": 0,
+        }
 
-        await agent.web_research(_state(knowledge_gap="latency limits"), {})
+        await agent.reflection(state, {})
+        out = await agent.finalize_answer(state, {})
 
-        assert "KNOWLEDGE GAP: latency limits" in str(fast.calls[0][-1].content)
-
-    async def test_all_failed_fetches_yield_no_evidence_without_llm_call(self):
-        agent, fast, _ = _make_agent(
-            {
-                "https://a.example": _FAILED,
-                "https://b.example": _fetched(""),
-                "https://c.example": _fetched("   "),
-            }
-        )
-
-        result = await agent.web_research(_state(), {})
-
-        assert fast.calls == []
-        assert "NO_RELEVANT_EVIDENCE" in result["web_results"][0]
+        for _schema, messages in small.calls:
+            text = str(messages[-1].content)
+            assert "[E1] (https://a.example)\nbeta" in text
+            assert "[E2] (https://b.example)\ngamma" in text
+        assert out["sources_gathered"] == [
+            "https://a.example",
+            "https://b.example",
+        ]
