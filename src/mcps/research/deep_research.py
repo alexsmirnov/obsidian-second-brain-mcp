@@ -19,7 +19,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import Send
 from pydantic import BaseModel, Field
 
-from mcps.research.tools import FetchResult, SearchResult
+from mcps.research.tools import SearchResult
 
 if TYPE_CHECKING:
     from langgraph.graph.state import CompiledStateGraph
@@ -309,10 +309,15 @@ def _valid_links(links: list[str]) -> list[str]:
     return [stripped for link in links if (stripped := link.strip()) and _is_http_url(stripped)]
 
 
+def _meaningful_gap(gap: str) -> str | None:
+    """Stripped gap text, or None when blank or "N/A"."""
+    stripped = gap.strip()
+    return stripped if stripped and stripped != "N/A" else None
+
+
 def _knowledge_gap(state: OverallState) -> str | None:
     """Stripped knowledge gap, or None when absent, blank or "N/A"."""
-    gap = state.get("knowledge_gap", "").strip()
-    return gap if gap and gap != "N/A" else None
+    return _meaningful_gap(state.get("knowledge_gap", ""))
 
 
 def _wrap_line(line: str, wrap: int) -> list[str]:
@@ -566,6 +571,7 @@ class ResearchAgent:
 
     async def generate_query(self, state: Input, config: RunnableConfig) -> dict[str, Any]:
         """Produce the initial round plan and start the elapsed-time clock."""
+        started_at = self.clock()
         reporter = config.get("configurable", {}).get("progress_reporter")
         if reporter:
             await reporter("Generating search queries...", 0.0, None)
@@ -591,7 +597,7 @@ class ResearchAgent:
         logger.info("Initial plan: %d queries, %d links", len(queries), len(links))
         return {
             "original_question": state["question"],
-            "started_at": self.clock(),
+            "started_at": started_at,
             "search_queries": queries,
             "pending_links": links,
             "fetch_query": result.fetch_query.strip() or state["question"],
@@ -691,50 +697,39 @@ class ResearchAgent:
         if not urls:
             logger.warning("No pages selected for this round")
             return {"evidence": [], "visits": []}
-        fetch_query = state.get("fetch_query") or state["original_question"]
-        fetch_results = await asyncio.gather(
-            *(self.config.fetch(url, fetch_query) for url in urls)
-        )
         titles = _search_titles(state.get("searches", []))
-        visits = [
-            PageVisit(url=url, ok=fetched.ok)
-            for url, fetched in zip(urls, fetch_results, strict=False)
-        ]
-        extracted = await asyncio.gather(
-            *(
-                self._extract_page(url, titles.get(_normalize_url(url), ""), fetched, state)
-                for url, fetched in zip(urls, fetch_results, strict=False)
-            ),
-            return_exceptions=True,
+        pages = await asyncio.gather(
+            *(self._visit_page(url, titles.get(_normalize_url(url), ""), state) for url in urls)
         )
-        evidence: list[Evidence] = []
-        for url, item in zip(urls, extracted, strict=False):
-            if isinstance(item, asyncio.CancelledError):
-                raise item
-            if isinstance(item, BaseException):
-                logger.warning("Extraction failed for %s: %s", url, item)
-                continue
-            evidence.extend(item)
+        visits = [visit for visit, _ in pages]
+        evidence = [item for _, page_evidence in pages for item in page_evidence]
         logger.info("Visited %d pages, kept %d evidence items", len(visits), len(evidence))
         return {"evidence": evidence, "visits": visits}
 
-    async def _extract_page(
+    async def _visit_page(
         self,
         url: str,
         title: str,
-        fetched: FetchResult,
         state: OverallState,
-    ) -> list[Evidence]:
-        """Extract verbatim evidence from one successfully fetched page."""
+    ) -> tuple[PageVisit, list[Evidence]]:
+        """Fetch one page and extract its evidence as soon as it arrives."""
+        fetch_query = state.get("fetch_query") or state["original_question"]
+        fetched = await self.config.fetch(url, fetch_query)
+        visit = PageVisit(url=url, ok=fetched.ok)
         if not fetched.ok or not fetched.content.strip():
-            return []
-        return await self._extract(
-            url=url,
-            title=title,
-            content=fetched.content,
-            question=state["original_question"],
-            gap=_knowledge_gap(state),
-        )
+            return visit, []
+        try:
+            evidence = await self._extract(
+                url=url,
+                title=title,
+                content=fetched.content,
+                question=state["original_question"],
+                gap=_knowledge_gap(state),
+            )
+        except Exception as error:  # one page's extraction must never fail the round
+            logger.warning("Extraction failed for %s: %s", url, error)
+            return visit, []
+        return visit, evidence
 
     async def _extract(
         self,
@@ -808,7 +803,9 @@ class ResearchAgent:
             "knowledge_gap": parsed.knowledge_gap,
             "search_queries": queries,
             "pending_links": links,
-            "fetch_query": parsed.fetch_query.strip() or _knowledge_gap(state) or state["original_question"],
+            "fetch_query": parsed.fetch_query.strip()
+            or _meaningful_gap(parsed.knowledge_gap)
+            or state["original_question"],
         }
 
     def evaluate_research(

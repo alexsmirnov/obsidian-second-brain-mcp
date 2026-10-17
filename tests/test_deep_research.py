@@ -5,6 +5,7 @@ All tests mock LLM and HTTP calls — no real network access.
 
 from __future__ import annotations
 
+import asyncio
 import shutil
 import time
 from collections.abc import Callable
@@ -573,6 +574,41 @@ class TestWebResearchFetch:
             "https://c.example",
         ]
 
+    async def test_page_extraction_starts_before_slower_fetches_finish(self):
+        extraction_started = asyncio.Event()
+
+        async def fetch(url: str, _query: str | None = None, /) -> FetchResult:
+            if url == "https://b.example":
+                await asyncio.wait_for(extraction_started.wait(), timeout=1)
+            return _fetched(_PAGE)
+
+        def extract(_messages: list[Any]) -> ExtractedRanges:
+            extraction_started.set()
+            return ExtractedRanges(ranges="1")
+
+        fast = _StructuredModel({ExtractedRanges: extract})
+        agent = ResearchAgent(
+            ResearchConfig(
+                fast=cast(Any, fast),
+                small=cast(Any, _StructuredModel({})),
+                search=cast(Any, None),
+                fetch=fetch,
+            )
+        )
+
+        out = await agent.web_research(
+            _state(to_visit=["https://a.example", "https://b.example"]), {}
+        )
+
+        assert out["visits"] == [
+            {"url": "https://a.example", "ok": True},
+            {"url": "https://b.example", "ok": True},
+        ]
+        assert [e["url"] for e in out["evidence"]] == [
+            "https://a.example",
+            "https://b.example",
+        ]
+
     @pytest.mark.parametrize(
         ("state_extra", "expected"),
         [
@@ -982,17 +1018,19 @@ class TestReflectionRound:
             ("latency limits", "latency limits"),
         ],
     )
-    async def test_fetch_query_falls_back_through_gap_to_question(
+    async def test_fetch_query_falls_back_through_new_gap_to_question(
         self, knowledge_gap: str, expected: str
     ):
         agent, _, _, _ = _make_agent(
-            reflect=lambda _messages: Reflection(is_sufficient=False, fetch_query="  "),
+            reflect=lambda _messages: Reflection(
+                is_sufficient=False, fetch_query="  ", knowledge_gap=knowledge_gap
+            ),
         )
         state: Any = {
             "original_question": _QUESTION,
             "searches": [],
             "visits": [],
-            "knowledge_gap": knowledge_gap,
+            "knowledge_gap": "previous round gap",
         }
 
         out = await agent.reflection(state, {})
