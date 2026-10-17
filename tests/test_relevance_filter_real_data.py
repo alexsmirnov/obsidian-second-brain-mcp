@@ -6,18 +6,29 @@ per case, passages the filter must keep and boilerplate it must drop.
 
 from __future__ import annotations
 
+import itertools
 import json
 import logging
-from collections.abc import AsyncGenerator, Callable, Generator
+from collections.abc import (
+    AsyncGenerator,
+    Callable,
+    Generator,
+    Iterable,
+    Mapping,
+)
 from dataclasses import dataclass, field
+from typing import cast
 
 import httpx
 import pytest
 from dotenv import find_dotenv, load_dotenv
-from web_fetch_evaluation import CASES_DIR, load_cases
+from langchain_core.messages import HumanMessage, SystemMessage
+from web_fetch_evaluation import CASES_DIR, FetchCase, load_cases
 
 from mcps.common.decisions import DecisionClient
 from mcps.config import ServerConfig, create_config
+from mcps.research.config import _create_chat_model
+from mcps.research.deep_research import FETCH_QUERY_INSTRUCTIONS, FetchQuery
 from mcps.research.tools.bm25_ranker import Bm25Ranker
 from mcps.research.tools.decision_ranker import DecisionRanker
 from mcps.research.tools.filtering import RelevanceFilter
@@ -35,6 +46,44 @@ EXPECTATIONS: dict[str, dict] = json.loads(
 CASES = {
     case.case_id: case for case in load_cases(CASES_DIR / "fetch-cases-smoke.jsonl")
 }
+
+QUERY_SOURCES = ("dataset", "generated")
+GENERATED_QUERIES: dict[str, str] = {}
+
+
+@dataclass(frozen=True)
+class FetchQueryInput:
+    """Question and optional knowledge gap sent to the fetch-query fragment."""
+
+    question: str
+    gap: str = ""
+
+
+def fetch_query_input(case: FetchCase, cases: Iterable[FetchCase]) -> FetchQueryInput:
+    """Build the fragment input for a case: own query at round 0, root+gap later."""
+    question = case.query or ""
+    if case.research_round in (None, 0) or case.task_id is None:
+        return FetchQueryInput(question=question)
+    root = next(
+        (
+            candidate
+            for candidate in cases
+            if candidate.task_id == case.task_id
+            and candidate.research_round == 0
+        ),
+        None,
+    )
+    if root is None:
+        return FetchQueryInput(question=question)
+    return FetchQueryInput(question=root.query or "", gap=question)
+
+
+def fetch_query_message(inp: FetchQueryInput) -> str:
+    """Render the fragment human message with an optional gap header."""
+    if inp.gap:
+        return f"QUESTION: {inp.question}\nKNOWLEDGE GAP: {inp.gap}"
+    return f"QUESTION: {inp.question}"
+
 
 FilterBuilder = Callable[[ServerConfig, httpx.AsyncClient], RelevanceFilter]
 
@@ -206,14 +255,17 @@ class FilterEvaluation:
 EVALUATIONS: dict[str, FilterEvaluation] = {}
 
 
-def format_evaluation_report(evaluations: dict[str, FilterEvaluation]) -> str:
+def format_evaluation_report(
+    evaluations: dict[str, FilterEvaluation],
+    queries: Mapping[str, str] | None = None,
+) -> str:
     """Format evaluation metrics as an aligned summary table."""
     active_evals = {name: ev for name, ev in evaluations.items() if ev.cases}
     if not active_evals:
         return "No relevance filter evaluations recorded."
 
     hdr = (
-        f"{'Filter':<8} {'Cases':<6} {'Precision':<10} {'Recall':<10} {'F1':<10} "
+        f"{'Filter':<18} {'Cases':<6} {'Precision':<10} {'Recall':<10} {'F1':<10} "
         f"{'Macro-P':<10} {'Macro-R':<10} {'Macro-F1':<10}"
     )
     sep = "=" * len(hdr)
@@ -229,7 +281,7 @@ def format_evaluation_report(evaluations: dict[str, FilterEvaluation]) -> str:
     ]
     for name, ev in active_evals.items():
         lines.append(
-            f"{name:<8} {len(ev.cases):<6} "
+            f"{name:<18} {len(ev.cases):<6} "
             f"{ev.micro_precision:<10.4f} {ev.micro_recall:<10.4f} "
             f"{ev.micro_f1:<10.4f} {ev.macro_precision:<10.4f} "
             f"{ev.macro_recall:<10.4f} {ev.macro_f1:<10.4f}"
@@ -246,7 +298,7 @@ def format_evaluation_report(evaluations: dict[str, FilterEvaluation]) -> str:
     lines.append("")
     lines.append("Per-case breakdown:")
     case_hdr = (
-        f"  {'Filter':<8} {'Case ID':<14} {'Precision':<10} {'Recall':<10} "
+        f"  {'Filter':<18} {'Case ID':<14} {'Precision':<10} {'Recall':<10} "
         f"{'F1':<10} {'TP/Rel':<8} {'FP/Irrel':<8}"
     )
     lines.append(case_hdr)
@@ -256,9 +308,15 @@ def format_evaluation_report(evaluations: dict[str, FilterEvaluation]) -> str:
             rel_ratio = f"{c.tp}/{c.total_relevant}"
             irrel_ratio = f"{c.fp}/{c.total_irrelevant}"
             lines.append(
-                f"  {name:<8} {c.case_id:<14} {c.precision:<10.4f} "
+                f"  {name:<18} {c.case_id:<14} {c.precision:<10.4f} "
                 f"{c.recall:<10.4f} {c.f1:<10.4f} {rel_ratio:<8} {irrel_ratio:<8}"
             )
+    if queries:
+        lines.append("")
+        lines.append("Generated fetch queries:")
+        lines.extend(
+            f"  {case_id}: {query}" for case_id, query in sorted(queries.items())
+        )
     lines.append(sep)
     return "\n".join(lines)
 
@@ -284,10 +342,12 @@ def report_filter_metrics(
     request: pytest.FixtureRequest,
 ) -> Generator[None]:
     EVALUATIONS.clear()
-    for name in FILTERS:
-        EVALUATIONS[name] = FilterEvaluation(filter_name=name)
+    GENERATED_QUERIES.clear()
+    for name, source in itertools.product(FILTERS, QUERY_SOURCES):
+        key = f"{name}/{source}"
+        EVALUATIONS[key] = FilterEvaluation(filter_name=key)
     yield
-    report = format_evaluation_report(EVALUATIONS)
+    report = format_evaluation_report(EVALUATIONS, GENERATED_QUERIES)
     logger.info("%s", report)
     reporter = request.config.pluginmanager.get_plugin("terminalreporter")
     if reporter:
@@ -301,6 +361,11 @@ def filter_name(request: pytest.FixtureRequest) -> str:
     return request.param
 
 
+@pytest.fixture(params=QUERY_SOURCES)
+def query_source(request: pytest.FixtureRequest) -> str:
+    return request.param
+
+
 @pytest.fixture
 def page_filter(
     filter_name: str,
@@ -308,6 +373,53 @@ def page_filter(
     http_client: httpx.AsyncClient,
 ) -> RelevanceFilter:
     return FILTERS[filter_name](config, http_client)
+
+
+def _generation_model_name(case: FetchCase, config: ServerConfig) -> str:
+    """Round 0/unknown uses the fast model; later rounds use the infer model."""
+    if case.research_round in (None, 0):
+        return config.research_fast_model
+    return config.research_infer_model
+
+
+async def generate_fetch_query(
+    case: FetchCase,
+    config: ServerConfig,
+    http_client: httpx.AsyncClient,
+) -> str:
+    """Generate (and cache) one fetch query per case via the shared fragment."""
+    if case.case_id in GENERATED_QUERIES:
+        return GENERATED_QUERIES[case.case_id]
+    inp = fetch_query_input(case, CASES.values())
+    model_name = _generation_model_name(case, config)
+    if not (
+        config.research_fast_model
+        and config.research_infer_model
+        and config.router_api_key
+        and valid_router_url(config.router_api_base)
+    ):
+        pytest.skip(
+            "RESEARCH_FAST_MODEL, RESEARCH_INFER_MODEL or router settings not set"
+        )
+    model = _create_chat_model(
+        model_name=model_name,
+        router_url=config.router_api_base,
+        router_key=config.router_api_key,
+        http_client=http_client,
+    )
+    parsed = cast(
+        FetchQuery,
+        await model.with_structured_output(FetchQuery).ainvoke(
+            [
+                SystemMessage(FETCH_QUERY_INSTRUCTIONS),
+                HumanMessage(fetch_query_message(inp)),
+            ]
+        ),
+    )
+    query = parsed.fetch_query.strip() or inp.question
+    GENERATED_QUERIES[case.case_id] = query
+    logger.info("Generated fetch query for %s: %s", case.case_id, query)
+    return query
 
 
 def test_calculate_precision_recall_f1() -> None:
@@ -354,6 +466,80 @@ def test_filter_evaluation_aggregates() -> None:
     assert "test" in report
 
 
+def test_fetch_query_input_round_zero_uses_case_query_as_question() -> None:
+    case = CASES["baseline-079"]
+
+    assert fetch_query_input(case, CASES.values()) == FetchQueryInput(
+        question=case.query or ""
+    )
+
+
+@pytest.mark.parametrize(
+    ("case_id", "root_id"),
+    [("baseline-263", "baseline-172"), ("baseline-124", "baseline-079")],
+)
+def test_fetch_query_input_later_round_uses_task_question_and_gap(
+    case_id: str, root_id: str
+) -> None:
+    case = CASES[case_id]
+
+    assert fetch_query_input(case, CASES.values()) == FetchQueryInput(
+        question=CASES[root_id].query or "", gap=case.query or ""
+    )
+
+
+def test_fetch_query_input_without_root_round_falls_back_to_own_query() -> None:
+    orphan = FetchCase(
+        case_id="x",
+        url="https://x.example",
+        query="gap text",
+        baseline_error=None,
+        baseline_chars=None,
+        task_id="none",
+        research_round=1,
+    )
+
+    assert fetch_query_input(orphan, [orphan, *CASES.values()]) == FetchQueryInput(
+        question="gap text"
+    )
+
+
+def test_fetch_query_input_without_task_id_does_not_match_root() -> None:
+    orphan = FetchCase(
+        case_id="y",
+        url="https://y.example",
+        query="gap text",
+        baseline_error=None,
+        baseline_chars=None,
+        task_id=None,
+        research_round=1,
+    )
+
+    assert fetch_query_input(orphan, [orphan, *CASES.values()]) == FetchQueryInput(
+        question="gap text"
+    )
+
+
+def test_fetch_query_message_adds_gap_header_only_when_present() -> None:
+    assert fetch_query_message(FetchQueryInput("Q")) == "QUESTION: Q"
+    assert (
+        fetch_query_message(FetchQueryInput("Q", "G"))
+        == "QUESTION: Q\nKNOWLEDGE GAP: G"
+    )
+
+
+def test_report_lists_source_rows_and_generated_queries() -> None:
+    evaluation = FilterEvaluation("bm25/generated")
+    evaluation.add_case(CaseMetrics(case_id="c1", tp=1, fp=0, fn=0, tn=1))
+
+    report = format_evaluation_report(
+        {"bm25/generated": evaluation}, {"c1": "parallel trends staggered"}
+    )
+
+    assert any(line.startswith("bm25/generated ") for line in report.splitlines())
+    assert "c1: parallel trends staggered" in report
+
+
 @pytest.mark.parametrize("case_id", sorted(EXPECTATIONS))
 def test_expected_substrings_occur_once_in_page(case_id: str) -> None:
     content = page_content(case_id)
@@ -371,7 +557,12 @@ def test_expected_substrings_occur_once_in_page(case_id: str) -> None:
 
 @pytest.mark.parametrize("case_id", sorted(EXPECTATIONS))
 async def test_filter_keeps_relevant_and_drops_irrelevant_passages(
-    filter_name: str, page_filter: RelevanceFilter, case_id: str
+    filter_name: str,
+    query_source: str,
+    page_filter: RelevanceFilter,
+    case_id: str,
+    config: ServerConfig,
+    http_client: httpx.AsyncClient,
 ) -> None:
     case = CASES[case_id]
     expected = EXPECTATIONS[case_id]
@@ -380,7 +571,14 @@ async def test_filter_keeps_relevant_and_drops_irrelevant_passages(
         url=case.url, status=FetchStatus.OK, mime=expected["mime"], content=content
     )
 
-    result = await page_filter(page, case.query)
+    query = (
+        case.query
+        if query_source == "dataset"
+        else await generate_fetch_query(case, config, http_client)
+    )
+    assert query and query.strip()
+
+    result = await page_filter(page, query)
 
     kept = result.content
     assert result.status is FetchStatus.OK
@@ -389,14 +587,16 @@ async def test_filter_keeps_relevant_and_drops_irrelevant_passages(
         kept, expected["relevant"], expected["irrelevant"]
     )
     case_metric = CaseMetrics(case_id=case_id, tp=tp, fp=fp, fn=fn, tn=tn)
-    if filter_name not in EVALUATIONS:
-        EVALUATIONS[filter_name] = FilterEvaluation(filter_name=filter_name)
-    EVALUATIONS[filter_name].add_case(case_metric)
+    evaluation_key = f"{filter_name}/{query_source}"
+    if evaluation_key not in EVALUATIONS:
+        EVALUATIONS[evaluation_key] = FilterEvaluation(filter_name=evaluation_key)
+    EVALUATIONS[evaluation_key].add_case(case_metric)
 
     logger.info(
-        "%s [%s] kept %d/%d chars | P=%.3f R=%.3f F1=%.3f "
+        "%s/%s [%s] kept %d/%d chars | P=%.3f R=%.3f F1=%.3f "
         "(TP=%d, FP=%d, FN=%d, TN=%d)",
         filter_name,
+        query_source,
         case_id,
         len(kept),
         len(content),
@@ -412,8 +612,9 @@ async def test_filter_keeps_relevant_and_drops_irrelevant_passages(
         missing = [text for text in expected["relevant"] if text not in kept]
         leaked = [text for text in expected["irrelevant"] if text in kept]
         logger.debug(
-            "%s [%s] missing=%d leaked=%d",
+            "%s/%s [%s] missing=%d leaked=%d",
             filter_name,
+            query_source,
             case_id,
             len(missing),
             len(leaked),

@@ -70,6 +70,28 @@ def test_load_cases_reads_minimal_and_baseline_rows(cases_file: Path):
     assert bad.baseline_error is True
 
 
+def test_load_cases_reads_task_and_round(tmp_path: Path):
+    path = tmp_path / "c.jsonl"
+    rows = [
+        {
+            "case_id": "a",
+            "url": "https://a.example",
+            "query": "q",
+            "task_id": "t1",
+            "research_round": 2,
+        },
+        {"url": "https://b.example"},
+    ]
+    path.write_text(
+        "\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8"
+    )
+
+    a, b = load_cases(path)
+
+    assert (a.task_id, a.research_round) == ("t1", 2)
+    assert (b.task_id, b.research_round) == (None, None)
+
+
 def test_summarize_compares_matched_baseline(cases_file: Path):
     cases = load_cases(cases_file)
     rows: list[dict[str, object]] = [
@@ -112,8 +134,9 @@ def test_save_baseline_writes_raw_content_by_mime(
         url="https://a.example", status=FetchStatus.OK, mime=mime, content="<p>x</p>"
     )
 
-    path = save_baseline(tmp_path, 3, result)
+    path = save_baseline(tmp_path, "baseline-3", result)
 
+    assert path is not None
     assert path == tmp_path / name
     assert path.read_text(encoding="utf-8") == "<p>x</p>"
 
@@ -133,5 +156,5 @@ def test_save_baseline_writes_raw_content_by_mime(
 def test_save_baseline_skips_errors_and_blank_content(
     tmp_path: Path, result: FetchResult
 ):
-    assert save_baseline(tmp_path, 1, result) is None
+    assert save_baseline(tmp_path, "baseline-1", result) is None
     assert not any(tmp_path.iterdir())

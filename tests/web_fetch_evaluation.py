@@ -60,6 +60,8 @@ class FetchCase:
     query: str | None
     baseline_error: bool | None
     baseline_chars: int | None
+    task_id: str | None = None
+    research_round: int | None = None
 
 
 def _parse_case(number: int, raw: dict[str, object]) -> FetchCase:
@@ -67,12 +69,21 @@ def _parse_case(number: int, raw: dict[str, object]) -> FetchCase:
     observations = baseline.get("observations") if isinstance(baseline, dict) else None
     first = observations[0] if observations else None
     query = raw.get("query")
+    task_id = raw.get("task_id")
+    research_round = raw.get("research_round")
     return FetchCase(
         case_id=str(raw.get("case_id") or f"line-{number}"),
         url=str(raw["url"]),
         query=query if isinstance(query, str) else None,
         baseline_error=first["status"] != "success" if first else None,
         baseline_chars=first.get("inferred_returned_chars") if first else None,
+        task_id=task_id if isinstance(task_id, str) else None,
+        research_round=(
+            research_round
+            if isinstance(research_round, int)
+            and not isinstance(research_round, bool)
+            else None
+        ),
     )
 
 

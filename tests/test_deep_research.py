@@ -6,6 +6,7 @@ All tests mock LLM and HTTP calls — no real network access.
 from __future__ import annotations
 
 import shutil
+import time
 from collections.abc import Callable
 from typing import Any, cast
 
@@ -31,6 +32,8 @@ from mcps.research.deep_research import (
     Reflection,
     ResearchAgent,
     ResearchLimits,
+    ResearchPlan,
+    SelectedPages,
 )
 from mcps.research.tools import SearchResult
 from mcps.research.tools.models import FetchResult, FetchStatus
@@ -386,7 +389,12 @@ def _make_agent(
     extract: Callable[[list[Any]], ExtractedRanges] | None = None,
     answer: Callable[[list[Any]], FinalAnswer] | None = None,
     reflect: Callable[[list[Any]], Reflection] | None = None,
+    plan: Callable[[list[Any]], ResearchPlan] | None = None,
+    select: Callable[[list[Any]], SelectedPages] | None = None,
+    search_results: list[SearchResult] = _SEARCH_RESULTS,
+    search_by_query: Callable[[str], list[SearchResult]] | None = None,
     limits: ResearchLimits = _DEFAULT_LIMITS,
+    clock: Callable[[], float] = time.monotonic,
 ):
     fetch_calls: list[tuple[str, str | None]] = []
     results = fetch_results or {}
@@ -396,7 +404,9 @@ def _make_agent(
         return results.get(url, _fetched("content"))
 
     async def fake_search(query: str) -> list[SearchResult]:
-        return _SEARCH_RESULTS
+        if search_by_query is not None:
+            return search_by_query(query)
+        return search_results
 
     extract_handler = extract or (lambda _messages: ExtractedRanges(ranges="1"))
     answer_handler = answer or (
@@ -408,7 +418,17 @@ def _make_agent(
     reflect_handler = reflect or (
         lambda _messages: Reflection(is_sufficient=True, knowledge_gap="")
     )
-    fast = _StructuredModel({ExtractedRanges: extract_handler})
+    plan_handler = plan or (
+        lambda _messages: ResearchPlan(search_queries=["q"], fetch_query="k")
+    )
+    select_handler = select or (lambda _messages: SelectedPages(indices=[]))
+    fast = _StructuredModel(
+        {
+            ExtractedRanges: extract_handler,
+            ResearchPlan: plan_handler,
+            SelectedPages: select_handler,
+        }
+    )
     small = _StructuredModel({Reflection: reflect_handler, FinalAnswer: answer_handler})
     agent = ResearchAgent(
         ResearchConfig(
@@ -418,45 +438,22 @@ def _make_agent(
             fetch=fake_fetch,
         ),
         limits=limits,
+        clock=clock,
     )
     return agent, fast, small, fetch_calls
 
 
 def _state(**overrides: Any) -> Any:
-    state = {"original_question": _QUESTION, "search_query": "quantum routing", "id": 0}
+    state = {
+        "original_question": _QUESTION,
+        "fetch_query": _QUESTION,
+        "to_visit": [result.url for result in _SEARCH_RESULTS],
+    }
     return {**state, **overrides}
 
 
 class TestWebResearchFetch:
     """Per-page verbatim evidence extraction from the web_research node."""
-
-    async def test_initial_branch_uses_original_question(self):
-        agent, _, _, fetch_calls = _make_agent()
-
-        await agent.web_research(_state(), {})
-
-        assert [q for _, q in fetch_calls] == [_QUESTION] * 3
-
-    async def test_follow_up_uses_knowledge_gap(self):
-        agent, _, _, fetch_calls = _make_agent()
-
-        await agent.web_research(
-            _state(knowledge_gap="What are the latency limits?"), {}
-        )
-        await agent.web_research(_state(knowledge_gap="N/A"), {})
-        await agent.web_research(_state(knowledge_gap="  "), {})
-
-        queries = [q for _, q in fetch_calls]
-        assert queries == ["What are the latency limits?"] * 3 + [_QUESTION] * 6
-
-    async def test_direct_url_passes_query(self):
-        agent, _, _, fetch_calls = _make_agent()
-
-        await agent.web_research(
-            _state(search_query="https://source.example/page"), {}
-        )
-
-        assert fetch_calls == [("https://source.example/page", _QUESTION)]
 
     async def test_extracted_ranges_become_verbatim_evidence_per_page(self):
         agent, fast, _, _ = _make_agent(
@@ -689,3 +686,421 @@ class TestFinalizeAnswer:
         assert out["sources_gathered"] == []
         assert "quantum routing" in out["explanation"]
         assert out["answer"] == _NO_EVIDENCE_ANSWER
+
+
+# ---------------------------------------------------------------------------
+# Round graph: generate_query, route_round, web_search, select_urls
+# ---------------------------------------------------------------------------
+
+
+class _Clock:
+    """Callable returning successive fixed values, one per call."""
+
+    def __init__(self, values: list[float]) -> None:
+        self._values = list(values)
+
+    def __call__(self) -> float:
+        return self._values.pop(0)
+
+
+def _sr(url: str, title: str = "T", snippet: str = "s") -> SearchResult:
+    return SearchResult(url=url, title=title, snippet=snippet)
+
+
+class TestGenerateQuery:
+    """The start node caps, dedupes and validates the shared round plan."""
+
+    async def test_generate_query_caps_dedupes_and_starts_clock(self):
+        agent, _, _, _ = _make_agent(
+            limits=ResearchLimits(max_initial_queries=2),
+            clock=_Clock([100.0]),
+            plan=lambda _messages: ResearchPlan(
+                search_queries=[
+                    "  Quantum Routing ",
+                    "quantum routing",
+                    "NIST PQC",
+                    "extra",
+                ],
+                links=["https://x.example/a", "not a url"],
+                fetch_query="qubit routing",
+            ),
+        )
+
+        out = await agent.generate_query({"question": _QUESTION}, {})
+
+        assert out["search_queries"] == ["Quantum Routing", "NIST PQC"]
+        assert out["pending_links"] == ["https://x.example/a"]
+        assert out["fetch_query"] == "qubit routing"
+        assert out["started_at"] == 100.0
+
+    async def test_blank_fetch_query_falls_back_to_question(self):
+        agent, _, _, _ = _make_agent(
+            plan=lambda _messages: ResearchPlan(
+                search_queries=["q"], fetch_query="  "
+            ),
+        )
+
+        out = await agent.generate_query({"question": _QUESTION}, {})
+
+        assert out["fetch_query"] == _QUESTION
+
+    async def test_empty_plan_falls_back_to_question(self):
+        agent, _, _, _ = _make_agent(plan=lambda _messages: ResearchPlan())
+
+        out = await agent.generate_query({"question": _QUESTION}, {})
+
+        assert out["search_queries"] == [_QUESTION]
+        assert out["pending_links"] == []
+
+
+class TestRouteRound:
+    """route_round fans out searches or goes straight to link selection."""
+
+    def test_route_round_searches_queries_or_goes_straight_to_selection(self):
+        agent, _, _, _ = _make_agent()
+
+        sends = agent.route_round(
+            cast(Any, {"search_queries": ["a", "b"], "pending_links": ["https://x.example"]})
+        )
+        assert [send.arg["search_query"] for send in sends] == ["a", "b"]
+        assert all(send.node == "web_search" for send in sends)
+
+        assert (
+            agent.route_round(
+                cast(Any, {"search_queries": [], "pending_links": ["https://x.example"]})
+            )
+            == "select_urls"
+        )
+
+
+class TestWebSearch:
+    """web_search records one search run for the current round."""
+
+    async def test_web_search_records_query_and_results(self):
+        agent, _, _, _ = _make_agent()
+
+        out = await agent.web_search({"search_query": "quantum routing"}, {})
+
+        assert out == {
+            "searches": [{"query": "quantum routing", "results": _SEARCH_RESULTS}]
+        }
+
+
+class TestSelectUrls:
+    """select_urls dedupes, keeps links first and triages search candidates."""
+
+    async def test_select_urls_puts_links_first_dedupes_and_applies_triage(self):
+        agent, fast, _, _ = _make_agent(
+            limits=ResearchLimits(max_pages_per_round=3),
+            select=lambda _messages: SelectedPages(indices=[2, 0, 0, 99, -1]),
+        )
+        state = {
+            "original_question": _QUESTION,
+            "fetch_query": "qubit routing",
+            "search_queries": ["q"],
+            "pending_links": ["https://direct.example/page", "https://a.example/doc"],
+            "visits": [{"url": "https://a.example/doc", "ok": True}],
+            "searches": [
+                {"query": "old", "results": [_sr("https://old.example")]},
+                {
+                    "query": "q",
+                    "results": [
+                        _sr("HTTPS://A.EXAMPLE/doc/#sec"),
+                        _sr("https://b.example/one"),
+                        _sr("https://b.example/one#top"),
+                        _sr("https://c.example/bad"),
+                        _sr("https://d.example/two"),
+                    ],
+                },
+            ],
+        }
+
+        out = await agent.select_urls(cast(Any, state), {})
+
+        assert out["to_visit"] == [
+            "https://direct.example/page",
+            "https://d.example/two",
+            "https://b.example/one",
+        ]
+        text = str(fast.calls[-1][1][-1].content)
+        assert "qubit routing" in text
+        assert "[0]" in text
+        assert "https://c.example/bad" in text
+        assert "old.example" not in text
+
+    async def test_select_urls_skips_model_without_candidates_and_survives_triage_error(
+        self,
+    ):
+        agent, fast, _, _ = _make_agent()
+
+        out = await agent.select_urls(
+            cast(Any, {"original_question": _QUESTION, "pending_links": ["https://x.example"]}),
+            {},
+        )
+
+        assert fast.calls == []
+        assert out["to_visit"] == ["https://x.example"]
+
+        def boom(_messages: list[Any]) -> SelectedPages:
+            raise RuntimeError("triage failed")
+
+        error_agent, _, _, _ = _make_agent(select=boom)
+        error_out = await error_agent.select_urls(
+            cast(
+                Any,
+                {
+                    "original_question": _QUESTION,
+                    "pending_links": ["https://x.example"],
+                    "search_queries": ["q"],
+                    "searches": [
+                        {"query": "q", "results": [_sr("https://candidate.example")]}
+                    ],
+                },
+            ),
+            {},
+        )
+
+        assert error_out["to_visit"] == ["https://x.example"]
+
+    async def test_select_urls_skips_triage_when_links_fill_budget(self):
+        agent, fast, _, _ = _make_agent(
+            limits=ResearchLimits(max_pages_per_round=1),
+            select=lambda _messages: SelectedPages(indices=[0]),
+        )
+        state: Any = {
+            "original_question": _QUESTION,
+            "pending_links": ["https://link.example"],
+            "search_queries": ["q"],
+            "searches": [
+                {"query": "q", "results": [_sr("https://candidate.example")]}
+            ],
+        }
+
+        out = await agent.select_urls(state, {})
+
+        assert fast.calls == []
+        assert out["to_visit"] == ["https://link.example"]
+
+
+class TestWebResearchRound:
+    """web_research fetches only the selected pages with the round fetch query."""
+
+    async def test_every_fetch_uses_round_fetch_query(self):
+        agent, _, _, fetch_calls = _make_agent()
+        state: Any = {
+            "original_question": _QUESTION,
+            "fetch_query": "qubit routing",
+            "to_visit": ["https://a.example", "https://b.example"],
+            "knowledge_gap": "latency",
+        }
+
+        await agent.web_research(state, {})
+
+        assert fetch_calls == [
+            ("https://a.example", "qubit routing"),
+            ("https://b.example", "qubit routing"),
+        ]
+
+
+class TestReflectionRound:
+    """reflection audits the search view and emits the next round plan."""
+
+    async def test_reflection_sees_search_outcomes(self):
+        agent, _, small, _ = _make_agent(
+            reflect=lambda _messages: Reflection(is_sufficient=False)
+        )
+        state: Any = {
+            "original_question": _QUESTION,
+            "searches": [
+                {
+                    "query": "q1",
+                    "results": [
+                        _sr("https://a.example"),
+                        _sr("https://b.example"),
+                        _sr("https://c.example"),
+                        _sr("https://d.example"),
+                    ],
+                },
+                {"query": "q2", "results": []},
+            ],
+            "visits": [
+                {"url": "https://a.example", "ok": True},
+                {"url": "https://b.example", "ok": True},
+                {"url": "https://c.example", "ok": False},
+            ],
+            "evidence": [{"url": "https://a.example", "text": "x"}],
+        }
+
+        await agent.reflection(state, {})
+
+        text = str(small.calls[-1][1][-1].content)
+        lines = text.splitlines()
+
+        def line_with(fragment: str) -> str:
+            return next(line for line in lines if fragment in line)
+
+        assert "E1" in line_with("a.example")
+        assert "none" in line_with("b.example")
+        assert "FAILED" in line_with("c.example")
+        assert "not selected" in line_with("d.example")
+        assert "(no results)" in text
+
+    async def test_reflection_drops_repeated_follow_ups_and_caps_total(self):
+        agent, _, _, _ = _make_agent(
+            limits=ResearchLimits(max_follow_ups=2),
+            reflect=lambda _messages: Reflection(
+                is_sufficient=False,
+                search_queries=[
+                    "  Quantum Routing ",
+                    "post quantum crypto",
+                    "third",
+                ],
+                links=["https://a.example/paper#sec2", "https://b.example/next"],
+                fetch_query="pqc latency",
+            ),
+        )
+        state: Any = {
+            "original_question": _QUESTION,
+            "searches": [{"query": "quantum routing", "results": []}],
+            "visits": [{"url": "https://a.example/paper", "ok": True}],
+        }
+
+        out = await agent.reflection(state, {})
+
+        combined = out["search_queries"] + out["pending_links"]
+        assert len(combined) == 2
+        assert out["search_queries"][0] == "post quantum crypto"
+        assert "Quantum Routing" not in combined
+        assert "https://a.example/paper#sec2" not in combined
+        assert out["fetch_query"] == "pqc latency"
+
+    @pytest.mark.parametrize(
+        ("knowledge_gap", "expected"),
+        [
+            ("", _QUESTION),
+            ("N/A", _QUESTION),
+            ("latency limits", "latency limits"),
+        ],
+    )
+    async def test_fetch_query_falls_back_through_gap_to_question(
+        self, knowledge_gap: str, expected: str
+    ):
+        agent, _, _, _ = _make_agent(
+            reflect=lambda _messages: Reflection(is_sufficient=False, fetch_query="  "),
+        )
+        state: Any = {
+            "original_question": _QUESTION,
+            "searches": [],
+            "visits": [],
+            "knowledge_gap": knowledge_gap,
+        }
+
+        out = await agent.reflection(state, {})
+
+        assert out["fetch_query"] == expected
+
+
+class TestEvaluateResearch:
+    """The time gate and evidence gate decide when to finalize."""
+
+    @pytest.mark.parametrize(
+        ("clock_value", "is_sufficient", "evidence", "queries", "links", "expected"),
+        [
+            (10, True, [{"url": "u", "text": "t"}], ["q"], [], "finalize_answer"),
+            (10, True, [], ["q"], [], "send"),
+            (30, False, [{"url": "u", "text": "t"}], ["q"], [], "finalize_answer"),
+            (10, False, [{"url": "u", "text": "t"}], [], [], "finalize_answer"),
+            (
+                10,
+                False,
+                [{"url": "u", "text": "t"}],
+                [],
+                ["https://x.example"],
+                "select_urls",
+            ),
+        ],
+    )
+    def test_evaluate_research_routes_by_sufficiency_follow_ups_and_time(
+        self, clock_value, is_sufficient, evidence, queries, links, expected
+    ):
+        agent, _, _, _ = _make_agent(
+            limits=ResearchLimits(round_start_budget=25),
+            clock=_Clock([clock_value]),
+        )
+        state: Any = {
+            "started_at": 0,
+            "is_sufficient": is_sufficient,
+            "evidence": evidence,
+            "search_queries": queries,
+            "pending_links": links,
+        }
+
+        result = agent.evaluate_research(state)
+
+        if expected == "send":
+            assert [send.node for send in result] == ["web_search"]
+        else:
+            assert result == expected
+
+
+class TestGraphRound:
+    """The wired graph runs one round end to end and returns a cited answer."""
+
+    async def test_graph_runs_one_round_to_cited_answer(self):
+        agent, _, _, _ = _make_agent(
+            fetch_results={"https://a.example": _fetched(_PAGE)},
+            search_results=[_sr("https://a.example")],
+            plan=lambda _messages: ResearchPlan(search_queries=["q"], fetch_query="k"),
+            select=lambda _messages: SelectedPages(indices=[0]),
+            extract=lambda _messages: ExtractedRanges(ranges="1"),
+            reflect=lambda _messages: Reflection(is_sufficient=True),
+            answer=lambda _messages: FinalAnswer(
+                answer=[Claim(text="A.", evidence=[1])]
+            ),
+        )
+
+        result = await agent("question")
+
+        assert result == {
+            "answer": "A. [1]",
+            "explanation": "",
+            "sources": ["https://a.example"],
+        }
+
+    async def test_graph_runs_two_rounds_and_accumulates_evidence(self):
+        reflections = iter(
+            [
+                Reflection(
+                    is_sufficient=False, search_queries=["q2"], fetch_query="k2"
+                ),
+                Reflection(is_sufficient=True),
+            ]
+        )
+        searches: dict[str, list[SearchResult]] = {
+            "q1": [_sr("https://a.example")],
+            "q2": [_sr("https://c.example")],
+        }
+        agent, _, _, fetch_calls = _make_agent(
+            fetch_results={
+                "https://a.example": _fetched(_PAGE),
+                "https://c.example": _fetched(_PAGE),
+            },
+            plan=lambda _messages: ResearchPlan(
+                search_queries=["q1"], fetch_query="k1"
+            ),
+            select=lambda _messages: SelectedPages(indices=[0]),
+            extract=lambda _messages: ExtractedRanges(ranges="1"),
+            reflect=lambda _messages: next(reflections),
+            answer=lambda _messages: FinalAnswer(
+                answer=[Claim(text="A.", evidence=[1, 2])]
+            ),
+            search_by_query=searches.__getitem__,
+        )
+
+        result = await agent("question")
+
+        assert fetch_calls == [
+            ("https://a.example", "k1"),
+            ("https://c.example", "k2"),
+        ]
+        assert result["sources"] == ["https://a.example", "https://c.example"]

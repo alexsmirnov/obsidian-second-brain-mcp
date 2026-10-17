@@ -10,8 +10,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from operator import add
-from typing import TYPE_CHECKING, Annotated, Any, Literal, NotRequired, TypedDict, cast
-from urllib.parse import urlparse
+from typing import TYPE_CHECKING, Annotated, Any, Literal, TypedDict, cast
+from urllib.parse import urlparse, urlunparse
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
@@ -28,6 +28,8 @@ if TYPE_CHECKING:
     from mcps.research.config import ResearchConfig
 
 __all__ = [
+    "FETCH_QUERY_INSTRUCTIONS",
+    "FetchQuery",
     "ResearchAgent",
     "create_deep_research_graph",
 ]
@@ -37,34 +39,34 @@ logger = logging.getLogger(__name__)
 # Prompts
 # ---------------------------------------------------------------------------
 
-_GENERATE_QUERY_PROMPT = f"""You are a web search query generator.
-Generate exactly up to 2 short web search queries for the user question.
+FETCH_QUERY_INSTRUCTIONS = """Fetch query rules:
+`fetch_query` is 3-6 space-separated keywords for a BM25 ranker over page passages.
+- Use distinctive terms as they appear in the source text: named entities, method or metric names, technical terms, and one common synonym.
+- Do not use question words, stopwords, `site:`/quotes/operators, or URLs.
+- With a KNOWLEDGE GAP, target the gap's terms plus at most one core entity from the question.
+
+GOOD: staggered adoption parallel trends TWFE bias
+BAD: what are the problems with DiD
+BAD: site:arxiv.org DiD
+"""
+
+_GENERATE_QUERY_PROMPT = f"""You are a web search query generator for a research agent.
 Current date context: Today is {datetime.now().strftime("%A, %B %d, %Y")}. Use this to evaluate time-sensitivity, version obsolescence, and real-time data validity.
 
-Hard rules:
-1) Each query MUST be 2-5 keywords. Never exceed 6 words.
-2) Each query must include at least one named entity from the question.
-3) Queries must be orthogonal — each targets a DIFFERENT facet:
-   - Facet 1: core entity
-   - Facet 2: related entity or alternative name
-4) Preserve source/time constraints when present:
-   - Use site: filters for specified sources
-   - Include year when version matters
-5) Never produce natural language questions or compound noun phrases.
-6) If user question contains a concrete URL, return it as-is.
+Produce a research plan:
+- `search_queries`: 1-3 orthogonal search queries. Each query is 2-5 keywords (hard maximum 6 words) and contains at least one named entity from the question. Use fewer queries for simple facts. Never produce natural-language questions or compound noun phrases.
+- `links`: any concrete HTTP(S) URLs found in the question, to read directly instead of searching.
+- `fetch_query`: the shared BM25 query used to select passages inside every fetched page for this round.
 
-BAD (too long, compound):
-  "ChatGPT Enterprise native Microsoft Purview DLP integration support"
-  "compare Copilot Microsoft 365 vs ChatGPT Enterprise security governance"
-
-GOOD (short, orthogonal):
-  "ChatGPT Enterprise DLP integration"
-  "Microsoft Purview ChatGPT"
-
-GOOD: ( user asks about concrete page )
-  "https://example.com/openai/enterprise"
-Start with a broad area search, and adapt query strategy based on search results in next iterations.
+{FETCH_QUERY_INSTRUCTIONS}
 """
+
+_SELECT_URLS_PROMPT = """You choose which search results are worth reading.
+Judge each candidate URL/domain, title and snippet against the user question and the FETCH QUERY.
+Return the 0-based indices of the most promising candidates in priority order, at most MAX PAGES.
+Prefer primary sources and official documentation. Return an empty list when nothing is worth reading.
+"""
+
 _EXTRACT_PROMPT = """You select the verbatim lines of a fetched page that are relevant to the user question and knowledge gap.
 
 The page is provided one line per numbered line. Every line starts with its 1-based line number.
@@ -77,65 +79,29 @@ Selection rules:
 - Return an empty string when nothing in the page is relevant.
 """
 
-_REFLECTION_PROMPT = f"""You are the core reasoning engine of an advanced web research agent. 
-Your task is to audit the numbered evidence gathered so far for correctness, sufficiency, and source integrity, and then determine the next strategic step.
-
-### 1. SOURCE QUALITY MATRIX
-- Tier 1: Official documentation, primary records, peer-reviewed papers, official archives.
-- Tier 2: Expert/community technical sources (e.g., GitHub issues, developer forums, vendor blogs).
-- Tier 3: General summaries, news articles, and tertiary sources.
-
-### 2. DETERMINISTIC SUFFICIENCY GATE
-Evaluate your current evidence against a strict binary gate (`is_sufficient`). 
-Set `is_sufficient = False` if ANY of the following conditions are met:
-- Specific empirical metrics, numerical benchmarks, software library names, or mathematical assumptions requested in the user prompt are missing.
-- Explicit user constraints (e.g., specific dates, version numbers, or site-specific restrictions) remain unverified in the gathered evidence.
-- The gathered evidence contains unresolved, active contradictions between Tier 1 sources.
-
-*Exception*: For purely self-contained logic or mathematical questions, you may set `is_sufficient = True` if you provide a mathematically rigorous derivation, even if external web sources are weak.
-*Best-Effort Fallback*: If you hit your maximum reflection loops or constraints cannot be fully met, set `is_sufficient = True` under a "best-effort" policy, but you MUST explicitly declare your uncertainty metrics in the `knowledge_gap`.
+_REFLECTION_PROMPT = f"""You are the reasoning engine of a web research agent.
+Audit the numbered evidence `[E<n>] (url)` gathered so far and the search view, then decide the next step.
+- Treat anything not present in the evidence as an unverified hypothesis; never assume it.
+- Use the search view to see which queries failed, which results were not selected, and which links appeared in evidence.
+- Rephrase failed queries, follow promising `not selected` results, and prefer primary sources when following links.
+- Set `is_sufficient` only when the evidence answers the question with authoritative sources.
 
 Current date context: Today is {datetime.now().strftime("%A, %B %d, %Y")}. Use this to evaluate time-sensitivity, version obsolescence, and real-time data validity.
 
-### 3. OUTPUT SPECIFICATION (JSON Format)
-Your response must strictly conform to this schema:
-{{
-  "is_sufficient": boolean,
-  "knowledge_gap": "String. Describe the exact, concrete missing piece of data or validation step required.",
-  "follow_ups": ["Array of strings. Next-step target queries conforming to the Search Query Rules below."]
-}}
-Audit only the numbered evidence blocks `[E<n>] (url)`; do not invent findings beyond them.
+If more work is needed, produce the next round plan:
+- `search_queries`: up to 3 orthogonal follow-up queries, each 2-5 keywords (hard maximum 6 words) with at least one named entity from the question. Target one unresolved gap per query.
+- `links`: exact HTTP(S) URLs to read directly, when you already know the source.
+- `fetch_query`: the shared BM25 query for the next round, applied to the knowledge gap.
+- `knowledge_gap`: the concrete missing data or validation step.
 
-### 4. WEB SEARCH QUERY RULES (HARD MANIFESTO)
-If `is_sufficient = False`, generate up to 3 follow-up queries. Each query must target ONE unresolved gap. Never combine multiple concepts.
-If you know exact URL that may contain some answers, put it directly instead of search query
-Concentrate of the most important knowledge gap, refine search strategy on the each iteration.
-
-1) Length: 2-5 keywords. Hard maximum of 6 words per query.
-2) Named Entities: Every query MUST contain at least one primary named entity or technical keyword from the original user question.
-3) Absolute Orthogonality: Each query must isolate and target a completely different dimension of the problem:
-   - Query 1 (Core Axis): Core entity + primary missing attribute/metric.
-   - Query 2 (Comparative Axis): Core entity + secondary alternative name, framework, or version modifier.
-   - Query 3 (Validation Axis): Specific technical constraint, data point, or official documentation source filter (e.g., site:domain.com).
-4) Syntax Rules: 
-   - Never generate natural language questions or conversational phrases.
-   - Never use compound noun phrases.
-   - Preserved dates/versions must be represented as single tokens (e.g., "2026" or "v4.8").
-
-GOOD (Short, Orthogonal, Machine-Ready):
-- "ChatGPT Enterprise DLP integration"
-- "Microsoft Purview ChatGPT"
-- "ChatGPT Enterprise security features"
-- "https://example.com/page_with_related_content.html"
-
-BAD (Conversational, Long, Compound):
-- "How do I integrate ChatGPT Enterprise natively with Microsoft Purview DLP?"
-- "compare Copilot Microsoft 365 vs ChatGPT Enterprise security governance"
+{FETCH_QUERY_INSTRUCTIONS}
 """
 
 
 _NO_EVIDENCE_ANSWER = "No supporting evidence was found for this question."
 _UNANSWERED = "The gathered evidence does not support an answer to this question."
+
+_FETCH_QUERY_FIELD = "3-6 BM25 keywords that select relevant passages inside fetched pages"
 
 _FINALIZE_PROMPT = """You write a final answer to the user's question using ONLY the numbered evidence blocks `[E<n>] (url)`.
 Return atomic claims, each supported by the `[E#]` ids of the evidence it rests on.
@@ -194,6 +160,13 @@ class PageVisit(TypedDict):
     ok: bool
 
 
+class SearchRun(TypedDict):
+    """One executed search query and its results."""
+
+    query: str
+    results: list[SearchResult]
+
+
 class Claim(BaseModel):
     """One atomic statement supported by cited evidence ids."""
 
@@ -209,23 +182,33 @@ class FinalAnswer(BaseModel):
     not_found: list[str] = Field(default_factory=list, description="Gaps the evidence does not answer")
 
 
-class SearchQueryList(BaseModel):
-    """Structured output for the generate_query node."""
+class ResearchPlan(BaseModel):
+    """Shared round plan produced by generate_query and reflection."""
 
-    query: list[str] = Field(description="up to 2 search queries, or exact URLs for direct fetch.")
+    search_queries: list[str] = Field(default_factory=list, description="2-5 keyword queries")
+    links: list[str] = Field(default_factory=list, description="HTTP(S) URLs to read directly")
+    fetch_query: str = Field(default="", description=_FETCH_QUERY_FIELD)
 
 
-class Reflection(BaseModel):
+class FetchQuery(BaseModel):
+    """Structured output of the fetch-query fragment (evaluation and Phase 3 `ResearchPlan`)."""
+
+    fetch_query: str = Field(default="", description=_FETCH_QUERY_FIELD)
+
+
+class SelectedPages(BaseModel):
+    """Triage output: 0-based candidate indices in priority order."""
+
+    indices: list[int] = Field(default_factory=list, description="0-based candidate indices, priority order")
+
+
+class Reflection(ResearchPlan):
     """Structured output for the reflection node."""
 
     is_sufficient: bool = Field(
         description="Whether gathered info is sufficient and authoritative enough to answer the question"
     )
-    knowledge_gap: str = Field(description="What information is still missing or unverified community claims")
-    follow_ups: list[str] = Field(
-        default_factory=list,
-        description="Short (2-5 keyword) follow-up search queries to fill gaps, or exact URLs for direct fetch.",
-    )
+    knowledge_gap: str = Field(default="", description="What information is still missing or unverified community claims")
 
 
 # ---------------------------------------------------------------------------
@@ -237,59 +220,99 @@ class OverallState(TypedDict):
     """Shared state for the full research graph."""
 
     original_question: str
-    queries: list[str]  # current queries — overwrite each generate_query
-    follow_ups: list[str]  # reflection output — overwrite each loop
-    evidence: Annotated[list[Evidence], add]  # accumulated across loops
-    visits: Annotated[list[PageVisit], add]  # accumulated across loops
+    started_at: float
+    search_queries: list[str]  # current round — overwritten by generate_query/reflection
+    pending_links: list[str]  # current round — overwritten
+    fetch_query: str  # current round — overwritten
+    to_visit: list[str]  # written by select_urls
+    searches: Annotated[list[SearchRun], add]  # accumulated across rounds
+    visits: Annotated[list[PageVisit], add]  # accumulated across rounds
+    evidence: Annotated[list[Evidence], add]  # accumulated across rounds
     knowledge_gap: str
-    sources_gathered: list[str]  # written by finalize_answer
-    research_loop_count: int
-    max_research_loops: int
     is_sufficient: bool
-
-
-def _knowledge_gap(state: WebSearchState) -> str | None:
-    """Stripped knowledge gap, or None when absent, blank or "N/A"."""
-    gap = state.get("knowledge_gap", "").strip()
-    return gap if gap and gap != "N/A" else None
-
-
-def _fetch_query(state: WebSearchState) -> str:
-    """Knowledge gap when meaningful, else the original question."""
-    return _knowledge_gap(state) or state["original_question"]
-
-
-class WebSearchState(TypedDict):
-    """Minimal payload sent to each parallel web_research branch."""
-    original_question: str
-    knowledge_gap: NotRequired[str]
-
-    search_query: str
-    id: int
+    research_loop_count: int  # logging/progress only
+    sources_gathered: list[str]  # written by finalize_answer
 
 
 class Input(TypedDict):
     """Input to the overall graph."""
+
     question: str
-    max_research_loops: int
+
+
+class _WebSearchState(TypedDict):
+    """Payload sent to each parallel web_search branch."""
+
+    search_query: str
+
 
 class Result(TypedDict):
     """Final output of the overall graph."""
+
     answer: Annotated[str, "Only final synthesized answer to the user's question without any explanation or source attribution"]
     explanation: Annotated[str, "Explanation of how the answer was derived"]
-    sources_gathered: Annotated[list[str],"List of source URLs that informed the final answer"]
+    sources_gathered: Annotated[list[str], "List of source URLs that informed the final answer"]
 
 
 # ---------------------------------------------------------------------------
-# Graph factory
+# URL and text helpers
 # ---------------------------------------------------------------------------
-def _is_valid_url(url):
-    try:
-        result = urlparse(url)
-        # A valid URL must have a scheme (http/https) and a network location (domain)
-        return all([result.scheme, result.netloc])
-    except ValueError:
-        return False
+
+
+def _is_http_url(url: str) -> bool:
+    """True when ``url`` has an HTTP(S) scheme and a host."""
+    parsed = urlparse(url)
+    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+
+
+def _normalize_url(url: str) -> str:
+    """Lowercase scheme/host, drop the fragment and the trailing path slash."""
+    stripped = url.strip()
+    parsed = urlparse(stripped)
+    if not _is_http_url(stripped):
+        return stripped
+    path = parsed.path.rstrip("/")
+    return urlunparse((parsed.scheme.lower(), parsed.netloc.lower(), path, parsed.params, parsed.query, ""))
+
+
+def _query_key(query: str) -> str:
+    """Case-insensitive, whitespace-collapsed key for query deduplication."""
+    return " ".join(query.casefold().split())
+
+
+def _dedupe(
+    items: list[str],
+    seen_keys: set[str],
+    key: Callable[[str], str],
+    limit: int,
+) -> list[str]:
+    """Strip, skip blanks and ``seen_keys``, and keep at most ``limit`` items."""
+    if limit <= 0:
+        return []
+    result: list[str] = []
+    for item in items:
+        stripped = item.strip()
+        if not stripped:
+            continue
+        item_key = key(stripped)
+        if item_key in seen_keys:
+            continue
+        seen_keys.add(item_key)
+        result.append(stripped)
+        if len(result) >= limit:
+            break
+    return result
+
+
+def _valid_links(links: list[str]) -> list[str]:
+    """Keep stripped HTTP(S) URLs with a host."""
+    return [stripped for link in links if (stripped := link.strip()) and _is_http_url(stripped)]
+
+
+def _knowledge_gap(state: OverallState) -> str | None:
+    """Stripped knowledge gap, or None when absent, blank or "N/A"."""
+    gap = state.get("knowledge_gap", "").strip()
+    return gap if gap and gap != "N/A" else None
 
 
 def _wrap_line(line: str, wrap: int) -> list[str]:
@@ -377,10 +400,61 @@ def _render_evidence(evidence: list[Evidence]) -> str:
     )
 
 
+def _visit_status(
+    url: str,
+    visited: dict[str, bool],
+    evidence_ids: dict[str, list[int]],
+) -> str:
+    """Render one search result's outcome for the reflection search view."""
+    if url not in visited:
+        return "not selected"
+    if not visited[url]:
+        return "FAILED"
+    ids = evidence_ids.get(url, [])
+    return f"VISITED → {','.join(f'E{number}' for number in ids)}" if ids else "VISITED → none"
+
+
+def _render_search_view(
+    searches: list[SearchRun],
+    visits: list[PageVisit],
+    evidence: list[Evidence],
+) -> str:
+    """Render search results grouped by query, tagged with visit outcomes."""
+    visited = {_normalize_url(visit["url"]): visit["ok"] for visit in visits}
+    evidence_ids: dict[str, list[int]] = {}
+    for number, item in enumerate(evidence, start=1):
+        evidence_ids.setdefault(_normalize_url(item["url"]), []).append(number)
+
+    lines: list[str] = []
+    seen: set[str] = set()
+    for run in searches:
+        lines.append(f'Query: "{run["query"]}"')
+        results = run.get("results", [])
+        if not results:
+            lines.append("(no results)")
+            continue
+        for result in results:
+            url = _normalize_url(result.url)
+            seen.add(url)
+            lines.append(
+                f"[{_visit_status(url, visited, evidence_ids)}] "
+                f"{result.url} | {result.title} | {result.snippet[:200]}"
+            )
+    followed: dict[str, str] = {}
+    for visit in visits:
+        url = _normalize_url(visit["url"])
+        if url not in seen:
+            followed.setdefault(url, visit["url"])
+    if followed:
+        lines.append("Followed links:")
+        for url, original in followed.items():
+            lines.append(f"[{_visit_status(url, visited, evidence_ids)}] {original}")
+    return "\n".join(lines)
+
+
 def _render_not_found_queries(state: OverallState) -> str:
     """List every executed query under a ``Not found:`` header (no-model reply)."""
     queries = [item["query"] for item in state.get("searches", [])]
-    queries.extend(state.get("queries", []))
     return "Not found:\n" + "\n".join(f"- {query}" for query in queries)
 
 
@@ -420,6 +494,11 @@ def _render_cited(final: FinalAnswer, evidence: list[Evidence]) -> tuple[str, st
     return answer, explanation, list(sources)
 
 
+# ---------------------------------------------------------------------------
+# Graph factory
+# ---------------------------------------------------------------------------
+
+
 def create_deep_research_graph(config: ResearchConfig) -> CompiledStateGraph:
     """Build and compile the deep research StateGraph.
 
@@ -437,7 +516,8 @@ class ResearchAgent:
 
     config: ResearchConfig
     graph: CompiledStateGraph
-    max_research_loops: int
+    limits: ResearchLimits
+    clock: Callable[[], float]
 
     def __init__(
         self,
@@ -445,12 +525,10 @@ class ResearchAgent:
         *,
         limits: ResearchLimits = _DEFAULT_LIMITS,
         clock: Callable[[], float] = time.monotonic,
-        max_research_loops: int = 3,
     ) -> None:
         self.config = config
         self.limits = limits
         self.clock = clock
-        self.max_research_loops = max_research_loops
         self.graph = self.create_graph()
 
     def create_graph(self) -> CompiledStateGraph:
@@ -462,6 +540,8 @@ class ResearchAgent:
         )
 
         builder.add_node(self.generate_query)
+        builder.add_node("web_search", self.web_search)
+        builder.add_node("select_urls", self.select_urls)
         builder.add_node("web_research", self.web_research)
         builder.add_node(self.reflection)
         builder.add_node("finalize_answer", self.finalize_answer)
@@ -469,96 +549,188 @@ class ResearchAgent:
         builder.add_edge(START, "generate_query")
         builder.add_conditional_edges(
             "generate_query",
-            self.continue_to_web_research,
-            ["web_research"],
+            self.route_round,
+            ["web_search", "select_urls"],
         )
+        builder.add_edge("web_search", "select_urls")
+        builder.add_edge("select_urls", "web_research")
         builder.add_edge("web_research", "reflection")
         builder.add_conditional_edges(
             "reflection",
             self.evaluate_research,
-            ["web_research", "finalize_answer"],
+            ["web_search", "select_urls", "finalize_answer"],
         )
         builder.add_edge("finalize_answer", END)
 
         return builder.compile()
 
     async def generate_query(self, state: Input, config: RunnableConfig) -> dict[str, Any]:
-        """Generate initial search queries from the user's question."""
+        """Produce the initial round plan and start the elapsed-time clock."""
         reporter = config.get("configurable", {}).get("progress_reporter")
         if reporter:
             await reporter("Generating search queries...", 0.0, None)
-        chain = self.config.fast.with_structured_output(SearchQueryList)
-        result: SearchQueryList = await chain.ainvoke(
-            [
-                SystemMessage(_GENERATE_QUERY_PROMPT),
-                HumanMessage(state["question"]),
-            ]
-        )  # type: ignore
-        logger.info("Generated queries: %d", len(result.query))
+        chain = self.config.fast.with_structured_output(ResearchPlan)
+        result = cast(
+            ResearchPlan,
+            await chain.ainvoke(
+                [
+                    SystemMessage(_GENERATE_QUERY_PROMPT),
+                    HumanMessage(state["question"]),
+                ]
+            ),
+        )
+        queries = _dedupe(
+            result.search_queries,
+            set(),
+            _query_key,
+            self.limits.max_initial_queries,
+        )
+        links = _valid_links(result.links)
+        if not queries and not links:
+            queries = [state["question"]]
+        logger.info("Initial plan: %d queries, %d links", len(queries), len(links))
         return {
-            "queries": result.query,
-            "max_research_loops": state.get("max_research_loops", 3),
             "original_question": state["question"],
+            "started_at": self.clock(),
+            "search_queries": queries,
+            "pending_links": links,
+            "fetch_query": result.fetch_query.strip() or state["question"],
+            "research_loop_count": 0,
+            "knowledge_gap": "",
         }
 
-    async def web_research(self, state: WebSearchState, config: RunnableConfig) -> dict[str, Any]:
-        """Fetch every page of one query and extract verbatim evidence per page."""
+    def route_round(self, state: OverallState) -> list[Send] | Literal["select_urls"]:
+        """Fan out one web_search per query, or go straight to link selection."""
+        queries = state.get("search_queries", [])
+        if queries:
+            return [Send("web_search", {"search_query": query}) for query in queries]
+        return "select_urls"
+
+    async def web_search(self, state: _WebSearchState, config: RunnableConfig) -> dict[str, Any]:
+        """Run one search query and record its results for the round."""
         query = state["search_query"]
         reporter = config.get("configurable", {}).get("progress_reporter")
         if reporter:
-            await reporter("Searching", 0.0, None)
-        # If query is a direct URL, fetch it directly without searching
-        if _is_valid_url(query):
-            logger.info("Direct URL fetch for query: %s", query)
-            search_results = [SearchResult(url=query, title="", snippet="")]
-        else:
-            logger.info("Performing web search for query: %s", query)
-            search_results = await self.config.search(query)
-        if not search_results:
-            logger.warning("No web search results found for query: %s", query)
-            return {"evidence": [], "visits": []}
-        fetch_query = _fetch_query(state)
-        fetch_results = await asyncio.gather(
-            *(self.config.fetch(result.url, fetch_query) for result in search_results)
-        )
-        logger.info("Web search result: %d", len(fetch_results))
-        return await self._extract_pages(search_results, fetch_results, state)
+            await reporter(f"Searching: {query}", 0.0, None)
+        logger.info("Performing web search for query: %s", query)
+        results = await self.config.search(query)
+        logger.info("Search %r returned %d results", query, len(results))
+        return {"searches": [SearchRun(query=query, results=results)]}
 
-    async def _extract_pages(
+    async def select_urls(self, state: OverallState, config: RunnableConfig) -> dict[str, Any]:
+        """Choose this round's pages: links first, then LLM-triaged candidates."""
+        reporter = config.get("configurable", {}).get("progress_reporter")
+        if reporter:
+            await reporter("Selecting pages...", 0.0, None)
+        visited = {_normalize_url(visit["url"]) for visit in state.get("visits", [])}
+        links = _dedupe(
+            _valid_links(state.get("pending_links", [])),
+            set(visited),
+            _normalize_url,
+            self.limits.max_pages_per_round,
+        )
+        current_queries = {_query_key(query) for query in state.get("search_queries", [])}
+        exclude = set(visited) | {_normalize_url(link) for link in links}
+        candidates = _collect_candidates(
+            state.get("searches", []),
+            current_queries,
+            exclude,
+        )[: self.limits.max_triage_candidates]
+        budget = self.limits.max_pages_per_round - len(links)
+        chosen: list[str] = []
+        if candidates and budget > 0:
+            chosen = await self._triage(state, candidates, budget)
+        logger.info("Selected %d links and %d triaged pages", len(links), len(chosen))
+        return {"to_visit": links + chosen}
+
+    async def _triage(
         self,
-        search_results: list[SearchResult],
-        fetch_results: list[FetchResult],
-        state: WebSearchState,
-    ) -> dict[str, Any]:
-        """Extract one evidence list per fetchable page, dropping failed pages."""
-        pages = list(zip(search_results, fetch_results, strict=False))
-        visits = [PageVisit(url=result.url, ok=fetched.ok) for result, fetched in pages]
+        state: OverallState,
+        candidates: list[SearchResult],
+        budget: int,
+    ) -> list[str]:
+        """Ask the fast model for candidate indices; fall back to no triage."""
+        lines = [
+            f"Question: {state['original_question']}",
+            f"FETCH QUERY: {state.get('fetch_query', '')}",
+            f"MAX PAGES: {budget}",
+        ]
+        for index, candidate in enumerate(candidates):
+            lines.append(f"[{index}] {candidate.url}")
+            lines.append(candidate.title)
+            lines.append(candidate.snippet)
+        chain = self.config.fast.with_structured_output(SelectedPages)
+        try:
+            selected = cast(
+                SelectedPages,
+                await chain.ainvoke(
+                    [SystemMessage(_SELECT_URLS_PROMPT), HumanMessage("\n".join(lines))]
+                ),
+            )
+        except Exception as error:  # triage must never fail a round
+            logger.warning("URL triage failed, using links only: %s", error)
+            return []
+        chosen: list[str] = []
+        for index in selected.indices:
+            if not 0 <= index < len(candidates):
+                continue
+            url = candidates[index].url
+            if url in chosen:
+                continue
+            chosen.append(url)
+            if len(chosen) >= budget:
+                break
+        return chosen
+
+    async def web_research(self, state: OverallState, config: RunnableConfig) -> dict[str, Any]:
+        """Fetch every selected page and extract verbatim evidence per page."""
+        reporter = config.get("configurable", {}).get("progress_reporter")
+        if reporter:
+            await reporter("Reading pages...", 0.0, None)
+        urls = state.get("to_visit", [])
+        if not urls:
+            logger.warning("No pages selected for this round")
+            return {"evidence": [], "visits": []}
+        fetch_query = state.get("fetch_query") or state["original_question"]
+        fetch_results = await asyncio.gather(
+            *(self.config.fetch(url, fetch_query) for url in urls)
+        )
+        titles = _search_titles(state.get("searches", []))
+        visits = [
+            PageVisit(url=url, ok=fetched.ok)
+            for url, fetched in zip(urls, fetch_results, strict=False)
+        ]
         extracted = await asyncio.gather(
-            *(self._extract_page(result, fetched, state) for result, fetched in pages),
+            *(
+                self._extract_page(url, titles.get(_normalize_url(url), ""), fetched, state)
+                for url, fetched in zip(urls, fetch_results, strict=False)
+            ),
             return_exceptions=True,
         )
         evidence: list[Evidence] = []
-        for (result, _), item in zip(pages, extracted, strict=False):
+        for url, item in zip(urls, extracted, strict=False):
             if isinstance(item, asyncio.CancelledError):
                 raise item
             if isinstance(item, BaseException):
-                logger.warning("Extraction failed for %s: %s", result.url, item)
+                logger.warning("Extraction failed for %s: %s", url, item)
                 continue
             evidence.extend(item)
+        logger.info("Visited %d pages, kept %d evidence items", len(visits), len(evidence))
         return {"evidence": evidence, "visits": visits}
 
     async def _extract_page(
         self,
-        result: SearchResult,
+        url: str,
+        title: str,
         fetched: FetchResult,
-        state: WebSearchState,
+        state: OverallState,
     ) -> list[Evidence]:
         """Extract verbatim evidence from one successfully fetched page."""
         if not fetched.ok or not fetched.content.strip():
             return []
         return await self._extract(
-            url=result.url,
-            title=result.title,
+            url=url,
+            title=title,
             content=fetched.content,
             question=state["original_question"],
             gap=_knowledge_gap(state),
@@ -595,20 +767,16 @@ class ResearchAgent:
         return [Evidence(url=url, text=text) for text in _slice(numbered, ranges)]
 
     async def reflection(self, state: OverallState, config: RunnableConfig) -> dict[str, Any]:
-        """Evaluate research completeness and identify knowledge gaps."""
+        """Audit evidence and the search view, then plan the next round."""
         loop_count = state.get("research_loop_count", 0) + 1
-        max_loops = float(state.get("max_research_loops", self.max_research_loops))
         reporter = config.get("configurable", {}).get("progress_reporter")
         if reporter:
-            await reporter(
-                f"Evaluating research (loop {loop_count}/{int(max_loops)})...",
-                float(loop_count),
-                max_loops,
-            )
+            await reporter(f"Evaluating research (round {loop_count})...", 0.0, None)
         gap = state.get("knowledge_gap", "").strip()
-        gap_section = f"\nKnowledge gap: {gap}" if gap else ""
+        gap_section = f"\n\nKnowledge gap: {gap}" if gap else ""
         human = (
             f"Question: {state['original_question']}{gap_section}\n\n"
+            f"Search results:\n{_render_search_view(state.get('searches', []), state.get('visits', []), state.get('evidence', []))}\n\n"
             f"Evidence:\n{_render_evidence(state.get('evidence', []))}"
         )
         chain = self.config.small.with_structured_output(Reflection)
@@ -616,19 +784,47 @@ class ResearchAgent:
             Reflection,
             await chain.ainvoke([SystemMessage(_REFLECTION_PROMPT), HumanMessage(human)]),
         )
+        executed = {_query_key(run["query"]) for run in state.get("searches", [])}
+        visited = {_normalize_url(visit["url"]) for visit in state.get("visits", [])}
+        queries = _dedupe(
+            parsed.search_queries,
+            executed,
+            _query_key,
+            self.limits.max_follow_ups,
+        )
+        remaining = self.limits.max_follow_ups - len(queries)
+        links = _dedupe(_valid_links(parsed.links), visited, _normalize_url, remaining)
         logger.info(
-            "Reflection loop %d: is_sufficient=%s, follow_ups=%d, knowledge_gap=%s",
+            "Reflection round %d: is_sufficient=%s, queries=%d, links=%d, knowledge_gap=%s",
             loop_count,
             parsed.is_sufficient,
-            len(parsed.follow_ups),
+            len(queries),
+            len(links),
             parsed.knowledge_gap[:1200],
         )
         return {
             "research_loop_count": loop_count,
             "is_sufficient": parsed.is_sufficient,
-            "follow_ups": parsed.follow_ups,
             "knowledge_gap": parsed.knowledge_gap,
+            "search_queries": queries,
+            "pending_links": links,
+            "fetch_query": parsed.fetch_query.strip() or _knowledge_gap(state) or state["original_question"],
         }
+
+    def evaluate_research(
+        self,
+        state: OverallState,
+    ) -> Literal["finalize_answer"] | list[Send] | Literal["select_urls"]:
+        """Finalize when sufficient, out of time, or out of follow-ups; else continue."""
+        if state.get("is_sufficient") and state.get("evidence"):
+            return "finalize_answer"
+        elapsed = self.clock() - state.get("started_at", 0)
+        if elapsed > self.limits.round_start_budget:
+            logger.info("Round budget exceeded (%.1fs), finalizing", elapsed)
+            return "finalize_answer"
+        if not state.get("search_queries") and not state.get("pending_links"):
+            return "finalize_answer"
+        return self.route_round(state)
 
     async def finalize_answer(self, state: OverallState, config: RunnableConfig) -> dict[str, Any]:
         """Render a cited atomic answer, or a fixed reply when no evidence exists."""
@@ -662,41 +858,6 @@ class ResearchAgent:
             "sources_gathered": sources_gathered,
         }
 
-    def continue_to_web_research(self, state: OverallState) -> list[Send]:
-        """Fan-out: one parallel web_research branch per query."""
-        return [
-            Send("web_research", {
-                "original_question": state["original_question"],
-                "search_query": q,
-                "id": i})
-            for i, q in enumerate(state["queries"])
-        ]
-
-    def evaluate_research(
-        self,
-        state: OverallState,
-    ) -> Literal["web_research", "finalize_answer"] | list[Send]:
-        """Route to finalize or fan-out more searches based on reflection."""
-        max_loops = state.get("max_research_loops", 3)
-        follow_ups = state.get("follow_ups", [])
-
-        if (
-            state.get("is_sufficient")
-            or state.get("research_loop_count", 0) >= max_loops
-            or not follow_ups
-        ):
-            return "finalize_answer"
-
-        return [
-            Send("web_research", {
-                "original_question": state["original_question"],
-                "knowledge_gap": state.get("knowledge_gap", ""),
-                "search_query": q,
-                "id": i
-                })
-            for i, q in enumerate(follow_ups)
-        ]
-
     async def __call__(
         self, input: str, progress: Any | None = None
     ) -> ResearchResponse:
@@ -704,12 +865,37 @@ class ResearchAgent:
         config: RunnableConfig | None = (
             {"configurable": {"progress_reporter": progress}} if progress is not None else None
         )
-        result = await self.graph.ainvoke(
-            {"question": input, "max_research_loops": self.max_research_loops},
-            config=config,
-        )
+        result = await self.graph.ainvoke({"question": input}, config=config)
         return {
             "answer": result["answer"],
             "explanation": result.get("explanation", ""),
             "sources": result.get("sources_gathered", []),
         }
+
+
+def _collect_candidates(
+    searches: list[SearchRun],
+    current_queries: set[str],
+    exclude: set[str],
+) -> list[SearchResult]:
+    """Deduplicated search results of the current round, excluding seen URLs."""
+    candidates: list[SearchResult] = []
+    for run in searches:
+        if _query_key(run["query"]) not in current_queries:
+            continue
+        for result in run.get("results", []):
+            url = _normalize_url(result.url)
+            if url in exclude:
+                continue
+            exclude.add(url)
+            candidates.append(SearchResult(url=url, title=result.title, snippet=result.snippet))
+    return candidates
+
+
+def _search_titles(searches: list[SearchRun]) -> dict[str, str]:
+    """Map normalized result URLs to their titles for extraction prompts."""
+    titles: dict[str, str] = {}
+    for run in searches:
+        for result in run.get("results", []):
+            titles.setdefault(_normalize_url(result.url), result.title)
+    return titles
