@@ -23,11 +23,14 @@ from mcps.research.config import (
     build_research_config,
 )
 from mcps.research.deep_research import (
+    _NO_EVIDENCE_ANSWER,
+    _UNANSWERED,
+    Claim,
     ExtractedRanges,
+    FinalAnswer,
     Reflection,
     ResearchAgent,
     ResearchLimits,
-    Result,
 )
 from mcps.research.tools import SearchResult
 from mcps.research.tools.models import FetchResult, FetchStatus
@@ -381,7 +384,7 @@ def _make_agent(
     fetch_results: dict[str, FetchResult] | None = None,
     *,
     extract: Callable[[list[Any]], ExtractedRanges] | None = None,
-    answer: Callable[[list[Any]], Result] | None = None,
+    answer: Callable[[list[Any]], FinalAnswer] | None = None,
     reflect: Callable[[list[Any]], Reflection] | None = None,
     limits: ResearchLimits = _DEFAULT_LIMITS,
 ):
@@ -397,13 +400,16 @@ def _make_agent(
 
     extract_handler = extract or (lambda _messages: ExtractedRanges(ranges="1"))
     answer_handler = answer or (
-        lambda _messages: Result(answer="x", explanation="y", sources_gathered=[])
+        lambda _messages: FinalAnswer(
+            answer=[Claim(text="x", evidence=[1])],
+            claims=[Claim(text="y", evidence=[2])],
+        )
     )
     reflect_handler = reflect or (
         lambda _messages: Reflection(is_sufficient=True, knowledge_gap="")
     )
     fast = _StructuredModel({ExtractedRanges: extract_handler})
-    small = _StructuredModel({Reflection: reflect_handler, Result: answer_handler})
+    small = _StructuredModel({Reflection: reflect_handler, FinalAnswer: answer_handler})
     agent = ResearchAgent(
         ResearchConfig(
             fast=cast(Any, fast),
@@ -616,3 +622,70 @@ class TestWebResearchFetch:
             "https://a.example",
             "https://b.example",
         ]
+
+
+_EVIDENCE = [
+    {"url": "https://a.example", "text": "e1"},
+    {"url": "https://b.example", "text": "e2"},
+    {"url": "https://a.example", "text": "e3"},
+]
+
+
+def _final_state(**overrides: Any) -> Any:
+    state = {
+        "original_question": _QUESTION,
+        "evidence": _EVIDENCE,
+        "knowledge_gap": "",
+        "searches": [],
+    }
+    return {**state, **overrides}
+
+
+class TestFinalizeAnswer:
+    """Cited atomic output: only claims backed by existing evidence survive."""
+
+    async def test_only_validly_cited_claims_survive_and_cite_sources(self):
+        agent, _, _, _ = _make_agent(
+            answer=lambda _messages: FinalAnswer(
+                answer=[Claim(text="X.", evidence=[3])],
+                claims=[
+                    Claim(text="P", evidence=[2]),
+                    Claim(text="Q", evidence=[1, 3]),
+                    Claim(text="R", evidence=[]),
+                    Claim(text="S", evidence=[7]),
+                ],
+                not_found=["G"],
+            )
+        )
+
+        out = await agent.finalize_answer(_final_state(), {})
+
+        assert out["sources_gathered"] == ["https://a.example", "https://b.example"]
+        assert out["answer"] == "X. [1]"
+        assert out["explanation"] == "- P [2]\n- Q [1]\n\nNot found:\n- G"
+
+    async def test_answer_without_valid_citation_is_not_reported(self):
+        agent, _, _, _ = _make_agent(
+            answer=lambda _messages: FinalAnswer(
+                answer=[Claim(text="Invented.", evidence=[9])],
+                claims=[Claim(text="P", evidence=[2])],
+            )
+        )
+
+        out = await agent.finalize_answer(_final_state(), {})
+
+        assert out["answer"] == _UNANSWERED
+        assert out["sources_gathered"] == ["https://b.example"]
+
+    async def test_zero_evidence_returns_fixed_reply_without_model_call(self):
+        agent, _, small, _ = _make_agent()
+        state = _final_state(
+            evidence=[], searches=[{"query": "quantum routing", "results": []}]
+        )
+
+        out = await agent.finalize_answer(state, {})
+
+        assert small.calls == []
+        assert out["sources_gathered"] == []
+        assert "quantum routing" in out["explanation"]
+        assert out["answer"] == _NO_EVIDENCE_ANSWER

@@ -134,24 +134,20 @@ BAD (Conversational, Long, Compound):
 """
 
 
-_FINALIZE_PROMPT = """Synthesize a final answer to the user's original question based on the research findings and sources gathered.
-Provide concise answer and detailed explanation.
-The answer itself should be short exact response to the user's question without any explanation or source attribution.
-The explanation MUST comprehensively cover EVERY facet of the user's question. Do not summarize away complex methodological, technical, or quantitative details; include them explicitly. If the user asks about specific frame
-works, mechanisms, limitations, or theories, ensure your explanation provides the exact detailed rationale and nuanced context found in the research.
-If there are multiply possible solution or conroversial information, also include it into explanation
-Guidelines:
- Accuracy: Ensure the answer is technically correct and directly addresses ALL parts of the user's question.
- Clarity: Write in a clear, concise manner. Directly answer the question without unnecessary preamble.
- Traceability: In explanation, describe how the answer was derived, with verifiable evidence and logic
-Source Attribution: Explicitly reference the sources that support each part of the answer. Mark sources that may contradict provided answer
-If the answer includes code snippets, ensure they are well-formatted and tested against the gathered research
- Finalization checklist (mandatory before writing answer):
- - Verify requested answer format exactly (units, scale, rounding, casing, phrasing constraints).
- - Verify arithmetic and unit conversions explicitly.
- - Example: if question asks for answer in "thousands of hours", convert 17000 hours to 17.
- - Address every single sub-question and implicit requirement in the prompt comprehensively.
- - Resolve source-constraint requirements where possible; if unresolved, provide best-effort answer with explicit uncertainty in explanation.
+_NO_EVIDENCE_ANSWER = "No supporting evidence was found for this question."
+_UNANSWERED = "The gathered evidence does not support an answer to this question."
+
+_FINALIZE_PROMPT = """You write a final answer to the user's question using ONLY the numbered evidence blocks `[E<n>] (url)`.
+Return atomic claims, each supported by the `[E#]` ids of the evidence it rests on.
+
+Rules:
+- Write the `answer` as 1-3 short sentences that directly answer the question.
+- Put the supporting detail into `claims` as short atomic statements.
+- Every claim MUST cite at least one existing `[E#]` id in its `evidence` list. Never cite an id that is not shown.
+- Never add facts from your own knowledge; if the evidence does not say it, do not claim it.
+- If sources contradict each other, state the conflict and cite both sides.
+- List every part of the question the evidence does not answer in `not_found`.
+- Do not include any source attribution in the claim text; citations are carried by the `evidence` ids.
 """
 
 
@@ -196,6 +192,21 @@ class PageVisit(TypedDict):
 
     url: str
     ok: bool
+
+
+class Claim(BaseModel):
+    """One atomic statement supported by cited evidence ids."""
+
+    text: str
+    evidence: list[int] = Field(default_factory=list, description="[E#] ids supporting the claim")
+
+
+class FinalAnswer(BaseModel):
+    """Cited atomic output of the finalize_answer node."""
+
+    answer: list[Claim] = Field(default_factory=list, description="1-3 sentences answering the question")
+    claims: list[Claim] = Field(default_factory=list, description="Supporting cited claims")
+    not_found: list[str] = Field(default_factory=list, description="Gaps the evidence does not answer")
 
 
 class SearchQueryList(BaseModel):
@@ -364,6 +375,49 @@ def _render_evidence(evidence: list[Evidence]) -> str:
         f"[E{number}] ({item['url']})\n{item['text']}"
         for number, item in enumerate(evidence, start=1)
     )
+
+
+def _render_not_found_queries(state: OverallState) -> str:
+    """List every executed query under a ``Not found:`` header (no-model reply)."""
+    queries = [item["query"] for item in state.get("searches", [])]
+    queries.extend(state.get("queries", []))
+    return "Not found:\n" + "\n".join(f"- {query}" for query in queries)
+
+
+def _render_cited(final: FinalAnswer, evidence: list[Evidence]) -> tuple[str, str, list[str]]:
+    """Drop uncited claims and renumber sources in first-citation order.
+
+    Citation ids are 1-based indexes into ``evidence``. A claim survives only
+    when it cites at least one existing id. Source numbers are 1-based indexes
+    into the returned URL list, numbered over ``answer`` then ``claims``.
+    """
+    sources: list[str] = []
+
+    def cited_text(claim: Claim) -> str:
+        suffixes: list[str] = []
+        for item in claim.evidence:
+            if not 1 <= item <= len(evidence):
+                continue
+            url = evidence[item - 1]["url"]
+            if url not in sources:
+                sources.append(url)
+            suffix = f" [{sources.index(url) + 1}]"
+            if suffix not in suffixes:
+                suffixes.append(suffix)
+        if not suffixes:
+            return ""
+        return f"{claim.text}{''.join(suffixes)}"
+
+    answer = " ".join(
+        text for claim in final.answer if (text := cited_text(claim))
+    ) or _UNANSWERED
+    explanation = "\n".join(
+        f"- {text}" for claim in final.claims if (text := cited_text(claim))
+    )
+    if final.not_found:
+        gaps = "\n".join(f"- {gap}" for gap in final.not_found)
+        explanation = f"{explanation}\n\nNot found:\n{gaps}" if explanation else f"Not found:\n{gaps}"
+    return answer, explanation, list(sources)
 
 
 def create_deep_research_graph(config: ResearchConfig) -> CompiledStateGraph:
@@ -577,11 +631,17 @@ class ResearchAgent:
         }
 
     async def finalize_answer(self, state: OverallState, config: RunnableConfig) -> dict[str, Any]:
-        """Synthesise all gathered research into a final report."""
+        """Render a cited atomic answer, or a fixed reply when no evidence exists."""
         reporter = config.get("configurable", {}).get("progress_reporter")
         if reporter:
             await reporter("Synthesizing final answer...", 0.0, None)
         evidence = state.get("evidence", [])
+        if not evidence:
+            return {
+                "answer": _NO_EVIDENCE_ANSWER,
+                "explanation": _render_not_found_queries(state),
+                "sources_gathered": [],
+            }
         gap = state.get("knowledge_gap", "").strip()
         gap_section = f"\n\nKnowledge gap: {gap}" if gap else ""
         human = (
@@ -589,20 +649,16 @@ class ResearchAgent:
             f"Evidence:\n{_render_evidence(evidence)}{gap_section}"
         )
         response = cast(
-            Result,
-            await self.config.small.with_structured_output(Result).ainvoke(
+            FinalAnswer,
+            await self.config.small.with_structured_output(FinalAnswer).ainvoke(
                 [SystemMessage(_FINALIZE_PROMPT), HumanMessage(human)]
             ),
         )
-        sources_gathered = list(dict.fromkeys(item["url"] for item in evidence))
-        logger.info(
-            "Final answer generated: %s. Explanation: %s",
-            response["answer"],
-            response.get("explanation", "")[:1000],
-        )
+        answer, explanation, sources_gathered = _render_cited(response, evidence)
+        logger.info("Final answer generated: %s. Explanation: %s", answer, explanation[:1000])
         return {
-            "answer": response["answer"],
-            "explanation": response.get("explanation", ""),
+            "answer": answer,
+            "explanation": explanation,
             "sources_gathered": sources_gathered,
         }
 
