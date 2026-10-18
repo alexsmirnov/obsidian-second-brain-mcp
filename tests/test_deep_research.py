@@ -8,22 +8,18 @@ from __future__ import annotations
 import asyncio
 import shutil
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from types import SimpleNamespace
 from typing import Any, cast
+from unittest.mock import patch
 
 import httpx
 import pytest
-from langchain_core.language_models.fake_chat_models import (
-    FakeMessagesListChatModel,
-)
-from langchain_core.messages import AIMessage
+from fastmcp import Client
 
 from mcps.config import ServerConfig, create_config
 from mcps.research.agent import create_researcher
-from mcps.research.config import (
-    ResearchConfig,
-    build_research_config,
-)
+from mcps.research.config import ResearchConfig, build_research_config
 from mcps.research.deep_research import (
     _NO_EVIDENCE_ANSWER,
     _UNANSWERED,
@@ -38,38 +34,33 @@ from mcps.research.deep_research import (
 )
 from mcps.research.tools import SearchResult
 from mcps.research.tools.models import FetchResult, FetchStatus
+from mcps.server import create_server
 
 # ---------------------------------------------------------------------------
-# Config contract tests
+# Fakes and helpers
 # ---------------------------------------------------------------------------
 
-
-class TestServerConfigContract:
-    def test_config_has_router_api_base_field(self):
-        config = ServerConfig()
-        assert hasattr(config, "router_api_base")
-        assert config.router_api_base == ""
-
-    def test_config_has_router_api_key_field(self):
-        config = ServerConfig()
-        assert hasattr(config, "router_api_key")
-        assert config.router_api_key == ""
-
-    def test_perplexity_api_key_removed(self):
-        config = ServerConfig()
-        assert not hasattr(config, "perplexity_api_key")
-
-    def test_create_config_reads_router_env_vars(self, monkeypatch):
-        monkeypatch.setenv("ROUTER_API_BASE", "http://localhost:4000")
-        monkeypatch.setenv("ROUTER_API_KEY", "sk-test123")
-        config = create_config()
-        assert config.router_api_base == "http://localhost:4000"
-        assert config.router_api_key == "sk-test123"
+_QUESTION = "How does quantum routing work?"
+_SEARCH_RESULTS = [
+    SearchResult(url=f"https://{name}.example", title=name.upper(), snippet="s")
+    for name in ("a", "b", "c")
+]
+_FAILED = FetchResult("", FetchStatus.HTTP_ERROR, "", http_status=403)
+_PAGE = "alpha\nbeta\ngamma\ndelta\nepsilon"
+_DEFAULT_LIMITS = ResearchLimits()
+_EVIDENCE = [
+    {"url": "https://a.example", "text": "e1"},
+    {"url": "https://b.example", "text": "e2"},
+    {"url": "https://a.example", "text": "e3"},
+]
 
 
-# ---------------------------------------------------------------------------
-# ResearchConfig contract tests
-# ---------------------------------------------------------------------------
+def _fetched(content: str) -> FetchResult:
+    return FetchResult("", FetchStatus.OK, "text/markdown", content)
+
+
+def _sr(url: str, title: str = "T", snippet: str = "s") -> SearchResult:
+    return SearchResult(url=url, title=title, snippet=snippet)
 
 
 class _ReachableCrawler:
@@ -88,287 +79,28 @@ class _ReachableCrawler:
         raise AssertionError("test crawler must not fetch")
 
 
-def _fake_research_config() -> ResearchConfig:
-    """Build a ResearchConfig backed by fakes for graph-level tests."""
-
-    async def search(_query: str) -> list[SearchResult]:
-        return []
-
-    async def fetch(_url: str, _query: str | None = None, /) -> FetchResult:
-        return FetchResult("", FetchStatus.OK, "text/markdown", "content")
-
-    return ResearchConfig(
-        fast=FakeMessagesListChatModel(responses=[AIMessage("x")]),
-        small=FakeMessagesListChatModel(responses=[AIMessage("x")]),
-        search=search,
-        fetch=fetch,
-    )
-
-
-class TestResearchConfigContract:
-    @pytest.fixture
-    def browser_config(self, monkeypatch):
-        monkeypatch.setattr(
-            "mcps.research.tools.browser.AsyncWebCrawler", _ReachableCrawler
-        )
-        return ServerConfig(
-            router_api_base="http://localhost:4000",
-            router_api_key="sk-test",
-            research_fast_model="fast-model",
-            research_infer_model="small-model",
-            browser_cdp_url="ws://127.0.0.1:9222",
-        )
-
-    @pytest.mark.asyncio
-    async def test_build_research_config_returns_valid_config(self, browser_config):
-        async with httpx.AsyncClient() as http_client:
-            async with build_research_config(
-                browser_config, http_client
-            ) as config:
-                assert isinstance(config, ResearchConfig)
-                assert config.fast is not None
-                assert config.small is not None
-                assert callable(config.search)
-                assert callable(config.fetch)
-
-    @pytest.mark.asyncio
-    async def test_build_research_config_yields_none_without_browser(
-        self, monkeypatch
-    ):
-        monkeypatch.setattr(shutil, "which", lambda _name: None)
-        monkeypatch.setattr(
-            "mcps.research.tools.browser.AsyncWebCrawler", _ReachableCrawler
-        )
-        server_config = ServerConfig(browser_cdp_url="")
-
-        async with httpx.AsyncClient() as http_client:
-            async with build_research_config(server_config, http_client) as config:
-                assert config is None
-
-
-# ---------------------------------------------------------------------------
-# Agent contract tests
-# ---------------------------------------------------------------------------
-
-
-class TestAgentContract:
-    @pytest.fixture
-    def mock_config(self):
-        return _fake_research_config()
-
-    def test_create_researcher_returns_callable(self, mock_config):
-        researcher = create_researcher(mock_config, implementation="deep_research")
-        assert callable(researcher)
-
-    def test_create_researcher_rejects_unknown_implementation(self, mock_config):
-        with pytest.raises(ValueError, match="Unknown implementation"):
-            create_researcher(mock_config, implementation=cast(Any, "bogus"))
-
-    @pytest.mark.asyncio
-    async def test_agent_returns_research_response_shape(
-        self, mock_config, monkeypatch
-    ):
-        """
-        Full graph execution with mocked LLM responses.
-        Verifies the response contract without real network calls.
-        """
-        from unittest.mock import patch
-
-        researcher = create_researcher(mock_config, implementation="deep_research")
-        agent_graph = researcher.graph
-
-        mock_answer = "42"
-        mock_explanation = "This was derived from authoritative sources."
-        mock_sources = ["https://example.com/source1", "https://example.com/source2"]
-
-        async def mock_invoke(_input, **_kwargs):
-            return {
-                "answer": mock_answer,
-                "explanation": mock_explanation,
-                "sources_gathered": mock_sources,
-            }
-
-        with patch.object(agent_graph, "ainvoke", side_effect=mock_invoke):
-            result = await researcher("What is the answer?")
-
-        assert isinstance(result, dict)
-        assert "answer" in result
-        assert "explanation" in result
-        assert "sources" in result
-        assert result["answer"] == mock_answer
-        assert result["explanation"] == mock_explanation
-
-    @pytest.mark.asyncio
-    async def test_agent_response_matches_research_response_contract(
-        self, mock_config
-    ):
-        """Response follows ResearchResponse TypedDict shape."""
-        from unittest.mock import patch
-
-        researcher = create_researcher(mock_config, implementation="deep_research")
-        agent_graph = researcher.graph
-
-        async def mock_invoke(_input, **_kwargs):
-            return {
-                "answer": "Test answer",
-                "explanation": "Test explanation",
-                "sources_gathered": ["https://test.com"],
-            }
-
-        with patch.object(agent_graph, "ainvoke", side_effect=mock_invoke):
-            result = await researcher("test query")
-
-        assert isinstance(result["answer"], str)
-        assert isinstance(result["explanation"], str)
-        assert isinstance(result["sources"], list)
-
-
-# ---------------------------------------------------------------------------
-# Progress reporter contract tests
-# ---------------------------------------------------------------------------
-
-
-class TestProgressReporterContract:
-    @pytest.fixture
-    def mock_config(self):
-        return _fake_research_config()
-
-    @pytest.mark.asyncio
-    async def test_agent_wraps_progress_in_config_for_ainvoke(self, mock_config):
-        """__call__ forwards the progress callback to graph.ainvoke."""
-        from unittest.mock import patch
-
-        researcher = create_researcher(mock_config, implementation="deep_research")
-        agent_graph = researcher.graph
-
-        captured: dict[str, Any] = {}
-
-        async def mock_invoke(_input, **kwargs):
-            captured.update(kwargs)
-            return {
-                "answer": "42",
-                "explanation": "test",
-                "sources_gathered": [],
-            }
-
-        async def mock_reporter(
-            message: str, progress: float, total: float | None
-        ) -> None:
-            pass
-
-        with patch.object(agent_graph, "ainvoke", side_effect=mock_invoke):
-            result = await researcher("query", progress=mock_reporter)
-
-        assert "config" in captured
-        assert captured["config"]["configurable"]["progress_reporter"] is mock_reporter
-        assert result["answer"] == "42"
-
-    @pytest.mark.asyncio
-    async def test_agent_call_without_config_still_works(self, mock_config):
-        """__call__ without config arg preserves original behavior."""
-        from unittest.mock import patch
-
-        researcher = create_researcher(mock_config, implementation="deep_research")
-        agent_graph = researcher.graph
-
-        async def mock_invoke(_input, **_kwargs):
-            return {
-                "answer": "ok",
-                "explanation": "",
-                "sources_gathered": [],
-            }
-
-        with patch.object(agent_graph, "ainvoke", side_effect=mock_invoke):
-            result = await researcher("bare query")
-
-        assert result["answer"] == "ok"
-
-
-# ---------------------------------------------------------------------------
-# Tool contract tests
-# ---------------------------------------------------------------------------
-
-
-class TestToolContract:
-    @pytest.mark.asyncio
-    async def test_tool_is_registered(self, monkeypatch):
-        """web_research tool appears in the server's registered tools."""
-        from fastmcp import Client
-
-        from mcps.server import create_server
-
-        monkeypatch.setenv("ROUTER_API_BASE", "http://localhost:4000")
-        monkeypatch.setenv("ROUTER_API_KEY", "sk-test")
-        monkeypatch.setenv("BROWSER_CDP_URL", "ws://127.0.0.1:9222")
-        monkeypatch.delenv("VAULT", raising=False)
-        monkeypatch.setattr(shutil, "which", lambda _name: None)
-        monkeypatch.setattr(
-            "mcps.research.tools.browser.AsyncWebCrawler", _ReachableCrawler
-        )
-        config = create_config()
-        server = create_server(config)
-
-        async with Client(server.mcp) as client:
-            tools = await client.list_tools()
-        assert "web_research" in [t.name for t in tools]
-
-
-# ---------------------------------------------------------------------------
-# Fetch query propagation and evidence filtering
-# ---------------------------------------------------------------------------
-
-_QUESTION = "How does quantum routing work?"
-_SEARCH_RESULTS = [
-    SearchResult(url=f"https://{name}.example", title=name.upper(), snippet="s")
-    for name in ("a", "b", "c")
-]
-
-
-class _StructuredRunnable:
-    """Records one structured-output invocation and delegates to a handler."""
-
-    def __init__(self, model: _StructuredModel, schema: Any) -> None:
-        self._model = model
-        self._schema = schema
-
-    async def ainvoke(self, messages: list[Any]) -> Any:
-        self._model.calls.append((self._schema, messages))
-        return self._model.handlers[self._schema](messages)
+def _as_handler(value: Any) -> Callable[[list[Any]], Any]:
+    """Normalize a value, iterator, or callable into a message handler."""
+    if callable(value):
+        return value
+    if isinstance(value, Iterator):
+        return lambda _messages: next(value)
+    return lambda _messages: value
 
 
 class _StructuredModel:
-    """Fake chat model serving structured-output handlers and recording calls.
+    """Fake chat model serving structured-output handlers and recording calls."""
 
-    ``calls`` holds ``(schema, messages)`` tuples; unstructured ``ainvoke``
-    records ``(None, messages)`` so single-call legacy nodes still run.
-    """
-
-    def __init__(
-        self,
-        handlers: dict[Any, Callable[[list[Any]], Any]],
-    ) -> None:
-        self.handlers = handlers
+    def __init__(self, handlers: dict[Any, Any]) -> None:
+        self.handlers = {schema: _as_handler(h) for schema, h in handlers.items()}
         self.calls: list[tuple[Any, list[Any]]] = []
 
-    def with_structured_output(
-        self, schema: Any, **_kwargs: Any
-    ) -> _StructuredRunnable:
-        return _StructuredRunnable(self, schema)
+    def with_structured_output(self, schema: Any, **_kwargs: Any) -> Any:
+        async def ainvoke(messages: list[Any]) -> Any:
+            self.calls.append((schema, messages))
+            return self.handlers[schema](messages)
 
-    async def ainvoke(self, messages: list[Any], **_kwargs: Any) -> AIMessage:
-        self.calls.append((None, messages))
-        return AIMessage("UNSTRUCTURED")
-
-
-_FAILED = FetchResult("", FetchStatus.HTTP_ERROR, "", http_status=403)
-
-
-def _fetched(content: str) -> FetchResult:
-    return FetchResult("", FetchStatus.OK, "text/markdown", content)
-
-
-_PAGE = "alpha\nbeta\ngamma\ndelta\nepsilon"
-_DEFAULT_LIMITS = ResearchLimits()
+        return SimpleNamespace(ainvoke=ainvoke)
 
 
 def _ranges_by_url(mapping: dict[str, str]) -> Callable[[list[Any]], ExtractedRanges]:
@@ -387,50 +119,51 @@ def _ranges_by_url(mapping: dict[str, str]) -> Callable[[list[Any]], ExtractedRa
 def _make_agent(
     fetch_results: dict[str, FetchResult] | None = None,
     *,
-    extract: Callable[[list[Any]], ExtractedRanges] | None = None,
-    answer: Callable[[list[Any]], FinalAnswer] | None = None,
-    reflect: Callable[[list[Any]], Reflection] | None = None,
-    plan: Callable[[list[Any]], ResearchPlan] | None = None,
-    select: Callable[[list[Any]], SelectedPages] | None = None,
+    fetch: Callable[..., Any] | None = None,
+    extract: Any = None,
+    answer: Any = None,
+    reflect: Any = None,
+    plan: Any = None,
+    select: Any = None,
     search_results: list[SearchResult] = _SEARCH_RESULTS,
     search_by_query: Callable[[str], list[SearchResult]] | None = None,
     limits: ResearchLimits = _DEFAULT_LIMITS,
     clock: Callable[[], float] = time.monotonic,
-):
+) -> tuple[
+    ResearchAgent,
+    _StructuredModel,
+    _StructuredModel,
+    list[tuple[str, str | None]],
+]:
     fetch_calls: list[tuple[str, str | None]] = []
     results = fetch_results or {}
 
     async def fake_fetch(url: str, query: str | None = None, /) -> FetchResult:
         fetch_calls.append((url, query))
+        if fetch is not None:
+            return await fetch(url, query)
         return results.get(url, _fetched("content"))
 
     async def fake_search(query: str) -> list[SearchResult]:
-        if search_by_query is not None:
-            return search_by_query(query)
-        return search_results
+        return search_by_query(query) if search_by_query is not None else search_results
 
-    extract_handler = extract or (lambda _messages: ExtractedRanges(ranges="1"))
-    answer_handler = answer or (
-        lambda _messages: FinalAnswer(
-            answer=[Claim(text="x", evidence=[1])],
-            claims=[Claim(text="y", evidence=[2])],
-        )
-    )
-    reflect_handler = reflect or (
-        lambda _messages: Reflection(is_sufficient=True, knowledge_gap="")
-    )
-    plan_handler = plan or (
-        lambda _messages: ResearchPlan(search_queries=["q"], fetch_query="k")
-    )
-    select_handler = select or (lambda _messages: SelectedPages(indices=[]))
     fast = _StructuredModel(
         {
-            ExtractedRanges: extract_handler,
-            ResearchPlan: plan_handler,
-            SelectedPages: select_handler,
+            ExtractedRanges: extract or ExtractedRanges(ranges="1"),
+            ResearchPlan: plan or ResearchPlan(search_queries=["q"], fetch_query="k"),
+            SelectedPages: select or SelectedPages(indices=[]),
         }
     )
-    small = _StructuredModel({Reflection: reflect_handler, FinalAnswer: answer_handler})
+    small = _StructuredModel(
+        {
+            Reflection: reflect or Reflection(is_sufficient=True, knowledge_gap=""),
+            FinalAnswer: answer
+            or FinalAnswer(
+                answer=[Claim(text="x", evidence=[1])],
+                claims=[Claim(text="y", evidence=[2])],
+            ),
+        }
+    )
     agent = ResearchAgent(
         ResearchConfig(
             fast=cast(Any, fast),
@@ -445,24 +178,167 @@ def _make_agent(
 
 
 def _state(**overrides: Any) -> Any:
-    state = {
+    return {
         "original_question": _QUESTION,
         "fetch_query": _QUESTION,
         "to_visit": [result.url for result in _SEARCH_RESULTS],
+        **overrides,
     }
-    return {**state, **overrides}
+
+
+def _final_state(**overrides: Any) -> Any:
+    return {
+        "original_question": _QUESTION,
+        "evidence": _EVIDENCE,
+        "knowledge_gap": "",
+        "searches": [],
+        **overrides,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Config & Server contract tests
+# ---------------------------------------------------------------------------
+
+
+class TestServerConfigContract:
+    def test_default_router_fields_and_perplexity_removed(self):
+        config = ServerConfig()
+        assert config.router_api_base == ""
+        assert config.router_api_key == ""
+        assert not hasattr(config, "perplexity_api_key")
+
+    def test_create_config_reads_router_env_vars(self, monkeypatch):
+        monkeypatch.setenv("ROUTER_API_BASE", "http://localhost:4000")
+        monkeypatch.setenv("ROUTER_DOCKER_API_BASE", "http://localhost:4000")
+        monkeypatch.setenv("ROUTER_API_KEY", "sk-test123")
+        config = create_config()
+        assert config.router_api_base == "http://localhost:4000"
+        assert config.router_api_key == "sk-test123"
+
+
+class TestResearchConfigContract:
+    def test_create_researcher_validates_implementation(self):
+        config = _make_agent()[0].config
+        assert callable(create_researcher(config, implementation="deep_research"))
+        with pytest.raises(ValueError, match="Unknown implementation"):
+            create_researcher(config, implementation=cast(Any, "bogus"))
+
+    async def test_build_research_config_returns_valid_config(self, monkeypatch):
+        monkeypatch.setattr(
+            "mcps.research.tools.browser.AsyncWebCrawler", _ReachableCrawler
+        )
+        browser_config = ServerConfig(
+            router_api_base="http://localhost:4000",
+            router_api_key="sk-test",
+            research_fast_model="fast-model",
+            research_infer_model="small-model",
+            browser_cdp_url="ws://127.0.0.1:9222",
+        )
+        async with (
+            httpx.AsyncClient() as http_client,
+            build_research_config(browser_config, http_client) as config,
+        ):
+            assert isinstance(config, ResearchConfig)
+            assert config.fast is not None
+            assert config.small is not None
+            assert callable(config.search)
+            assert callable(config.fetch)
+
+    async def test_build_research_config_yields_none_without_browser(self, monkeypatch):
+        monkeypatch.setattr(shutil, "which", lambda _name: None)
+        monkeypatch.setattr(
+            "mcps.research.tools.browser.AsyncWebCrawler", _ReachableCrawler
+        )
+        server_config = ServerConfig(browser_cdp_url="")
+
+        async with (
+            httpx.AsyncClient() as http_client,
+            build_research_config(server_config, http_client) as config,
+        ):
+            assert config is None
+
+
+class TestAgentAndProgressContract:
+    @pytest.fixture
+    def researcher(self):
+        config = _make_agent()[0].config
+        return create_researcher(config, implementation="deep_research")
+
+    async def test_agent_returns_research_response_contract(self, researcher):
+        """Response follows ResearchResponse TypedDict shape and values."""
+        mock_sources = ["https://example.com/source1", "https://example.com/source2"]
+
+        async def mock_invoke(_input: Any, **_kwargs: Any) -> dict[str, Any]:
+            return {
+                "answer": "42",
+                "explanation": "Derived from authoritative sources.",
+                "sources_gathered": mock_sources,
+            }
+
+        with patch.object(researcher.graph, "ainvoke", side_effect=mock_invoke):
+            result = await researcher("What is the answer?")
+
+        assert result == {
+            "answer": "42",
+            "explanation": "Derived from authoritative sources.",
+            "sources": mock_sources,
+        }
+
+    async def test_agent_forwards_optional_progress_reporter(self, researcher):
+        """__call__ forwards progress callback in RunnableConfig when provided."""
+        captured: list[dict[str, Any]] = []
+
+        async def mock_invoke(_input: Any, **kwargs: Any) -> dict[str, Any]:
+            captured.append(kwargs)
+            return {"answer": "42", "explanation": "test", "sources_gathered": []}
+
+        async def mock_reporter(
+            message: str, progress: float, total: float | None
+        ) -> None:
+            pass
+
+        with patch.object(researcher.graph, "ainvoke", side_effect=mock_invoke):
+            with_progress = await researcher("query", progress=mock_reporter)
+            without_progress = await researcher("bare query")
+
+        reporter = captured[0]["config"]["configurable"]["progress_reporter"]
+        assert reporter is mock_reporter
+        assert captured[1]["config"] is None
+        assert with_progress["answer"] == "42"
+        assert without_progress["answer"] == "42"
+
+
+class TestToolContract:
+    async def test_tool_is_registered(self, monkeypatch):
+        """web_research tool appears in the server's registered tools."""
+        monkeypatch.setenv("ROUTER_API_BASE", "http://localhost:4000")
+        monkeypatch.setenv("ROUTER_API_KEY", "sk-test")
+        monkeypatch.setenv("BROWSER_CDP_URL", "ws://127.0.0.1:9222")
+        monkeypatch.delenv("VAULT", raising=False)
+        monkeypatch.setattr(shutil, "which", lambda _name: None)
+        monkeypatch.setattr(
+            "mcps.research.tools.browser.AsyncWebCrawler", _ReachableCrawler
+        )
+        server = create_server(create_config())
+
+        async with Client(server.mcp) as client:
+            tools = await client.list_tools()
+        assert "web_research" in [t.name for t in tools]
+
+
+# ---------------------------------------------------------------------------
+# Fetch query propagation and evidence filtering
+# ---------------------------------------------------------------------------
 
 
 class TestWebResearchFetch:
     """Per-page verbatim evidence extraction from the web_research node."""
 
     async def test_extracted_ranges_become_verbatim_evidence_per_page(self):
+        urls = ("https://a.example", "https://b.example", "https://c.example")
         agent, fast, _, _ = _make_agent(
-            {
-                "https://a.example": _fetched(_PAGE),
-                "https://b.example": _fetched(_PAGE),
-                "https://c.example": _fetched(_PAGE),
-            },
+            dict.fromkeys(urls, _fetched(_PAGE)),
             extract=_ranges_by_url(
                 {
                     "https://a.example": "2-3",
@@ -482,7 +358,6 @@ class TestWebResearchFetch:
         for _schema, messages in fast.calls:
             text = str(messages[-1].content)
             assert "1: alpha" in text
-            urls = ("https://a.example", "https://b.example", "https://c.example")
             assert sum(url in text for url in urls) == 1
 
     async def test_long_lines_are_wrapped_for_ranges_and_sliced_verbatim(self):
@@ -504,34 +379,28 @@ class TestWebResearchFetch:
         assert evidence_text in long_line
         assert 0 < len(evidence_text) < len(long_line)
 
-    async def test_invalid_ranges_are_ignored_clipped_or_merged(self):
+    @pytest.mark.parametrize(
+        ("ranges", "expected"),
+        [
+            ("abc, 2-2, 4-99, 9-12, 3-1", ["beta", "delta\nepsilon"]),
+            ("1-2, 2-3, 4-4", ["alpha\nbeta\ngamma\ndelta"]),
+        ],
+    )
+    async def test_invalid_ranges_are_ignored_clipped_or_merged(
+        self, ranges: str, expected: list[str]
+    ):
         agent, _, _, _ = _make_agent(
             {
                 "https://a.example": _fetched(_PAGE),
                 "https://b.example": _FAILED,
                 "https://c.example": _FAILED,
             },
-            extract=_ranges_by_url({"https://a.example": "abc, 2-2, 4-99, 9-12, 3-1"}),
+            extract=_ranges_by_url({"https://a.example": ranges}),
         )
 
         out = await agent.web_research(_state(), {})
 
-        assert [e["text"] for e in out["evidence"]] == ["beta", "delta\nepsilon"]
-
-        merged_agent, _, _, _ = _make_agent(
-            {
-                "https://a.example": _fetched(_PAGE),
-                "https://b.example": _FAILED,
-                "https://c.example": _FAILED,
-            },
-            extract=_ranges_by_url({"https://a.example": "1-2, 2-3, 4-4"}),
-        )
-
-        merged_out = await merged_agent.web_research(_state(), {})
-
-        assert [e["text"] for e in merged_out["evidence"]] == [
-            "alpha\nbeta\ngamma\ndelta"
-        ]
+        assert [e["text"] for e in out["evidence"]] == expected
 
     async def test_failed_and_blank_fetches_skip_extraction_and_are_recorded(self):
         agent, fast, _, _ = _make_agent(
@@ -558,12 +427,9 @@ class TestWebResearchFetch:
                 raise RuntimeError("extraction failed")
             return ExtractedRanges(ranges="1")
 
+        urls = ("https://a.example", "https://b.example", "https://c.example")
         agent, _, _, _ = _make_agent(
-            {
-                "https://a.example": _fetched(_PAGE),
-                "https://b.example": _fetched(_PAGE),
-                "https://c.example": _fetched(_PAGE),
-            },
+            dict.fromkeys(urls, _fetched(_PAGE)),
             extract=extract,
         )
 
@@ -577,7 +443,7 @@ class TestWebResearchFetch:
     async def test_page_extraction_starts_before_slower_fetches_finish(self):
         extraction_started = asyncio.Event()
 
-        async def fetch(url: str, _query: str | None = None, /) -> FetchResult:
+        async def fetch(url: str, _query: str | None = None) -> FetchResult:
             if url == "https://b.example":
                 await asyncio.wait_for(extraction_started.wait(), timeout=1)
             return _fetched(_PAGE)
@@ -586,16 +452,7 @@ class TestWebResearchFetch:
             extraction_started.set()
             return ExtractedRanges(ranges="1")
 
-        fast = _StructuredModel({ExtractedRanges: extract})
-        agent = ResearchAgent(
-            ResearchConfig(
-                fast=cast(Any, fast),
-                small=cast(Any, _StructuredModel({})),
-                search=cast(Any, None),
-                fetch=fetch,
-            )
-        )
-
+        agent, _, _, _ = _make_agent(fetch=fetch, extract=extract)
         out = await agent.web_research(
             _state(to_visit=["https://a.example", "https://b.example"]), {}
         )
@@ -657,29 +514,12 @@ class TestWebResearchFetch:
         ]
 
 
-_EVIDENCE = [
-    {"url": "https://a.example", "text": "e1"},
-    {"url": "https://b.example", "text": "e2"},
-    {"url": "https://a.example", "text": "e3"},
-]
-
-
-def _final_state(**overrides: Any) -> Any:
-    state = {
-        "original_question": _QUESTION,
-        "evidence": _EVIDENCE,
-        "knowledge_gap": "",
-        "searches": [],
-    }
-    return {**state, **overrides}
-
-
 class TestFinalizeAnswer:
     """Cited atomic output: only claims backed by existing evidence survive."""
 
     async def test_only_validly_cited_claims_survive_and_cite_sources(self):
         agent, _, _, _ = _make_agent(
-            answer=lambda _messages: FinalAnswer(
+            answer=FinalAnswer(
                 answer=[Claim(text="X.", evidence=[3])],
                 claims=[
                     Claim(text="P", evidence=[2]),
@@ -699,7 +539,7 @@ class TestFinalizeAnswer:
 
     async def test_answer_without_valid_citation_is_not_reported(self):
         agent, _, _, _ = _make_agent(
-            answer=lambda _messages: FinalAnswer(
+            answer=FinalAnswer(
                 answer=[Claim(text="Invented.", evidence=[9])],
                 claims=[Claim(text="P", evidence=[2])],
             )
@@ -729,28 +569,14 @@ class TestFinalizeAnswer:
 # ---------------------------------------------------------------------------
 
 
-class _Clock:
-    """Callable returning successive fixed values, one per call."""
-
-    def __init__(self, values: list[float]) -> None:
-        self._values = list(values)
-
-    def __call__(self) -> float:
-        return self._values.pop(0)
-
-
-def _sr(url: str, title: str = "T", snippet: str = "s") -> SearchResult:
-    return SearchResult(url=url, title=title, snippet=snippet)
-
-
 class TestGenerateQuery:
     """The start node caps, dedupes and validates the shared round plan."""
 
     async def test_generate_query_caps_dedupes_and_starts_clock(self):
         agent, _, _, _ = _make_agent(
             limits=ResearchLimits(max_initial_queries=2),
-            clock=_Clock([100.0]),
-            plan=lambda _messages: ResearchPlan(
+            clock=iter([100.0]).__next__,
+            plan=ResearchPlan(
                 search_queries=[
                     "  Quantum Routing ",
                     "quantum routing",
@@ -771,9 +597,7 @@ class TestGenerateQuery:
 
     async def test_blank_fetch_query_falls_back_to_question(self):
         agent, _, _, _ = _make_agent(
-            plan=lambda _messages: ResearchPlan(
-                search_queries=["q"], fetch_query="  "
-            ),
+            plan=ResearchPlan(search_queries=["q"], fetch_query="  "),
         )
 
         out = await agent.generate_query({"question": _QUESTION}, {})
@@ -781,7 +605,7 @@ class TestGenerateQuery:
         assert out["fetch_query"] == _QUESTION
 
     async def test_empty_plan_falls_back_to_question(self):
-        agent, _, _, _ = _make_agent(plan=lambda _messages: ResearchPlan())
+        agent, _, _, _ = _make_agent(plan=ResearchPlan())
 
         out = await agent.generate_query({"question": _QUESTION}, {})
 
@@ -796,14 +620,14 @@ class TestRouteRound:
         agent, _, _, _ = _make_agent()
 
         sends = agent.route_round(
-            cast(Any, {"search_queries": ["a", "b"], "pending_links": ["https://x.example"]})
+            _state(search_queries=["a", "b"], pending_links=["https://x.example"])
         )
         assert [send.arg["search_query"] for send in sends] == ["a", "b"]
         assert all(send.node == "web_search" for send in sends)
 
         assert (
             agent.route_round(
-                cast(Any, {"search_queries": [], "pending_links": ["https://x.example"]})
+                _state(search_queries=[], pending_links=["https://x.example"])
             )
             == "select_urls"
         )
@@ -828,15 +652,14 @@ class TestSelectUrls:
     async def test_select_urls_puts_links_first_dedupes_and_applies_triage(self):
         agent, fast, _, _ = _make_agent(
             limits=ResearchLimits(max_pages_per_round=3),
-            select=lambda _messages: SelectedPages(indices=[2, 0, 0, 99, -1]),
+            select=SelectedPages(indices=[2, 0, 0, 99, -1]),
         )
-        state = {
-            "original_question": _QUESTION,
-            "fetch_query": "qubit routing",
-            "search_queries": ["q"],
-            "pending_links": ["https://direct.example/page", "https://a.example/doc"],
-            "visits": [{"url": "https://a.example/doc", "ok": True}],
-            "searches": [
+        state = _state(
+            fetch_query="qubit routing",
+            search_queries=["q"],
+            pending_links=["https://direct.example/page", "https://a.example/doc"],
+            visits=[{"url": "https://a.example/doc", "ok": True}],
+            searches=[
                 {"query": "old", "results": [_sr("https://old.example")]},
                 {
                     "query": "q",
@@ -849,9 +672,9 @@ class TestSelectUrls:
                     ],
                 },
             ],
-        }
+        )
 
-        out = await agent.select_urls(cast(Any, state), {})
+        out = await agent.select_urls(state, {})
 
         assert out["to_visit"] == [
             "https://direct.example/page",
@@ -870,7 +693,7 @@ class TestSelectUrls:
         agent, fast, _, _ = _make_agent()
 
         out = await agent.select_urls(
-            cast(Any, {"original_question": _QUESTION, "pending_links": ["https://x.example"]}),
+            _state(pending_links=["https://x.example"]),
             {},
         )
 
@@ -882,16 +705,12 @@ class TestSelectUrls:
 
         error_agent, _, _, _ = _make_agent(select=boom)
         error_out = await error_agent.select_urls(
-            cast(
-                Any,
-                {
-                    "original_question": _QUESTION,
-                    "pending_links": ["https://x.example"],
-                    "search_queries": ["q"],
-                    "searches": [
-                        {"query": "q", "results": [_sr("https://candidate.example")]}
-                    ],
-                },
+            _state(
+                pending_links=["https://x.example"],
+                search_queries=["q"],
+                searches=[
+                    {"query": "q", "results": [_sr("https://candidate.example")]}
+                ],
             ),
             {},
         )
@@ -901,16 +720,13 @@ class TestSelectUrls:
     async def test_select_urls_skips_triage_when_links_fill_budget(self):
         agent, fast, _, _ = _make_agent(
             limits=ResearchLimits(max_pages_per_round=1),
-            select=lambda _messages: SelectedPages(indices=[0]),
+            select=SelectedPages(indices=[0]),
         )
-        state: Any = {
-            "original_question": _QUESTION,
-            "pending_links": ["https://link.example"],
-            "search_queries": ["q"],
-            "searches": [
-                {"query": "q", "results": [_sr("https://candidate.example")]}
-            ],
-        }
+        state = _state(
+            pending_links=["https://link.example"],
+            search_queries=["q"],
+            searches=[{"query": "q", "results": [_sr("https://candidate.example")]}],
+        )
 
         out = await agent.select_urls(state, {})
 
@@ -923,12 +739,11 @@ class TestWebResearchRound:
 
     async def test_every_fetch_uses_round_fetch_query(self):
         agent, _, _, fetch_calls = _make_agent()
-        state: Any = {
-            "original_question": _QUESTION,
-            "fetch_query": "qubit routing",
-            "to_visit": ["https://a.example", "https://b.example"],
-            "knowledge_gap": "latency",
-        }
+        state = _state(
+            fetch_query="qubit routing",
+            to_visit=["https://a.example", "https://b.example"],
+            knowledge_gap="latency",
+        )
 
         await agent.web_research(state, {})
 
@@ -942,12 +757,9 @@ class TestReflectionRound:
     """reflection audits the search view and emits the next round plan."""
 
     async def test_reflection_sees_search_outcomes(self):
-        agent, _, small, _ = _make_agent(
-            reflect=lambda _messages: Reflection(is_sufficient=False)
-        )
-        state: Any = {
-            "original_question": _QUESTION,
-            "searches": [
+        agent, _, small, _ = _make_agent(reflect=Reflection(is_sufficient=False))
+        state = _state(
+            searches=[
                 {
                     "query": "q1",
                     "results": [
@@ -959,18 +771,17 @@ class TestReflectionRound:
                 },
                 {"query": "q2", "results": []},
             ],
-            "visits": [
+            visits=[
                 {"url": "https://a.example", "ok": True},
                 {"url": "https://b.example", "ok": True},
                 {"url": "https://c.example", "ok": False},
             ],
-            "evidence": [{"url": "https://a.example", "text": "x"}],
-        }
+            evidence=[{"url": "https://a.example", "text": "x"}],
+        )
 
         await agent.reflection(state, {})
 
-        text = str(small.calls[-1][1][-1].content)
-        lines = text.splitlines()
+        lines = str(small.calls[-1][1][-1].content).splitlines()
 
         def line_with(fragment: str) -> str:
             return next(line for line in lines if fragment in line)
@@ -979,12 +790,12 @@ class TestReflectionRound:
         assert "none" in line_with("b.example")
         assert "FAILED" in line_with("c.example")
         assert "not selected" in line_with("d.example")
-        assert "(no results)" in text
+        assert "(no results)" in lines
 
     async def test_reflection_drops_repeated_follow_ups_and_caps_total(self):
         agent, _, _, _ = _make_agent(
             limits=ResearchLimits(max_follow_ups=2),
-            reflect=lambda _messages: Reflection(
+            reflect=Reflection(
                 is_sufficient=False,
                 search_queries=[
                     "  Quantum Routing ",
@@ -995,11 +806,10 @@ class TestReflectionRound:
                 fetch_query="pqc latency",
             ),
         )
-        state: Any = {
-            "original_question": _QUESTION,
-            "searches": [{"query": "quantum routing", "results": []}],
-            "visits": [{"url": "https://a.example/paper", "ok": True}],
-        }
+        state = _state(
+            searches=[{"query": "quantum routing", "results": []}],
+            visits=[{"url": "https://a.example/paper", "ok": True}],
+        )
 
         out = await agent.reflection(state, {})
 
@@ -1022,16 +832,15 @@ class TestReflectionRound:
         self, knowledge_gap: str, expected: str
     ):
         agent, _, _, _ = _make_agent(
-            reflect=lambda _messages: Reflection(
+            reflect=Reflection(
                 is_sufficient=False, fetch_query="  ", knowledge_gap=knowledge_gap
             ),
         )
-        state: Any = {
-            "original_question": _QUESTION,
-            "searches": [],
-            "visits": [],
-            "knowledge_gap": "previous round gap",
-        }
+        state = _state(
+            searches=[],
+            visits=[],
+            knowledge_gap="previous round gap",
+        )
 
         out = await agent.reflection(state, {})
 
@@ -1063,15 +872,15 @@ class TestEvaluateResearch:
     ):
         agent, _, _, _ = _make_agent(
             limits=ResearchLimits(round_start_budget=25),
-            clock=_Clock([clock_value]),
+            clock=iter([clock_value]).__next__,
         )
-        state: Any = {
-            "started_at": 0,
-            "is_sufficient": is_sufficient,
-            "evidence": evidence,
-            "search_queries": queries,
-            "pending_links": links,
-        }
+        state = _state(
+            started_at=0,
+            is_sufficient=is_sufficient,
+            evidence=evidence,
+            search_queries=queries,
+            pending_links=links,
+        )
 
         result = agent.evaluate_research(state)
 
@@ -1088,13 +897,11 @@ class TestGraphRound:
         agent, _, _, _ = _make_agent(
             fetch_results={"https://a.example": _fetched(_PAGE)},
             search_results=[_sr("https://a.example")],
-            plan=lambda _messages: ResearchPlan(search_queries=["q"], fetch_query="k"),
-            select=lambda _messages: SelectedPages(indices=[0]),
-            extract=lambda _messages: ExtractedRanges(ranges="1"),
-            reflect=lambda _messages: Reflection(is_sufficient=True),
-            answer=lambda _messages: FinalAnswer(
-                answer=[Claim(text="A.", evidence=[1])]
-            ),
+            plan=ResearchPlan(search_queries=["q"], fetch_query="k"),
+            select=SelectedPages(indices=[0]),
+            extract=ExtractedRanges(ranges="1"),
+            reflect=Reflection(is_sufficient=True),
+            answer=FinalAnswer(answer=[Claim(text="A.", evidence=[1])]),
         )
 
         result = await agent("question")
@@ -1114,7 +921,7 @@ class TestGraphRound:
                 Reflection(is_sufficient=True),
             ]
         )
-        searches: dict[str, list[SearchResult]] = {
+        searches = {
             "q1": [_sr("https://a.example")],
             "q2": [_sr("https://c.example")],
         }
@@ -1123,15 +930,11 @@ class TestGraphRound:
                 "https://a.example": _fetched(_PAGE),
                 "https://c.example": _fetched(_PAGE),
             },
-            plan=lambda _messages: ResearchPlan(
-                search_queries=["q1"], fetch_query="k1"
-            ),
-            select=lambda _messages: SelectedPages(indices=[0]),
-            extract=lambda _messages: ExtractedRanges(ranges="1"),
-            reflect=lambda _messages: next(reflections),
-            answer=lambda _messages: FinalAnswer(
-                answer=[Claim(text="A.", evidence=[1, 2])]
-            ),
+            plan=ResearchPlan(search_queries=["q1"], fetch_query="k1"),
+            select=SelectedPages(indices=[0]),
+            extract=ExtractedRanges(ranges="1"),
+            reflect=reflections,
+            answer=FinalAnswer(answer=[Claim(text="A.", evidence=[1, 2])]),
             search_by_query=searches.__getitem__,
         )
 

@@ -9,7 +9,8 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
-from operator import add
+from itertools import groupby
+from operator import add, itemgetter
 from typing import TYPE_CHECKING, Annotated, Any, Literal, TypedDict, cast
 from urllib.parse import urlparse, urlunparse
 
@@ -182,18 +183,17 @@ class FinalAnswer(BaseModel):
     not_found: list[str] = Field(default_factory=list, description="Gaps the evidence does not answer")
 
 
-class ResearchPlan(BaseModel):
-    """Shared round plan produced by generate_query and reflection."""
-
-    search_queries: list[str] = Field(default_factory=list, description="2-5 keyword queries")
-    links: list[str] = Field(default_factory=list, description="HTTP(S) URLs to read directly")
-    fetch_query: str = Field(default="", description=_FETCH_QUERY_FIELD)
-
-
 class FetchQuery(BaseModel):
     """Structured output of the fetch-query fragment (evaluation and Phase 3 `ResearchPlan`)."""
 
     fetch_query: str = Field(default="", description=_FETCH_QUERY_FIELD)
+
+
+class ResearchPlan(FetchQuery):
+    """Shared round plan produced by generate_query and reflection."""
+
+    search_queries: list[str] = Field(default_factory=list, description="2-5 keyword queries")
+    links: list[str] = Field(default_factory=list, description="HTTP(S) URLs to read directly")
 
 
 class SelectedPages(BaseModel):
@@ -315,11 +315,6 @@ def _meaningful_gap(gap: str) -> str | None:
     return stripped if stripped and stripped != "N/A" else None
 
 
-def _knowledge_gap(state: OverallState) -> str | None:
-    """Stripped knowledge gap, or None when absent, blank or "N/A"."""
-    return _meaningful_gap(state.get("knowledge_gap", ""))
-
-
 def _wrap_line(line: str, wrap: int) -> list[str]:
     """Split ``line`` into pieces no longer than ``wrap``, keeping separators.
 
@@ -382,19 +377,14 @@ def _parse_ranges(ranges: str, count: int) -> list[tuple[int, int]]:
 
 def _slice(lines: list[tuple[int, str]], ranges: list[tuple[int, int]]) -> list[str]:
     """Return the text of each range, joining wrapped pieces verbatim."""
-    texts: list[str] = []
-    for start, end in ranges:
-        text = ""
-        previous_index: int | None = None
-        for index, piece in lines[start - 1 : end]:
-            if previous_index is not None and index != previous_index:
-                text += "\n"
-            text += piece
-            previous_index = index
-        stripped = text.strip()
-        if stripped:
-            texts.append(stripped)
-    return texts
+    texts = [
+        "\n".join(
+            "".join(piece for _, piece in group)
+            for _, group in groupby(lines[start - 1 : end], key=itemgetter(0))
+        ).strip()
+        for start, end in ranges
+    ]
+    return [text for text in texts if text]
 
 
 def _render_evidence(evidence: list[Evidence]) -> str:
@@ -499,6 +489,52 @@ def _render_cited(final: FinalAnswer, evidence: list[Evidence]) -> tuple[str, st
     return answer, explanation, list(sources)
 
 
+def _collect_candidates(
+    searches: list[SearchRun],
+    current_queries: set[str],
+    exclude: set[str],
+) -> list[SearchResult]:
+    """Deduplicated search results of the current round, excluding seen URLs."""
+    candidates: list[SearchResult] = []
+    for run in searches:
+        if _query_key(run["query"]) not in current_queries:
+            continue
+        for result in run.get("results", []):
+            url = _normalize_url(result.url)
+            if url in exclude:
+                continue
+            exclude.add(url)
+            candidates.append(SearchResult(url=url, title=result.title, snippet=result.snippet))
+    return candidates
+
+
+def _search_titles(searches: list[SearchRun]) -> dict[str, str]:
+    """Map normalized result URLs to their titles for extraction prompts."""
+    titles: dict[str, str] = {}
+    for run in searches:
+        for result in run.get("results", []):
+            titles.setdefault(_normalize_url(result.url), result.title)
+    return titles
+
+
+async def _report(config: RunnableConfig, message: str) -> None:
+    """Forward a progress update when a reporter is attached to config."""
+    reporter = config.get("configurable", {}).get("progress_reporter")
+    if reporter:
+        await reporter(message, 0.0, None)
+
+
+async def _invoke_structured[T: BaseModel](
+    model: Any,
+    schema: type[T],
+    system: str,
+    human: str,
+) -> T:
+    """Invoke a model with structured output for a system + human message pair."""
+    chain = model.with_structured_output(schema)
+    return cast(T, await chain.ainvoke([SystemMessage(system), HumanMessage(human)]))
+
+
 # ---------------------------------------------------------------------------
 # Graph factory
 # ---------------------------------------------------------------------------
@@ -572,18 +608,12 @@ class ResearchAgent:
     async def generate_query(self, state: Input, config: RunnableConfig) -> dict[str, Any]:
         """Produce the initial round plan and start the elapsed-time clock."""
         started_at = self.clock()
-        reporter = config.get("configurable", {}).get("progress_reporter")
-        if reporter:
-            await reporter("Generating search queries...", 0.0, None)
-        chain = self.config.fast.with_structured_output(ResearchPlan)
-        result = cast(
+        await _report(config, "Generating search queries...")
+        result = await _invoke_structured(
+            self.config.fast,
             ResearchPlan,
-            await chain.ainvoke(
-                [
-                    SystemMessage(_GENERATE_QUERY_PROMPT),
-                    HumanMessage(state["question"]),
-                ]
-            ),
+            _GENERATE_QUERY_PROMPT,
+            state["question"],
         )
         queries = _dedupe(
             result.search_queries,
@@ -615,9 +645,7 @@ class ResearchAgent:
     async def web_search(self, state: _WebSearchState, config: RunnableConfig) -> dict[str, Any]:
         """Run one search query and record its results for the round."""
         query = state["search_query"]
-        reporter = config.get("configurable", {}).get("progress_reporter")
-        if reporter:
-            await reporter(f"Searching: {query}", 0.0, None)
+        await _report(config, f"Searching: {query}")
         logger.info("Performing web search for query: %s", query)
         results = await self.config.search(query)
         logger.info("Search %r returned %d results", query, len(results))
@@ -625,9 +653,7 @@ class ResearchAgent:
 
     async def select_urls(self, state: OverallState, config: RunnableConfig) -> dict[str, Any]:
         """Choose this round's pages: links first, then LLM-triaged candidates."""
-        reporter = config.get("configurable", {}).get("progress_reporter")
-        if reporter:
-            await reporter("Selecting pages...", 0.0, None)
+        await _report(config, "Selecting pages...")
         visited = {_normalize_url(visit["url"]) for visit in state.get("visits", [])}
         links = _dedupe(
             _valid_links(state.get("pending_links", [])),
@@ -665,34 +691,26 @@ class ResearchAgent:
             lines.append(f"[{index}] {candidate.url}")
             lines.append(candidate.title)
             lines.append(candidate.snippet)
-        chain = self.config.fast.with_structured_output(SelectedPages)
         try:
-            selected = cast(
+            selected = await _invoke_structured(
+                self.config.fast,
                 SelectedPages,
-                await chain.ainvoke(
-                    [SystemMessage(_SELECT_URLS_PROMPT), HumanMessage("\n".join(lines))]
-                ),
+                _SELECT_URLS_PROMPT,
+                "\n".join(lines),
             )
         except Exception as error:  # triage must never fail a round
             logger.warning("URL triage failed, using links only: %s", error)
             return []
-        chosen: list[str] = []
-        for index in selected.indices:
-            if not 0 <= index < len(candidates):
-                continue
-            url = candidates[index].url
-            if url in chosen:
-                continue
-            chosen.append(url)
-            if len(chosen) >= budget:
-                break
-        return chosen
+        valid_urls = [
+            candidates[index].url
+            for index in selected.indices
+            if 0 <= index < len(candidates)
+        ]
+        return _dedupe(valid_urls, set(), str, budget)
 
     async def web_research(self, state: OverallState, config: RunnableConfig) -> dict[str, Any]:
         """Fetch every selected page and extract verbatim evidence per page."""
-        reporter = config.get("configurable", {}).get("progress_reporter")
-        if reporter:
-            await reporter("Reading pages...", 0.0, None)
+        await _report(config, "Reading pages...")
         urls = state.get("to_visit", [])
         if not urls:
             logger.warning("No pages selected for this round")
@@ -724,7 +742,7 @@ class ResearchAgent:
                 title=title,
                 content=fetched.content,
                 question=state["original_question"],
-                gap=_knowledge_gap(state),
+                gap=_meaningful_gap(state.get("knowledge_gap", "")),
             )
         except Exception as error:  # one page's extraction must never fail the round
             logger.warning("Extraction failed for %s: %s", url, error)
@@ -753,10 +771,11 @@ class ResearchAgent:
             f"TITLE: {title}\n"
             f"{numbered_text}"
         )
-        chain = self.config.fast.with_structured_output(ExtractedRanges)
-        predicted = cast(
+        predicted = await _invoke_structured(
+            self.config.fast,
             ExtractedRanges,
-            await chain.ainvoke([SystemMessage(_EXTRACT_PROMPT), HumanMessage(prompt)]),
+            _EXTRACT_PROMPT,
+            prompt,
         )
         ranges = _parse_ranges(predicted.ranges, len(numbered))
         return [Evidence(url=url, text=text) for text in _slice(numbered, ranges)]
@@ -764,9 +783,7 @@ class ResearchAgent:
     async def reflection(self, state: OverallState, config: RunnableConfig) -> dict[str, Any]:
         """Audit evidence and the search view, then plan the next round."""
         loop_count = state.get("research_loop_count", 0) + 1
-        reporter = config.get("configurable", {}).get("progress_reporter")
-        if reporter:
-            await reporter(f"Evaluating research (round {loop_count})...", 0.0, None)
+        await _report(config, f"Evaluating research (round {loop_count})...")
         gap = state.get("knowledge_gap", "").strip()
         gap_section = f"\n\nKnowledge gap: {gap}" if gap else ""
         human = (
@@ -774,10 +791,11 @@ class ResearchAgent:
             f"Search results:\n{_render_search_view(state.get('searches', []), state.get('visits', []), state.get('evidence', []))}\n\n"
             f"Evidence:\n{_render_evidence(state.get('evidence', []))}"
         )
-        chain = self.config.small.with_structured_output(Reflection)
-        parsed = cast(
+        parsed = await _invoke_structured(
+            self.config.small,
             Reflection,
-            await chain.ainvoke([SystemMessage(_REFLECTION_PROMPT), HumanMessage(human)]),
+            _REFLECTION_PROMPT,
+            human,
         )
         executed = {_query_key(run["query"]) for run in state.get("searches", [])}
         visited = {_normalize_url(visit["url"]) for visit in state.get("visits", [])}
@@ -825,9 +843,7 @@ class ResearchAgent:
 
     async def finalize_answer(self, state: OverallState, config: RunnableConfig) -> dict[str, Any]:
         """Render a cited atomic answer, or a fixed reply when no evidence exists."""
-        reporter = config.get("configurable", {}).get("progress_reporter")
-        if reporter:
-            await reporter("Synthesizing final answer...", 0.0, None)
+        await _report(config, "Synthesizing final answer...")
         evidence = state.get("evidence", [])
         if not evidence:
             return {
@@ -841,11 +857,11 @@ class ResearchAgent:
             f"Question: {state['original_question']}\n\n"
             f"Evidence:\n{_render_evidence(evidence)}{gap_section}"
         )
-        response = cast(
+        response = await _invoke_structured(
+            self.config.small,
             FinalAnswer,
-            await self.config.small.with_structured_output(FinalAnswer).ainvoke(
-                [SystemMessage(_FINALIZE_PROMPT), HumanMessage(human)]
-            ),
+            _FINALIZE_PROMPT,
+            human,
         )
         answer, explanation, sources_gathered = _render_cited(response, evidence)
         logger.info("Final answer generated: %s. Explanation: %s", answer, explanation[:1000])
@@ -868,31 +884,3 @@ class ResearchAgent:
             "explanation": result.get("explanation", ""),
             "sources": result.get("sources_gathered", []),
         }
-
-
-def _collect_candidates(
-    searches: list[SearchRun],
-    current_queries: set[str],
-    exclude: set[str],
-) -> list[SearchResult]:
-    """Deduplicated search results of the current round, excluding seen URLs."""
-    candidates: list[SearchResult] = []
-    for run in searches:
-        if _query_key(run["query"]) not in current_queries:
-            continue
-        for result in run.get("results", []):
-            url = _normalize_url(result.url)
-            if url in exclude:
-                continue
-            exclude.add(url)
-            candidates.append(SearchResult(url=url, title=result.title, snippet=result.snippet))
-    return candidates
-
-
-def _search_titles(searches: list[SearchRun]) -> dict[str, str]:
-    """Map normalized result URLs to their titles for extraction prompts."""
-    titles: dict[str, str] = {}
-    for run in searches:
-        for result in run.get("results", []):
-            titles.setdefault(_normalize_url(result.url), result.title)
-    return titles
