@@ -631,13 +631,22 @@ class ResearchAgent:
         links = _valid_links(result.links)
         if not queries and not links:
             queries = [state["question"]]
+        fetch_query = result.fetch_query.strip() or state["question"]
         logger.info("Initial plan: %d queries, %d links", len(queries), len(links))
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug("[generate_query] raw plan: %s", result.model_dump_json())
+            logger.debug(
+                "[generate_query] queries=%s links=%s fetch_query=%r",
+                queries,
+                links,
+                fetch_query,
+            )
         return {
             "original_question": state["question"],
             "started_at": started_at,
             "search_queries": queries,
             "pending_links": links,
-            "fetch_query": result.fetch_query.strip() or state["question"],
+            "fetch_query": fetch_query,
             "research_loop_count": 0,
             "knowledge_gap": "",
         }
@@ -656,6 +665,16 @@ class ResearchAgent:
         logger.info("Performing web search for query: %s", query)
         results = await self.config.search(query)
         logger.info("Search %r returned %d results", query, len(results))
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                "[web_search] %r results:\n%s",
+                query,
+                "\n".join(
+                    f"{rank}. {result.url} | {result.title} | {result.snippet}"
+                    for rank, result in enumerate(results, start=1)
+                )
+                or "(no results)",
+            )
         return {"searches": [SearchRun(query=query, results=results)]}
 
     async def select_urls(
@@ -683,14 +702,23 @@ class ResearchAgent:
             chosen = await self._triage(state, candidates, budget)
         logger.info("Selected %d links and %d triaged pages", len(links), len(chosen))
         urls = links + chosen
-        if not urls:
-            logger.warning("No pages selected for this round")
-            return Command(goto="reflection")
-        titles = _search_titles(state.get("searches", []))
         fetch_query = (
             (state.get("fetch_query") or "").strip() or state["original_question"]
         )
         gap = state.get("knowledge_gap", "")
+        logger.debug(
+            "[select_urls] candidates=%d budget=%d links=%s triaged=%s fetch_query=%r knowledge_gap=%r",
+            len(candidates),
+            budget,
+            links,
+            chosen,
+            fetch_query,
+            gap,
+        )
+        if not urls:
+            logger.warning("No pages selected for this round")
+            return Command(goto="reflection")
+        titles = _search_titles(state.get("searches", []))
         return Command(
             goto=[
                 Send(
@@ -723,12 +751,14 @@ class ResearchAgent:
             lines.append(f"[{index}] {candidate.url}")
             lines.append(candidate.title)
             lines.append(candidate.snippet)
+        prompt = "\n".join(lines)
+        logger.debug("[triage] prompt:\n%s", prompt)
         try:
             selected = await _invoke_structured(
                 self.config.fast,
                 SelectedPages,
                 _SELECT_URLS_PROMPT,
-                "\n".join(lines),
+                prompt,
             )
         except Exception as error:  # triage must never fail a round
             logger.warning("URL triage failed, using links only: %s", error)
@@ -738,7 +768,15 @@ class ResearchAgent:
             for index in selected.indices
             if 0 <= index < len(candidates)
         ]
-        return _dedupe(valid_urls, set(), str, budget)
+        chosen = _dedupe(valid_urls, set(), str, budget)
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                "[triage] indices=%s chosen=%s not selected=%s",
+                selected.indices,
+                chosen,
+                [candidate.url for candidate in candidates if candidate.url not in chosen],
+            )
+        return chosen
 
     async def web_fetch(self, state: _WebFetchState, config: RunnableConfig) -> dict[str, Any]:
         """Fetch one selected page and extract its verbatim evidence."""
@@ -749,8 +787,19 @@ class ResearchAgent:
         )
         fetched = await self.config.fetch(url, fetch_query)
         visit = PageVisit(url=url, ok=fetched.ok)
+        logger.debug(
+            "[web_fetch] %s fetch_query=%r status=%s http_status=%s mime=%s chars=%d",
+            url,
+            fetch_query,
+            fetched.status,
+            fetched.http_status,
+            fetched.mime,
+            len(fetched.content),
+        )
         if not fetched.ok or not fetched.content.strip():
+            logger.debug("[web_fetch] %s yields no evidence: failed or empty fetch", url)
             return {"visits": [visit], "evidence": []}
+        logger.debug("[web_fetch] %s content:\n%s", url, fetched.content)
         try:
             evidence = await self._extract(
                 url=url,
@@ -794,7 +843,21 @@ class ResearchAgent:
             prompt,
         )
         ranges = _parse_ranges(predicted.ranges, len(numbered))
-        return [Evidence(url=url, text=text) for text in _slice(numbered, ranges)]
+        evidence = [Evidence(url=url, text=text) for text in _slice(numbered, ranges)]
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                "[extract] %s lines=%d raw ranges=%r parsed=%s",
+                url,
+                len(numbered),
+                predicted.ranges,
+                ranges,
+            )
+            logger.debug(
+                "[extract] %s evidence:\n%s",
+                url,
+                "\n---\n".join(item["text"] for item in evidence) or "(none)",
+            )
+        return evidence
 
     async def reflection(self, state: OverallState, config: RunnableConfig) -> dict[str, Any]:
         """Audit evidence and the search view, then plan the next round."""
@@ -807,6 +870,7 @@ class ResearchAgent:
             f"Search results:\n{_render_search_view(state.get('searches', []), state.get('visits', []), state.get('evidence', []))}\n\n"
             f"Evidence:\n{_render_evidence(state.get('evidence', []))}"
         )
+        logger.debug("[reflection] round %d prompt:\n%s", loop_count, human)
         parsed = await _invoke_structured(
             self.config.small,
             Reflection,
@@ -823,6 +887,14 @@ class ResearchAgent:
         )
         remaining = self.limits.max_follow_ups - len(queries)
         links = _dedupe(_valid_links(parsed.links), visited, _normalize_url, remaining)
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug("[reflection] round %d raw: %s", loop_count, parsed.model_dump_json())
+            logger.debug(
+                "[reflection] round %d kept after dedupe against executed/visited: queries=%s links=%s",
+                loop_count,
+                queries,
+                links,
+            )
         logger.info(
             "Reflection round %d: is_sufficient=%s, queries=%d, links=%d, knowledge_gap=%s",
             loop_count,
@@ -848,13 +920,18 @@ class ResearchAgent:
     ) -> Literal["finalize_answer"] | list[Send] | Literal["select_urls"]:
         """Finalize when sufficient, out of time, or out of follow-ups; else continue."""
         if state.get("is_sufficient") and state.get("evidence"):
+            logger.debug("[evaluate_research] sufficient evidence, finalizing")
             return "finalize_answer"
+        if state.get("is_sufficient"):
+            logger.debug("[evaluate_research] marked sufficient without evidence, continuing")
         elapsed = self.clock() - state.get("started_at", 0)
         if elapsed > self.limits.round_start_budget:
             logger.info("Round budget exceeded (%.1fs), finalizing", elapsed)
             return "finalize_answer"
         if not state.get("search_queries") and not state.get("pending_links"):
+            logger.debug("[evaluate_research] no follow-up queries or links, finalizing")
             return "finalize_answer"
+        logger.debug("[evaluate_research] starting next round after %.1fs", elapsed)
         return self.route_round(state)
 
     async def finalize_answer(self, state: OverallState, config: RunnableConfig) -> dict[str, Any]:
@@ -873,12 +950,23 @@ class ResearchAgent:
             f"Question: {state['original_question']}\n\n"
             f"Evidence:\n{_render_evidence(evidence)}{gap_section}"
         )
+        logger.debug("[finalize] prompt:\n%s", human)
         response = await _invoke_structured(
             self.config.small,
             FinalAnswer,
             _FINALIZE_PROMPT,
             human,
         )
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug("[finalize] raw: %s", response.model_dump_json())
+            logger.debug(
+                "[finalize] dropped uncited claims: %s",
+                [
+                    claim.text
+                    for claim in [*response.answer, *response.claims]
+                    if not any(1 <= item <= len(evidence) for item in claim.evidence)
+                ],
+            )
         answer, explanation, sources_gathered = _render_cited(response, evidence)
         logger.info("Final answer generated: %s. Explanation: %s", answer, explanation[:1000])
         return {

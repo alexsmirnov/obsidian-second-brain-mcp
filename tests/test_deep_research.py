@@ -6,6 +6,7 @@ All tests mock LLM and HTTP calls — no real network access.
 from __future__ import annotations
 
 import asyncio
+import logging
 import shutil
 import time
 from collections.abc import Callable, Iterator
@@ -41,6 +42,7 @@ from mcps.server import create_server
 # Fakes and helpers
 # ---------------------------------------------------------------------------
 
+_AGENT_LOGGER = "mcps.research.deep_research"
 _QUESTION = "How does quantum routing work?"
 _SEARCH_RESULTS = [
     SearchResult(url=f"https://{name}.example", title=name.upper(), snippet="s")
@@ -48,6 +50,7 @@ _SEARCH_RESULTS = [
 ]
 _FAILED = FetchResult("", FetchStatus.HTTP_ERROR, "", http_status=403)
 _PAGE = "alpha\nbeta\ngamma\ndelta\nepsilon"
+_TRACE_PAGE = "unique-evidence-line\nother"
 _DEFAULT_LIMITS = ResearchLimits()
 _EVIDENCE = [
     {"url": "https://a.example", "text": "e1"},
@@ -1008,4 +1011,54 @@ class TestGraphRound:
         assert fetch_calls == []
         assert result["answer"] == _NO_EVIDENCE_ANSWER
         assert result["sources"] == []
+
+
+class TestDebugTrace:
+    """DEBUG logs trace each node's inputs and decisions for diagnosis."""
+
+    @staticmethod
+    def _one_round_agent() -> ResearchAgent:
+        agent, _, _, _ = _make_agent(
+            fetch_results={"https://picked.example": _fetched(_TRACE_PAGE)},
+            search_results=[
+                _sr("https://picked.example"),
+                _sr("https://skipped.example"),
+            ],
+            plan=ResearchPlan(search_queries=["q"], fetch_query="k"),
+            select=SelectedPages(indices=[0]),
+            extract=ExtractedRanges(ranges="1"),
+            reflect=Reflection(is_sufficient=True, knowledge_gap="gap-marker"),
+            answer=FinalAnswer(answer=[Claim(text="A.", evidence=[1])]),
+        )
+        return agent
+
+    async def test_debug_logs_trace_search_selection_evidence_and_reflection(
+        self, caplog: pytest.LogCaptureFixture
+    ):
+        agent = self._one_round_agent()
+
+        with caplog.at_level(logging.DEBUG, logger=_AGENT_LOGGER):
+            await agent("question")
+
+        debug = "\n".join(
+            record.getMessage()
+            for record in caplog.records
+            if record.levelno == logging.DEBUG
+        )
+        assert "https://skipped.example" in debug
+        assert "https://picked.example" in debug
+        assert "unique-evidence-line" in debug
+        assert "is_sufficient" in debug
+        assert "gap-marker" in debug
+
+    async def test_info_level_emits_no_debug_records(
+        self, caplog: pytest.LogCaptureFixture
+    ):
+        agent = self._one_round_agent()
+
+        with caplog.at_level(logging.INFO, logger=_AGENT_LOGGER):
+            await agent("question")
+
+        levels = {record.levelno for record in caplog.records}
+        assert logging.DEBUG not in levels
 
