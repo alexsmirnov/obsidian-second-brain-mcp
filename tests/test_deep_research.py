@@ -16,6 +16,7 @@ from unittest.mock import patch
 import httpx
 import pytest
 from fastmcp import Client
+from langgraph.types import Command, Send
 
 from mcps.config import ServerConfig, create_config
 from mcps.research.agent import create_researcher
@@ -103,17 +104,9 @@ class _StructuredModel:
         return SimpleNamespace(ainvoke=ainvoke)
 
 
-def _ranges_by_url(mapping: dict[str, str]) -> Callable[[list[Any]], ExtractedRanges]:
-    """Handler returning the range string mapped to whichever URL is in the prompt."""
-
-    def handler(messages: list[Any]) -> ExtractedRanges:
-        text = str(messages[-1].content)
-        for url, ranges in mapping.items():
-            if url in text:
-                return ExtractedRanges(ranges=ranges)
-        raise AssertionError(f"no URL from {list(mapping)} in extraction prompt")
-
-    return handler
+def _sent_urls(command: Command[Any]) -> list[str]:
+    """URLs of the web_fetch branches carried by a select_urls command."""
+    return [send.arg["url"] for send in cast(list[Send], command.goto)]
 
 
 def _make_agent(
@@ -181,7 +174,17 @@ def _state(**overrides: Any) -> Any:
     return {
         "original_question": _QUESTION,
         "fetch_query": _QUESTION,
-        "to_visit": [result.url for result in _SEARCH_RESULTS],
+        **overrides,
+    }
+
+
+def _fetch_state(**overrides: Any) -> Any:
+    return {
+        "url": "https://a.example",
+        "title": "A",
+        "fetch_query": _QUESTION,
+        "original_question": _QUESTION,
+        "knowledge_gap": "",
         **overrides,
     }
 
@@ -332,47 +335,41 @@ class TestToolContract:
 # ---------------------------------------------------------------------------
 
 
-class TestWebResearchFetch:
-    """Per-page verbatim evidence extraction from the web_research node."""
+class TestWebFetch:
+    """Single-page verbatim evidence extraction from the web_fetch node."""
 
-    async def test_extracted_ranges_become_verbatim_evidence_per_page(self):
-        urls = ("https://a.example", "https://b.example", "https://c.example")
+    async def test_extracted_ranges_become_verbatim_evidence_for_page(self):
         agent, fast, _, _ = _make_agent(
-            dict.fromkeys(urls, _fetched(_PAGE)),
-            extract=_ranges_by_url(
-                {
-                    "https://a.example": "2-3",
-                    "https://b.example": "",
-                    "https://c.example": "5",
-                }
-            ),
+            {"https://a.example": _fetched(_PAGE)},
+            extract=ExtractedRanges(ranges="2-3, 5"),
         )
 
-        out = await agent.web_research(_state(), {})
+        out = await agent.web_fetch(
+            _fetch_state(url="https://a.example", title="Title A"), {}
+        )
 
-        assert out["evidence"] == [
-            {"url": "https://a.example", "text": "beta\ngamma"},
-            {"url": "https://c.example", "text": "epsilon"},
-        ]
-        assert len(fast.calls) == 3
-        for _schema, messages in fast.calls:
-            text = str(messages[-1].content)
-            assert "1: alpha" in text
-            assert sum(url in text for url in urls) == 1
+        assert out == {
+            "visits": [{"url": "https://a.example", "ok": True}],
+            "evidence": [
+                {"url": "https://a.example", "text": "beta\ngamma"},
+                {"url": "https://a.example", "text": "epsilon"},
+            ],
+        }
+        assert len(fast.calls) == 1
+        text = str(fast.calls[0][1][-1].content)
+        assert "TITLE: Title A" in text
+        assert "URL: https://a.example" in text
+        assert "1: alpha" in text
 
     async def test_long_lines_are_wrapped_for_ranges_and_sliced_verbatim(self):
         long_line = " ".join(f"word{i:02d}" for i in range(12))
         agent, fast, _, _ = _make_agent(
-            {
-                "https://a.example": _fetched(long_line),
-                "https://b.example": _FAILED,
-                "https://c.example": _FAILED,
-            },
-            extract=_ranges_by_url({"https://a.example": "2-3"}),
+            {"https://a.example": _fetched(long_line)},
+            extract=ExtractedRanges(ranges="2-3"),
             limits=ResearchLimits(line_wrap_chars=20),
         )
 
-        out = await agent.web_research(_state(), {})
+        out = await agent.web_fetch(_fetch_state(), {})
 
         assert "4: " in str(fast.calls[0][1][-1].content)
         evidence_text = out["evidence"][0]["text"]
@@ -390,15 +387,11 @@ class TestWebResearchFetch:
         self, ranges: str, expected: list[str]
     ):
         agent, _, _, _ = _make_agent(
-            {
-                "https://a.example": _fetched(_PAGE),
-                "https://b.example": _FAILED,
-                "https://c.example": _FAILED,
-            },
-            extract=_ranges_by_url({"https://a.example": ranges}),
+            {"https://a.example": _fetched(_PAGE)},
+            extract=ExtractedRanges(ranges=ranges),
         )
 
-        out = await agent.web_research(_state(), {})
+        out = await agent.web_fetch(_fetch_state(), {})
 
         assert [e["text"] for e in out["evidence"]] == expected
 
@@ -409,36 +402,39 @@ class TestWebResearchFetch:
                 "https://b.example": _FAILED,
                 "https://c.example": _fetched("  "),
             },
-            extract=_ranges_by_url({"https://a.example": "1"}),
+            extract=ExtractedRanges(ranges="1"),
         )
 
-        out = await agent.web_research(_state(), {})
+        out_a = await agent.web_fetch(_fetch_state(url="https://a.example"), {})
+        out_b = await agent.web_fetch(_fetch_state(url="https://b.example"), {})
+        out_c = await agent.web_fetch(_fetch_state(url="https://c.example"), {})
 
         assert len(fast.calls) == 1
-        assert out["visits"] == [
-            {"url": "https://a.example", "ok": True},
-            {"url": "https://b.example", "ok": False},
-            {"url": "https://c.example", "ok": True},
-        ]
+        assert out_a["visits"] == [{"url": "https://a.example", "ok": True}]
+        assert out_b == {
+            "visits": [{"url": "https://b.example", "ok": False}],
+            "evidence": [],
+        }
+        assert out_c == {
+            "visits": [{"url": "https://c.example", "ok": True}],
+            "evidence": [],
+        }
 
-    async def test_extraction_error_drops_only_that_page(self):
-        def extract(messages: list[Any]) -> ExtractedRanges:
-            if "https://b.example" in str(messages[-1].content):
-                raise RuntimeError("extraction failed")
-            return ExtractedRanges(ranges="1")
+    async def test_extraction_error_returns_visit_and_empty_evidence(self):
+        def extract(_messages: list[Any]) -> ExtractedRanges:
+            raise RuntimeError("extraction failed")
 
-        urls = ("https://a.example", "https://b.example", "https://c.example")
         agent, _, _, _ = _make_agent(
-            dict.fromkeys(urls, _fetched(_PAGE)),
+            {"https://b.example": _fetched(_PAGE)},
             extract=extract,
         )
 
-        out = await agent.web_research(_state(), {})
+        out = await agent.web_fetch(_fetch_state(url="https://b.example"), {})
 
-        assert [e["url"] for e in out["evidence"]] == [
-            "https://a.example",
-            "https://c.example",
-        ]
+        assert out == {
+            "visits": [{"url": "https://b.example", "ok": True}],
+            "evidence": [],
+        }
 
     async def test_page_extraction_starts_before_slower_fetches_finish(self):
         extraction_started = asyncio.Event()
@@ -452,19 +448,20 @@ class TestWebResearchFetch:
             extraction_started.set()
             return ExtractedRanges(ranges="1")
 
-        agent, _, _, _ = _make_agent(fetch=fetch, extract=extract)
-        out = await agent.web_research(
-            _state(to_visit=["https://a.example", "https://b.example"]), {}
+        agent, _, _, _ = _make_agent(
+            fetch=fetch,
+            extract=extract,
+            plan=ResearchPlan(
+                links=["https://a.example", "https://b.example"],
+                fetch_query="k",
+            ),
+            reflect=Reflection(is_sufficient=False),
+            answer=FinalAnswer(answer=[Claim(text="A.", evidence=[1, 2])]),
         )
 
-        assert out["visits"] == [
-            {"url": "https://a.example", "ok": True},
-            {"url": "https://b.example", "ok": True},
-        ]
-        assert [e["url"] for e in out["evidence"]] == [
-            "https://a.example",
-            "https://b.example",
-        ]
+        result = await agent("question")
+
+        assert result["sources"] == ["https://a.example", "https://b.example"]
 
     @pytest.mark.parametrize(
         ("state_extra", "expected"),
@@ -480,15 +477,14 @@ class TestWebResearchFetch:
     ):
         agent, fast, _, _ = _make_agent()
 
-        await agent.web_research(_state(**state_extra), {})
+        await agent.web_fetch(_fetch_state(**state_extra), {})
 
-        assert len(fast.calls) == 3
-        for _schema, messages in fast.calls:
-            text = str(messages[-1].content)
-            if expected == "absent":
-                assert "KNOWLEDGE GAP" not in text
-            else:
-                assert expected in text
+        assert len(fast.calls) == 1
+        text = str(fast.calls[0][1][-1].content)
+        if expected == "absent":
+            assert "KNOWLEDGE GAP" not in text
+        else:
+            assert expected in text
 
     async def test_reflection_and_finalize_see_numbered_evidence_only(self):
         agent, _, small, _ = _make_agent()
@@ -647,15 +643,16 @@ class TestWebSearch:
 
 
 class TestSelectUrls:
-    """select_urls dedupes, keeps links first and triages search candidates."""
+    """select_urls dedupes, keeps links first and sends one branch per page."""
 
-    async def test_select_urls_puts_links_first_dedupes_and_applies_triage(self):
+    async def test_select_urls_puts_links_first_dedupes_and_sends_to_web_fetch(self):
         agent, fast, _, _ = _make_agent(
             limits=ResearchLimits(max_pages_per_round=3),
             select=SelectedPages(indices=[2, 0, 0, 99, -1]),
         )
         state = _state(
             fetch_query="qubit routing",
+            knowledge_gap="gap1",
             search_queries=["q"],
             pending_links=["https://direct.example/page", "https://a.example/doc"],
             visits=[{"url": "https://a.example/doc", "ok": True}],
@@ -665,10 +662,10 @@ class TestSelectUrls:
                     "query": "q",
                     "results": [
                         _sr("HTTPS://A.EXAMPLE/doc/#sec"),
-                        _sr("https://b.example/one"),
+                        _sr("https://b.example/one", title="One"),
                         _sr("https://b.example/one#top"),
                         _sr("https://c.example/bad"),
-                        _sr("https://d.example/two"),
+                        _sr("https://d.example/two", title="Two"),
                     ],
                 },
             ],
@@ -676,10 +673,39 @@ class TestSelectUrls:
 
         out = await agent.select_urls(state, {})
 
-        assert out["to_visit"] == [
-            "https://direct.example/page",
-            "https://d.example/two",
-            "https://b.example/one",
+        assert isinstance(out, Command)
+        assert out.update is None
+        assert out.goto == [
+            Send(
+                "web_fetch",
+                {
+                    "url": "https://direct.example/page",
+                    "title": "",
+                    "fetch_query": "qubit routing",
+                    "original_question": _QUESTION,
+                    "knowledge_gap": "gap1",
+                },
+            ),
+            Send(
+                "web_fetch",
+                {
+                    "url": "https://d.example/two",
+                    "title": "Two",
+                    "fetch_query": "qubit routing",
+                    "original_question": _QUESTION,
+                    "knowledge_gap": "gap1",
+                },
+            ),
+            Send(
+                "web_fetch",
+                {
+                    "url": "https://b.example/one",
+                    "title": "One",
+                    "fetch_query": "qubit routing",
+                    "original_question": _QUESTION,
+                    "knowledge_gap": "gap1",
+                },
+            ),
         ]
         text = str(fast.calls[-1][1][-1].content)
         assert "qubit routing" in text
@@ -698,7 +724,8 @@ class TestSelectUrls:
         )
 
         assert fast.calls == []
-        assert out["to_visit"] == ["https://x.example"]
+        assert isinstance(out, Command)
+        assert _sent_urls(out) == ["https://x.example"]
 
         def boom(_messages: list[Any]) -> SelectedPages:
             raise RuntimeError("triage failed")
@@ -715,7 +742,8 @@ class TestSelectUrls:
             {},
         )
 
-        assert error_out["to_visit"] == ["https://x.example"]
+        assert isinstance(error_out, Command)
+        assert _sent_urls(error_out) == ["https://x.example"]
 
     async def test_select_urls_skips_triage_when_links_fill_budget(self):
         agent, fast, _, _ = _make_agent(
@@ -731,25 +759,45 @@ class TestSelectUrls:
         out = await agent.select_urls(state, {})
 
         assert fast.calls == []
-        assert out["to_visit"] == ["https://link.example"]
+        assert isinstance(out, Command)
+        assert _sent_urls(out) == ["https://link.example"]
 
-
-class TestWebResearchRound:
-    """web_research fetches only the selected pages with the round fetch query."""
-
-    async def test_every_fetch_uses_round_fetch_query(self):
-        agent, _, _, fetch_calls = _make_agent()
+    async def test_select_urls_routes_to_reflection_when_no_urls_selected(self):
+        agent, _, _, _ = _make_agent(select=SelectedPages(indices=[]))
         state = _state(
-            fetch_query="qubit routing",
-            to_visit=["https://a.example", "https://b.example"],
-            knowledge_gap="latency",
+            pending_links=[],
+            search_queries=["q"],
+            searches=[{"query": "q", "results": []}],
         )
 
-        await agent.web_research(state, {})
+        out = await agent.select_urls(state, {})
+
+        assert isinstance(out, Command)
+        assert out.update is None
+        assert out.goto == "reflection"
+
+
+class TestWebFetchRound:
+    """web_fetch fetches its one page with the round fetch query."""
+
+    async def test_web_fetch_uses_fetch_query_or_falls_back_to_question(self):
+        agent, _, _, fetch_calls = _make_agent()
+
+        await agent.web_fetch(
+            _fetch_state(
+                url="https://a.example",
+                fetch_query="qubit routing",
+                knowledge_gap="latency",
+            ),
+            {},
+        )
+        await agent.web_fetch(
+            _fetch_state(url="https://b.example", fetch_query="  "), {}
+        )
 
         assert fetch_calls == [
             ("https://a.example", "qubit routing"),
-            ("https://b.example", "qubit routing"),
+            ("https://b.example", _QUESTION),
         ]
 
 
@@ -945,3 +993,19 @@ class TestGraphRound:
             ("https://c.example", "k2"),
         ]
         assert result["sources"] == ["https://a.example", "https://c.example"]
+
+    async def test_graph_runs_round_with_zero_selected_urls(self):
+        agent, _, _, fetch_calls = _make_agent(
+            search_results=[],
+            plan=ResearchPlan(search_queries=["q"], fetch_query="k"),
+            select=SelectedPages(indices=[]),
+            reflect=Reflection(is_sufficient=False),
+            answer=FinalAnswer(),
+        )
+
+        result = await agent("question")
+
+        assert fetch_calls == []
+        assert result["answer"] == _NO_EVIDENCE_ANSWER
+        assert result["sources"] == []
+

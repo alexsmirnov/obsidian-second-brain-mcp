@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 # ruff: noqa: E501
-import asyncio
 import logging
 import time
 from collections.abc import Callable
@@ -17,7 +16,7 @@ from urllib.parse import urlparse, urlunparse
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, START, StateGraph
-from langgraph.types import Send
+from langgraph.types import Command, Send
 from pydantic import BaseModel, Field
 
 from mcps.research.tools import SearchResult
@@ -127,7 +126,7 @@ Rules:
 class ResearchLimits:
     """Tunable bounds for one research run."""
 
-    round_start_budget: float = 25.0  # seconds since start; no new round after it
+    round_start_budget: float = 125.0  # seconds since start; no new round after it
     max_pages_per_round: int = 8
     max_initial_queries: int = 3
     max_follow_ups: int = 3  # search_queries + links
@@ -224,7 +223,6 @@ class OverallState(TypedDict):
     search_queries: list[str]  # current round — overwritten by generate_query/reflection
     pending_links: list[str]  # current round — overwritten
     fetch_query: str  # current round — overwritten
-    to_visit: list[str]  # written by select_urls
     searches: Annotated[list[SearchRun], add]  # accumulated across rounds
     visits: Annotated[list[PageVisit], add]  # accumulated across rounds
     evidence: Annotated[list[Evidence], add]  # accumulated across rounds
@@ -244,6 +242,16 @@ class _WebSearchState(TypedDict):
     """Payload sent to each parallel web_search branch."""
 
     search_query: str
+
+
+class _WebFetchState(TypedDict):
+    """Payload sent to each parallel web_fetch branch."""
+
+    url: str
+    title: str
+    fetch_query: str
+    original_question: str
+    knowledge_gap: str
 
 
 class Result(TypedDict):
@@ -583,7 +591,7 @@ class ResearchAgent:
         builder.add_node(self.generate_query)
         builder.add_node("web_search", self.web_search)
         builder.add_node("select_urls", self.select_urls)
-        builder.add_node("web_research", self.web_research)
+        builder.add_node("web_fetch", self.web_fetch)
         builder.add_node(self.reflection)
         builder.add_node("finalize_answer", self.finalize_answer)
 
@@ -594,8 +602,7 @@ class ResearchAgent:
             ["web_search", "select_urls"],
         )
         builder.add_edge("web_search", "select_urls")
-        builder.add_edge("select_urls", "web_research")
-        builder.add_edge("web_research", "reflection")
+        builder.add_edge("web_fetch", "reflection")
         builder.add_conditional_edges(
             "reflection",
             self.evaluate_research,
@@ -651,8 +658,10 @@ class ResearchAgent:
         logger.info("Search %r returned %d results", query, len(results))
         return {"searches": [SearchRun(query=query, results=results)]}
 
-    async def select_urls(self, state: OverallState, config: RunnableConfig) -> dict[str, Any]:
-        """Choose this round's pages: links first, then LLM-triaged candidates."""
+    async def select_urls(
+        self, state: OverallState, config: RunnableConfig
+    ) -> Command[Literal["web_fetch", "reflection"]]:
+        """Choose this round's pages and fan out one web_fetch branch per page."""
         await _report(config, "Selecting pages...")
         visited = {_normalize_url(visit["url"]) for visit in state.get("visits", [])}
         links = _dedupe(
@@ -673,7 +682,30 @@ class ResearchAgent:
         if candidates and budget > 0:
             chosen = await self._triage(state, candidates, budget)
         logger.info("Selected %d links and %d triaged pages", len(links), len(chosen))
-        return {"to_visit": links + chosen}
+        urls = links + chosen
+        if not urls:
+            logger.warning("No pages selected for this round")
+            return Command(goto="reflection")
+        titles = _search_titles(state.get("searches", []))
+        fetch_query = (
+            (state.get("fetch_query") or "").strip() or state["original_question"]
+        )
+        gap = state.get("knowledge_gap", "")
+        return Command(
+            goto=[
+                Send(
+                    "web_fetch",
+                    _WebFetchState(
+                        url=url,
+                        title=titles.get(_normalize_url(url), ""),
+                        fetch_query=fetch_query,
+                        original_question=state["original_question"],
+                        knowledge_gap=gap,
+                    ),
+                )
+                for url in urls
+            ]
+        )
 
     async def _triage(
         self,
@@ -708,46 +740,30 @@ class ResearchAgent:
         ]
         return _dedupe(valid_urls, set(), str, budget)
 
-    async def web_research(self, state: OverallState, config: RunnableConfig) -> dict[str, Any]:
-        """Fetch every selected page and extract verbatim evidence per page."""
-        await _report(config, "Reading pages...")
-        urls = state.get("to_visit", [])
-        if not urls:
-            logger.warning("No pages selected for this round")
-            return {"evidence": [], "visits": []}
-        titles = _search_titles(state.get("searches", []))
-        pages = await asyncio.gather(
-            *(self._visit_page(url, titles.get(_normalize_url(url), ""), state) for url in urls)
+    async def web_fetch(self, state: _WebFetchState, config: RunnableConfig) -> dict[str, Any]:
+        """Fetch one selected page and extract its verbatim evidence."""
+        url = state["url"]
+        await _report(config, f"Reading: {url}")
+        fetch_query = (
+            (state.get("fetch_query") or "").strip() or state["original_question"]
         )
-        visits = [visit for visit, _ in pages]
-        evidence = [item for _, page_evidence in pages for item in page_evidence]
-        logger.info("Visited %d pages, kept %d evidence items", len(visits), len(evidence))
-        return {"evidence": evidence, "visits": visits}
-
-    async def _visit_page(
-        self,
-        url: str,
-        title: str,
-        state: OverallState,
-    ) -> tuple[PageVisit, list[Evidence]]:
-        """Fetch one page and extract its evidence as soon as it arrives."""
-        fetch_query = state.get("fetch_query") or state["original_question"]
         fetched = await self.config.fetch(url, fetch_query)
         visit = PageVisit(url=url, ok=fetched.ok)
         if not fetched.ok or not fetched.content.strip():
-            return visit, []
+            return {"visits": [visit], "evidence": []}
         try:
             evidence = await self._extract(
                 url=url,
-                title=title,
+                title=state.get("title", ""),
                 content=fetched.content,
                 question=state["original_question"],
                 gap=_meaningful_gap(state.get("knowledge_gap", "")),
             )
         except Exception as error:  # one page's extraction must never fail the round
             logger.warning("Extraction failed for %s: %s", url, error)
-            return visit, []
-        return visit, evidence
+            return {"visits": [visit], "evidence": []}
+        logger.info("Visited %s, kept %d evidence items", url, len(evidence))
+        return {"visits": [visit], "evidence": evidence}
 
     async def _extract(
         self,
