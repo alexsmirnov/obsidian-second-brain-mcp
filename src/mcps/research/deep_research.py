@@ -40,10 +40,11 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 FETCH_QUERY_INSTRUCTIONS = """Fetch query rules:
-`fetch_query` is 3-6 space-separated keywords for a BM25 ranker over page passages.
-- Use distinctive terms as they appear in the source text: named entities, method or metric names, technical terms, and one common synonym.
+`fetch_query` is space-separated keywords for a BM25 filter over page passages.
+- Use distinctive terms as they appear in the source text: named entities, method or metric names, technical terms, and common synonyms.
 - Do not use question words, stopwords, `site:`/quotes/operators, or URLs.
-- With a KNOWLEDGE GAP, target the gap's terms plus at most one core entity from the question.
+- Words are normalized and stemmed during search, use base forms only
+- With a KNOWLEDGE GAP, target the gap's terms plus core entities from the question.
 
 GOOD: staggered adoption parallel trends TWFE bias
 BAD: what are the problems with DiD
@@ -54,17 +55,19 @@ _GENERATE_QUERY_PROMPT = f"""You are a web search query generator for a research
 Current date context: Today is {datetime.now().strftime("%A, %B %d, %Y")}. Use this to evaluate time-sensitivity, version obsolescence, and real-time data validity.
 
 Produce a research plan:
-- `search_queries`: 1-3 orthogonal search queries. Each query is 2-5 keywords (hard maximum 6 words) and contains at least one named entity from the question. Use fewer queries for simple facts. Never produce natural-language questions or compound noun phrases.
-- `links`: any concrete HTTP(S) URLs found in the question, to read directly instead of searching.
-- `fetch_query`: the shared BM25 query used to select passages inside every fetched page for this round.
+- split the question into 1-3 distinct subquestions, using fewer queries for simple questions. If you think you know an answer, the subquestion is how to confirm it.
+- `search_queries`: concise keyword queries for each subquestion. Each query is 2-5 keywords (hard maximum 6 words) and uses relevant entities, including ones known from domain knowledge and not only names present in the question. Never produce natural-language questions. Keep the wording concise, as keyword queries.
+- `links`: any concrete HTTP(S) URLs observed in the question, to read directly instead of searching.
+- `fetch_query`: the query used to select passages inside every fetched page for this round.
 
 {FETCH_QUERY_INSTRUCTIONS}
 """
 
 _SELECT_URLS_PROMPT = """You choose which search results are worth reading.
-Judge each candidate URL/domain, title and snippet against the user question and the FETCH QUERY.
-Return the 0-based indices of the most promising candidates in priority order, at most MAX PAGES.
-Prefer primary sources and official documentation. Return an empty list when nothing is worth reading.
+Consider the whole candidate pool against the user question, and the KNOWLEDGE GAP when present.
+Select complementary sources that cover distinct subquestions, in priority order by relevance and authority.
+Prefer primary sources and official documentation. Prefer HTML over raw PDFs or binary files when the evidence is comparable.
+Return the 0-based indices of at most MAX PAGES candidates without duplicates of the same article, or fewer when fewer are useful, or an empty list when nothing is worth reading.
 """
 
 _EXTRACT_PROMPT = """You select the verbatim lines of a fetched page that are relevant to the user question and knowledge gap.
@@ -74,22 +77,26 @@ Return ONLY line ranges in the `ranges` field, for example "1-20, 80-210".
 
 Selection rules:
 - Keep lines containing facts, methods, tools, quantitative metrics, software package names, mathematical assumptions, contradictions, or promising links.
-- Use broad relevance: keep anything that could support, contextualize, or contradict the question.
+- keep only lines that state a fact answering the question or gap: keep anything that could support, contextualize, or contradict the question.
 - Never restate, summarize, or paraphrase. The ranges alone select the evidence.
 - Return an empty string when nothing in the page is relevant.
 """
 
 _REFLECTION_PROMPT = f"""You are the reasoning engine of a web research agent.
 Audit the numbered evidence `[E<n>] (url)` gathered so far and the search view, then decide the next step.
+Your output is evidence for an upstream agent that will draft the answer: collect the most relevant support as fast as possible.
 - Treat anything not present in the evidence as an unverified hypothesis; never assume it.
+- Use domain knowledge to propose search hypotheses, naming relevant entities, methods, packages, standards, or authors. Keep them unverified until evidence supports them.
 - Use the search view to see which queries failed, which results were not selected, and which links appeared in evidence.
 - Rephrase failed queries, follow promising `not selected` results, and prefer primary sources when following links.
-- Set `is_sufficient` only when the evidence answers the question with authoritative sources.
+- Set `is_sufficient` once the evidence supports the core factual answer.
+- Do not extend research for peripheral details or unavailable private measurements. Disclose them as unresolved instead.
+- Follow-up queries may name hypothesized entities. Follow only exact HTTP(S) URLs observed in the question, search results, or evidence; never invent a URL.
 
 Current date context: Today is {datetime.now().strftime("%A, %B %d, %Y")}. Use this to evaluate time-sensitivity, version obsolescence, and real-time data validity.
 
 If more work is needed, produce the next round plan:
-- `search_queries`: up to 3 orthogonal follow-up queries, each 2-5 keywords (hard maximum 6 words) with at least one named entity from the question. Target one unresolved gap per query.
+- `search_queries`: up to 3 distinct follow-up queries, each 2-5 keywords (hard maximum 6 words). Target one unresolved gap per query.
 - `links`: exact HTTP(S) URLs to read directly, when you already know the source.
 - `fetch_query`: the shared BM25 query for the next round, applied to the knowledge gap.
 - `knowledge_gap`: the concrete missing data or validation step.
@@ -101,7 +108,7 @@ If more work is needed, produce the next round plan:
 _NO_EVIDENCE_ANSWER = "No supporting evidence was found for this question."
 _UNANSWERED = "The gathered evidence does not support an answer to this question."
 
-_FETCH_QUERY_FIELD = "3-6 BM25 keywords that select relevant passages inside fetched pages"
+_FETCH_QUERY_FIELD = "keywords that select relevant passages inside fetched pages"
 
 _FINALIZE_PROMPT = """You write a final answer to the user's question using ONLY the numbered evidence blocks `[E<n>] (url)`.
 Return atomic claims, each supported by the `[E#]` ids of the evidence it rests on.
@@ -110,10 +117,11 @@ Rules:
 - Write the `answer` as 1-3 short sentences that directly answer the question.
 - Put the supporting detail into `claims` as short atomic statements.
 - Every claim MUST cite at least one existing `[E#]` id in its `evidence` list. Never cite an id that is not shown.
-- Never add facts from your own knowledge; if the evidence does not say it, do not claim it.
+- Each factual claim must be supported by its cited passages. Use domain knowledge only to organize the evidence, never to add unsupported facts.
+- Preserve relevant metrics, identifiers, package names, and author names from the evidence.
 - If sources contradict each other, state the conflict and cite both sides.
-- List every part of the question the evidence does not answer in `not_found`.
-- Do not include any source attribution in the claim text; citations are carried by the `evidence` ids.
+- List every part of the question the evidence does not answer, including unavailable private measurements, in `not_found`.
+- Do not include raw URLs or citation markup in the claim text; citations are carried by the `evidence` ids.
 """
 
 
@@ -126,12 +134,11 @@ Rules:
 class ResearchLimits:
     """Tunable bounds for one research run."""
 
-    round_start_budget: float = 125.0  # seconds since start; no new round after it
+    round_start_budget: float = 300.0  # seconds since start; no new round after it
     max_pages_per_round: int = 8
     max_initial_queries: int = 3
-    max_follow_ups: int = 3  # search_queries + links
-    max_triage_candidates: int = 30
-    line_wrap_chars: int = 300
+    max_follow_ups: int = 3  # independent limit for search_queries and for links
+    line_wrap_chars: int = 3000
 
 
 _DEFAULT_LIMITS = ResearchLimits()
@@ -315,12 +322,6 @@ def _dedupe(
 def _valid_links(links: list[str]) -> list[str]:
     """Keep stripped HTTP(S) URLs with a host."""
     return [stripped for link in links if (stripped := link.strip()) and _is_http_url(stripped)]
-
-
-def _meaningful_gap(gap: str) -> str | None:
-    """Stripped gap text, or None when blank or "N/A"."""
-    stripped = gap.strip()
-    return stripped if stripped and stripped != "N/A" else None
 
 
 def _wrap_line(line: str, wrap: int) -> list[str]:
@@ -634,7 +635,6 @@ class ResearchAgent:
         fetch_query = result.fetch_query.strip() or state["question"]
         logger.info("Initial plan: %d queries, %d links", len(queries), len(links))
         if logger.isEnabledFor(logging.DEBUG):
-            logger.debug("[generate_query] raw plan: %s", result.model_dump_json())
             logger.debug(
                 "[generate_query] queries=%s links=%s fetch_query=%r",
                 queries,
@@ -665,16 +665,6 @@ class ResearchAgent:
         logger.info("Performing web search for query: %s", query)
         results = await self.config.search(query)
         logger.info("Search %r returned %d results", query, len(results))
-        if logger.isEnabledFor(logging.DEBUG):
-            logger.debug(
-                "[web_search] %r results:\n%s",
-                query,
-                "\n".join(
-                    f"{rank}. {result.url} | {result.title} | {result.snippet}"
-                    for rank, result in enumerate(results, start=1)
-                )
-                or "(no results)",
-            )
         return {"searches": [SearchRun(query=query, results=results)]}
 
     async def select_urls(
@@ -695,7 +685,7 @@ class ResearchAgent:
             state.get("searches", []),
             current_queries,
             exclude,
-        )[: self.limits.max_triage_candidates]
+        )
         budget = self.limits.max_pages_per_round - len(links)
         chosen: list[str] = []
         if candidates and budget > 0:
@@ -742,9 +732,10 @@ class ResearchAgent:
         budget: int,
     ) -> list[str]:
         """Ask the fast model for candidate indices; fall back to no triage."""
+        gap = state.get("knowledge_gap", "").strip()
         lines = [
             f"Question: {state['original_question']}",
-            f"FETCH QUERY: {state.get('fetch_query', '')}",
+            *([f"KNOWLEDGE GAP: {gap}"] if gap else []),
             f"MAX PAGES: {budget}",
         ]
         for index, candidate in enumerate(candidates):
@@ -799,14 +790,13 @@ class ResearchAgent:
         if not fetched.ok or not fetched.content.strip():
             logger.debug("[web_fetch] %s yields no evidence: failed or empty fetch", url)
             return {"visits": [visit], "evidence": []}
-        logger.debug("[web_fetch] %s content:\n%s", url, fetched.content)
         try:
             evidence = await self._extract(
                 url=url,
                 title=state.get("title", ""),
                 content=fetched.content,
                 question=state["original_question"],
-                gap=_meaningful_gap(state.get("knowledge_gap", "")),
+                gap=state.get("knowledge_gap", "").strip(),
             )
         except Exception as error:  # one page's extraction must never fail the round
             logger.warning("Extraction failed for %s: %s", url, error)
@@ -864,9 +854,9 @@ class ResearchAgent:
         loop_count = state.get("research_loop_count", 0) + 1
         await _report(config, f"Evaluating research (round {loop_count})...")
         gap = state.get("knowledge_gap", "").strip()
-        gap_section = f"\n\nKnowledge gap: {gap}" if gap else ""
+        gap_section = f"\n\nKNOWLEDGE GAP: {gap}" if gap else ""
         human = (
-            f"Question: {state['original_question']}{gap_section}\n\n"
+            f"QUESTION: {state['original_question']}{gap_section}\n\n"
             f"Search results:\n{_render_search_view(state.get('searches', []), state.get('visits', []), state.get('evidence', []))}\n\n"
             f"Evidence:\n{_render_evidence(state.get('evidence', []))}"
         )
@@ -885,8 +875,12 @@ class ResearchAgent:
             _query_key,
             self.limits.max_follow_ups,
         )
-        remaining = self.limits.max_follow_ups - len(queries)
-        links = _dedupe(_valid_links(parsed.links), visited, _normalize_url, remaining)
+        links = _dedupe(
+            _valid_links(parsed.links),
+            visited,
+            _normalize_url,
+            self.limits.max_follow_ups,
+        )
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug("[reflection] round %d raw: %s", loop_count, parsed.model_dump_json())
             logger.debug(
@@ -910,7 +904,7 @@ class ResearchAgent:
             "search_queries": queries,
             "pending_links": links,
             "fetch_query": parsed.fetch_query.strip()
-            or _meaningful_gap(parsed.knowledge_gap)
+            or parsed.knowledge_gap
             or state["original_question"],
         }
 
@@ -945,9 +939,9 @@ class ResearchAgent:
                 "sources_gathered": [],
             }
         gap = state.get("knowledge_gap", "").strip()
-        gap_section = f"\n\nKnowledge gap: {gap}" if gap else ""
+        gap_section = f"\n\nKNOWLEDGE GAP: {gap}" if gap else ""
         human = (
-            f"Question: {state['original_question']}\n\n"
+            f"QUESTION: {state['original_question']}\n\n"
             f"Evidence:\n{_render_evidence(evidence)}{gap_section}"
         )
         logger.debug("[finalize] prompt:\n%s", human)

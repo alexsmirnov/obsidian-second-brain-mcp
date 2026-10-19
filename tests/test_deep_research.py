@@ -716,6 +716,70 @@ class TestSelectUrls:
         assert "https://c.example/bad" in text
         assert "old.example" not in text
 
+    async def test_all_candidates_reach_triage_before_fetch_budget_applies(self):
+        early = [_sr(f"https://early-{i}.example") for i in range(32)]
+        agent, fast, _, _ = _make_agent(
+            limits=ResearchLimits(max_pages_per_round=3),
+            select=SelectedPages(indices=[32, 0, 1]),
+        )
+        state = _state(
+            search_queries=["q1", "q2"],
+            pending_links=["https://direct.example/page"],
+            searches=[
+                {"query": "q1", "results": early},
+                {
+                    "query": "q2",
+                    "results": [
+                        _sr("https://early-0.example#section"),
+                        _sr("https://late.example"),
+                    ],
+                },
+            ],
+        )
+
+        out = await agent.select_urls(state, {})
+
+        text = str(fast.calls[-1][1][-1].content)
+        expected_candidates = [f"https://early-{i}.example" for i in range(32)] + [
+            "https://late.example"
+        ]
+        for index, url in enumerate(expected_candidates):
+            assert text.count(f"[{index}] {url}\n") == 1
+        assert "early-0.example#section" not in text
+        assert "direct.example" not in text
+        assert _sent_urls(out) == [
+            "https://direct.example/page",
+            "https://late.example",
+            "https://early-0.example",
+        ]
+
+    @pytest.mark.parametrize(
+        ("knowledge_gap", "expected"),
+        [
+            ("", None),
+            ("N/A", None),
+            ("  ", None),
+            ("  missing csdid vignette  ", "KNOWLEDGE GAP: missing csdid vignette"),
+        ],
+    )
+    async def test_triage_receives_gap_only_when_meaningful(
+        self, knowledge_gap: str, expected: str | None
+    ):
+        agent, fast, _, _ = _make_agent(select=SelectedPages(indices=[0]))
+        state = _state(
+            knowledge_gap=knowledge_gap,
+            search_queries=["q"],
+            searches=[{"query": "q", "results": [_sr("https://a.example")]}],
+        )
+
+        await agent.select_urls(state, {})
+
+        text = str(fast.calls[-1][1][-1].content)
+        if expected is None:
+            assert "KNOWLEDGE GAP" not in text
+        else:
+            assert expected in text.strip()
+
     async def test_select_urls_skips_model_without_candidates_and_survives_triage_error(
         self,
     ):
@@ -843,7 +907,7 @@ class TestReflectionRound:
         assert "not selected" in line_with("d.example")
         assert "(no results)" in lines
 
-    async def test_reflection_drops_repeated_follow_ups_and_caps_total(self):
+    async def test_follow_up_queries_and_links_keep_independent_limits(self):
         agent, _, _, _ = _make_agent(
             limits=ResearchLimits(max_follow_ups=2),
             reflect=Reflection(
@@ -851,9 +915,18 @@ class TestReflectionRound:
                 search_queries=[
                     "  Quantum Routing ",
                     "post quantum crypto",
+                    "POST QUANTUM CRYPTO",
                     "third",
+                    "fourth",
                 ],
-                links=["https://a.example/paper#sec2", "https://b.example/next"],
+                links=[
+                    "https://a.example/paper#sec2",
+                    "not a url",
+                    "https://b.example/next",
+                    "https://b.example/next#top",
+                    "https://c.example/more",
+                    "https://d.example/extra",
+                ],
                 fetch_query="pqc latency",
             ),
         )
@@ -864,11 +937,11 @@ class TestReflectionRound:
 
         out = await agent.reflection(state, {})
 
-        combined = out["search_queries"] + out["pending_links"]
-        assert len(combined) == 2
-        assert out["search_queries"][0] == "post quantum crypto"
-        assert "Quantum Routing" not in combined
-        assert "https://a.example/paper#sec2" not in combined
+        assert out["search_queries"] == ["post quantum crypto", "third"]
+        assert out["pending_links"] == [
+            "https://b.example/next",
+            "https://c.example/more",
+        ]
         assert out["fetch_query"] == "pqc latency"
 
     @pytest.mark.parametrize(
