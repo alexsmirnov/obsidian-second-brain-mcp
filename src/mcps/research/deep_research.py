@@ -8,15 +8,14 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
-from itertools import groupby
-from operator import add, itemgetter
+from operator import add
 from typing import TYPE_CHECKING, Annotated, Any, Literal, TypedDict, cast
 from urllib.parse import urlparse, urlunparse
 
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
-from langgraph.graph import END, START, StateGraph
-from langgraph.types import Command, Send
+from langgraph.graph import END, START, MessagesState, StateGraph
+from langgraph.types import Command, Overwrite, Send
 from pydantic import BaseModel, Field
 
 from mcps.research.tools import SearchResult
@@ -70,28 +69,16 @@ Prefer primary sources and official documentation. Prefer HTML over raw PDFs or 
 Return the 0-based indices of at most MAX PAGES candidates without duplicates of the same article, or fewer when fewer are useful, or an empty list when nothing is worth reading.
 """
 
-_EXTRACT_PROMPT = """You select the verbatim lines of a fetched page that are relevant to the user question and knowledge gap.
-
-The page is provided one line per numbered line. Every line starts with its 1-based line number.
-Return ONLY line ranges in the `ranges` field, for example "1-20, 80-210".
-
-Selection rules:
-- Keep lines containing facts, methods, tools, quantitative metrics, software package names, mathematical assumptions, contradictions, or promising links.
-- keep only lines that state a fact answering the question or gap: keep anything that could support, contextualize, or contradict the question.
-- Never restate, summarize, or paraphrase. The ranges alone select the evidence.
-- Return an empty string when nothing in the page is relevant.
-"""
-
 _REFLECTION_PROMPT = f"""You are the reasoning engine of a web research agent.
-Audit the numbered evidence `[E<n>] (url)` gathered so far and the search view, then decide the next step.
+Audit the fetched pages and search results gathered so far in the conversation, then decide the next step.
 Your output is evidence for an upstream agent that will draft the answer: collect the most relevant support as fast as possible.
-- Treat anything not present in the evidence as an unverified hypothesis; never assume it.
-- Use domain knowledge to propose search hypotheses, naming relevant entities, methods, packages, standards, or authors. Keep them unverified until evidence supports them.
-- Use the search view to see which queries failed, which results were not selected, and which links appeared in evidence.
+- Treat anything not present in the fetched pages as an unverified hypothesis; never assume it.
+- Use domain knowledge to propose search hypotheses, naming relevant entities, methods, packages, standards, or authors. Keep them unverified until fetched pages support them.
+- Use the search view to see which queries failed, which results were not selected, and which links appeared in fetched pages.
 - Rephrase failed queries, follow promising `not selected` results, and prefer primary sources when following links.
-- Set `is_sufficient` once the evidence supports the core factual answer.
+- Set `is_sufficient` once the fetched pages support the core factual answer.
 - Do not extend research for peripheral details or unavailable private measurements. Disclose them as unresolved instead.
-- Follow-up queries may name hypothesized entities. Follow only exact HTTP(S) URLs observed in the question, search results, or evidence; never invent a URL.
+- Follow-up queries may name hypothesized entities. Follow only exact HTTP(S) URLs observed in the question, search results, or fetched pages; never invent a URL.
 
 Current date context: Today is {datetime.now().strftime("%A, %B %d, %Y")}. Use this to evaluate time-sensitivity, version obsolescence, and real-time data validity.
 
@@ -105,23 +92,16 @@ If more work is needed, produce the next round plan:
 """
 
 
-_NO_EVIDENCE_ANSWER = "No supporting evidence was found for this question."
-_UNANSWERED = "The gathered evidence does not support an answer to this question."
-
 _FETCH_QUERY_FIELD = "keywords that select relevant passages inside fetched pages"
 
-_FINALIZE_PROMPT = """You write a final answer to the user's question using ONLY the numbered evidence blocks `[E<n>] (url)`.
-Return atomic claims, each supported by the `[E#]` ids of the evidence it rests on.
+_FINALIZE_PROMPT = """Write the final answer to the user's question using ONLY the fetched pages in the conversation above.
 
-Rules:
-- Write the `answer` as 1-3 short sentences that directly answer the question.
-- Put the supporting detail into `claims` as short atomic statements.
-- Every claim MUST cite at least one existing `[E#]` id in its `evidence` list. Never cite an id that is not shown.
-- Each factual claim must be supported by its cited passages. Use domain knowledge only to organize the evidence, never to add unsupported facts.
-- Preserve relevant metrics, identifiers, package names, and author names from the evidence.
-- If sources contradict each other, state the conflict and cite both sides.
-- List every part of the question the evidence does not answer, including unavailable private measurements, in `not_found`.
-- Do not include raw URLs or citation markup in the claim text; citations are carried by the `evidence` ids.
+- `answer`: 1-3 short sentences that directly answer the question.
+- `explanation`: supporting detail. Preserve relevant metrics, identifiers, package names, and author names. Cite the source URL inline after each statement it supports. If sources contradict each other, state the conflict and cite both sides. End with a `Not found:` list of every part of the question the pages do not answer, including unavailable private measurements.
+- `sources`: URLs of the fetched pages the answer rests on.
+- Use domain knowledge only to organize the evidence, never to add unsupported facts.
+- If the last reflection has `is_sufficient` false, research stopped at a time or round limit. Answer only what the fetched pages support, and list the open `knowledge_gap` and other uncertain points under `Not found:`.
+- If no fetched page supports an answer, say so in `answer` and list the questions under `Not found:`.
 """
 
 
@@ -135,29 +115,20 @@ class ResearchLimits:
     """Tunable bounds for one research run."""
 
     round_start_budget: float = 300.0  # seconds since start; no new round after it
-    max_pages_per_round: int = 8
+    max_pages_per_round: int = 10
     max_initial_queries: int = 3
-    max_follow_ups: int = 3  # independent limit for search_queries and for links
-    line_wrap_chars: int = 3000
+    max_follow_ups: int = 4  # independent limit for search_queries and for links
 
 
 _DEFAULT_LIMITS = ResearchLimits()
 
 
-class ExtractedRanges(BaseModel):
-    """Line ranges relevant to the question, as delivered by fetch."""
-
-    ranges: str = Field(
-        default="",
-        description="Comma-separated 1-based line ranges, e.g. '1-20, 80-210'; empty when nothing relevant",
-    )
-
-
-class Evidence(TypedDict):
-    """Verbatim page slice; id is its 1-based position in state['evidence']."""
+class Page(TypedDict):
+    """Filtered content of one fetched page."""
 
     url: str
-    text: str
+    title: str
+    content: str
 
 
 class PageVisit(TypedDict):
@@ -174,23 +145,16 @@ class SearchRun(TypedDict):
     results: list[SearchResult]
 
 
-class Claim(BaseModel):
-    """One atomic statement supported by cited evidence ids."""
-
-    text: str
-    evidence: list[int] = Field(default_factory=list, description="[E#] ids supporting the claim")
-
-
 class FinalAnswer(BaseModel):
-    """Cited atomic output of the finalize_answer node."""
+    """Output of the finalize_answer node."""
 
-    answer: list[Claim] = Field(default_factory=list, description="1-3 sentences answering the question")
-    claims: list[Claim] = Field(default_factory=list, description="Supporting cited claims")
-    not_found: list[str] = Field(default_factory=list, description="Gaps the evidence does not answer")
+    answer: str = Field(default="", description="1-3 sentences answering the question")
+    explanation: str = Field(default="", description="Supporting detail with inline source URLs, ending with 'Not found:' gaps")
+    sources: list[str] = Field(default_factory=list, description="URLs of fetched pages the answer rests on")
 
 
 class FetchQuery(BaseModel):
-    """Structured output of the fetch-query fragment (evaluation and Phase 3 `ResearchPlan`)."""
+    """Structured output of the fetch-query fragment (also the base of `ResearchPlan`)."""
 
     fetch_query: str = Field(default="", description=_FETCH_QUERY_FIELD)
 
@@ -222,7 +186,7 @@ class Reflection(ResearchPlan):
 # ---------------------------------------------------------------------------
 
 
-class OverallState(TypedDict):
+class OverallState(MessagesState):
     """Shared state for the full research graph."""
 
     original_question: str
@@ -230,13 +194,13 @@ class OverallState(TypedDict):
     search_queries: list[str]  # current round — overwritten by generate_query/reflection
     pending_links: list[str]  # current round — overwritten
     fetch_query: str  # current round — overwritten
-    searches: Annotated[list[SearchRun], add]  # accumulated across rounds
-    visits: Annotated[list[PageVisit], add]  # accumulated across rounds
-    evidence: Annotated[list[Evidence], add]  # accumulated across rounds
+    # round buffers: filled by the round's nodes, rendered and cleared by reflection
+    searches: Annotated[list[SearchRun], add]
+    visits: Annotated[list[PageVisit], add]
+    pages: Annotated[list[Page], add]
     knowledge_gap: str
     is_sufficient: bool
     research_loop_count: int  # logging/progress only
-    sources_gathered: list[str]  # written by finalize_answer
 
 
 class Input(TypedDict):
@@ -257,8 +221,6 @@ class _WebFetchState(TypedDict):
     url: str
     title: str
     fetch_query: str
-    original_question: str
-    knowledge_gap: str
 
 
 class Result(TypedDict):
@@ -324,116 +286,21 @@ def _valid_links(links: list[str]) -> list[str]:
     return [stripped for link in links if (stripped := link.strip()) and _is_http_url(stripped)]
 
 
-def _wrap_line(line: str, wrap: int) -> list[str]:
-    """Split ``line`` into pieces no longer than ``wrap``, keeping separators.
-
-    A split prefers the last space at or before ``wrap``; when no such space
-    exists it cuts hard. Joining the pieces rebuilds the original line.
-    """
-    if wrap <= 0 or len(line) <= wrap:
-        return [line]
-    pieces: list[str] = []
-    remaining = line
-    while len(remaining) > wrap:
-        cut = remaining.rfind(" ", 0, wrap + 1)
-        if cut <= 0:
-            cut = wrap - 1
-        pieces.append(remaining[: cut + 1])
-        remaining = remaining[cut + 1 :]
-    pieces.append(remaining)
-    return pieces
-
-
-def _number_lines(content: str, wrap: int) -> list[tuple[int, str]]:
-    """Return ``(source_line_index, piece)`` for every wrapped line of ``content``."""
-    return [
-        (index, piece)
-        for index, line in enumerate(content.split("\n"))
-        for piece in _wrap_line(line, wrap)
-    ]
-
-
-def _merge_ranges(ranges: list[tuple[int, int]]) -> list[tuple[int, int]]:
-    """Merge overlapping or adjacent 1-based inclusive ranges."""
-    merged: list[tuple[int, int]] = []
-    for start, end in ranges:
-        if merged and start <= merged[-1][1] + 1:
-            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
-        else:
-            merged.append((start, end))
-    return merged
-
-
-def _parse_ranges(ranges: str, count: int) -> list[tuple[int, int]]:
-    """Parse 1-based inclusive ranges, dropping invalid ones and clipping ends."""
-    parsed: list[tuple[int, int]] = []
-    for token in ranges.split(","):
-        token = token.strip()
-        if not token:
-            continue
-        start_text, separator, end_text = token.partition("-")
-        try:
-            start = int(start_text.strip())
-            end = int(end_text.strip()) if separator else start
-        except ValueError:
-            continue
-        if start < 1 or end < start or start > count:
-            continue
-        parsed.append((start, min(end, count)))
-    parsed.sort()
-    return _merge_ranges(parsed)
-
-
-def _slice(lines: list[tuple[int, str]], ranges: list[tuple[int, int]]) -> list[str]:
-    """Return the text of each range, joining wrapped pieces verbatim."""
-    texts = [
-        "\n".join(
-            "".join(piece for _, piece in group)
-            for _, group in groupby(lines[start - 1 : end], key=itemgetter(0))
-        ).strip()
-        for start, end in ranges
-    ]
-    return [text for text in texts if text]
-
-
-def _render_evidence(evidence: list[Evidence]) -> str:
-    """Render evidence as ``[E<n>] (url)`` blocks, never raw pages."""
-    return "\n".join(
-        f"[E{number}] ({item['url']})\n{item['text']}"
-        for number, item in enumerate(evidence, start=1)
-    )
-
-
-def _visit_status(
-    url: str,
-    visited: dict[str, bool],
-    evidence_ids: dict[str, list[int]],
-) -> str:
+def _visit_status(url: str, visited: dict[str, bool]) -> str:
     """Render one search result's outcome for the reflection search view."""
     if url not in visited:
         return "not selected"
-    if not visited[url]:
-        return "FAILED"
-    ids = evidence_ids.get(url, [])
-    return f"VISITED → {','.join(f'E{number}' for number in ids)}" if ids else "VISITED → none"
+    return "VISITED" if visited[url] else "FAILED"
 
 
-def _render_search_view(
-    searches: list[SearchRun],
-    visits: list[PageVisit],
-    evidence: list[Evidence],
-) -> str:
-    """Render search results grouped by query, tagged with visit outcomes."""
+def _render_search_view(searches: list[SearchRun], visits: list[PageVisit]) -> str:
+    """Render the round's search results grouped by query, tagged with visit outcomes."""
     visited = {_normalize_url(visit["url"]): visit["ok"] for visit in visits}
-    evidence_ids: dict[str, list[int]] = {}
-    for number, item in enumerate(evidence, start=1):
-        evidence_ids.setdefault(_normalize_url(item["url"]), []).append(number)
-
     lines: list[str] = []
     seen: set[str] = set()
     for run in searches:
         lines.append(f'Query: "{run["query"]}"')
-        results = run.get("results", [])
+        results = run["results"]
         if not results:
             lines.append("(no results)")
             continue
@@ -441,74 +308,35 @@ def _render_search_view(
             url = _normalize_url(result.url)
             seen.add(url)
             lines.append(
-                f"[{_visit_status(url, visited, evidence_ids)}] "
+                f"[{_visit_status(url, visited)}] "
                 f"{result.url} | {result.title} | {result.snippet[:200]}"
             )
-    followed: dict[str, str] = {}
-    for visit in visits:
-        url = _normalize_url(visit["url"])
-        if url not in seen:
-            followed.setdefault(url, visit["url"])
+    followed = {
+        url: visit["url"]
+        for visit in visits
+        if (url := _normalize_url(visit["url"])) not in seen
+    }
     if followed:
         lines.append("Followed links:")
-        for url, original in followed.items():
-            lines.append(f"[{_visit_status(url, visited, evidence_ids)}] {original}")
+        lines.extend(f"[{_visit_status(url, visited)}] {original}" for url, original in followed.items())
     return "\n".join(lines)
 
 
-def _render_not_found_queries(state: OverallState) -> str:
-    """List every executed query under a ``Not found:`` header (no-model reply)."""
-    queries = [item["query"] for item in state.get("searches", [])]
-    return "Not found:\n" + "\n".join(f"- {query}" for query in queries)
-
-
-def _render_cited(final: FinalAnswer, evidence: list[Evidence]) -> tuple[str, str, list[str]]:
-    """Drop uncited claims and renumber sources in first-citation order.
-
-    Citation ids are 1-based indexes into ``evidence``. A claim survives only
-    when it cites at least one existing id. Source numbers are 1-based indexes
-    into the returned URL list, numbered over ``answer`` then ``claims``.
-    """
-    sources: list[str] = []
-
-    def cited_text(claim: Claim) -> str:
-        suffixes: list[str] = []
-        for item in claim.evidence:
-            if not 1 <= item <= len(evidence):
-                continue
-            url = evidence[item - 1]["url"]
-            if url not in sources:
-                sources.append(url)
-            suffix = f" [{sources.index(url) + 1}]"
-            if suffix not in suffixes:
-                suffixes.append(suffix)
-        if not suffixes:
-            return ""
-        return f"{claim.text}{''.join(suffixes)}"
-
-    answer = " ".join(
-        text for claim in final.answer if (text := cited_text(claim))
-    ) or _UNANSWERED
-    explanation = "\n".join(
-        f"- {text}" for claim in final.claims if (text := cited_text(claim))
+def _render_pages(pages: list[Page]) -> str:
+    """Render fetched pages as ``Source URL / Title / CONTENT`` blocks."""
+    if not pages:
+        return "No pages fetched this round."
+    return "\n\n".join(
+        f"Source URL: {page['url']}\nTitle: {page['title']}\nCONTENT:\n{page['content']}"
+        for page in pages
     )
-    if final.not_found:
-        gaps = "\n".join(f"- {gap}" for gap in final.not_found)
-        explanation = f"{explanation}\n\nNot found:\n{gaps}" if explanation else f"Not found:\n{gaps}"
-    return answer, explanation, list(sources)
 
 
-def _collect_candidates(
-    searches: list[SearchRun],
-    current_queries: set[str],
-    exclude: set[str],
-) -> list[SearchResult]:
-    """Deduplicated search results of the current round, excluding seen URLs."""
+def _collect_candidates(searches: list[SearchRun], exclude: set[str]) -> list[SearchResult]:
+    """Deduplicated search results of the round, excluding ``exclude`` URLs."""
     candidates: list[SearchResult] = []
     for run in searches:
-        if _query_key(run["query"]) not in current_queries:
-            continue
-        for result in run.get("results", []):
+        for result in run["results"]:
             url = _normalize_url(result.url)
             if url in exclude:
                 continue
@@ -518,10 +346,10 @@ def _collect_candidates(
 
 
 def _search_titles(searches: list[SearchRun]) -> dict[str, str]:
-    """Map normalized result URLs to their titles for extraction prompts."""
+    """Map normalized result URLs to their titles."""
     titles: dict[str, str] = {}
     for run in searches:
-        for result in run.get("results", []):
+        for result in run["results"]:
             titles.setdefault(_normalize_url(result.url), result.title)
     return titles
 
@@ -533,6 +361,16 @@ async def _report(config: RunnableConfig, message: str) -> None:
         await reporter(message, 0.0, None)
 
 
+async def _invoke_structured_history[T: BaseModel](
+    model: Any,
+    schema: type[T],
+    messages: list[BaseMessage],
+) -> T:
+    """Invoke a model with structured output over an existing message list."""
+    chain = model.with_structured_output(schema)
+    return cast(T, await chain.ainvoke(messages))
+
+
 async def _invoke_structured[T: BaseModel](
     model: Any,
     schema: type[T],
@@ -540,8 +378,9 @@ async def _invoke_structured[T: BaseModel](
     human: str,
 ) -> T:
     """Invoke a model with structured output for a system + human message pair."""
-    chain = model.with_structured_output(schema)
-    return cast(T, await chain.ainvoke([SystemMessage(system), HumanMessage(human)]))
+    return await _invoke_structured_history(
+        model, schema, [SystemMessage(system), HumanMessage(human)]
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -642,6 +481,7 @@ class ResearchAgent:
                 fetch_query,
             )
         return {
+            "messages": [SystemMessage(_REFLECTION_PROMPT)],
             "original_question": state["question"],
             "started_at": started_at,
             "search_queries": queries,
@@ -672,19 +512,15 @@ class ResearchAgent:
     ) -> Command[Literal["web_fetch", "reflection"]]:
         """Choose this round's pages and fan out one web_fetch branch per page."""
         await _report(config, "Selecting pages...")
-        visited = {_normalize_url(visit["url"]) for visit in state.get("visits", [])}
         links = _dedupe(
             _valid_links(state.get("pending_links", [])),
-            set(visited),
+            set(),
             _normalize_url,
             self.limits.max_pages_per_round,
         )
-        current_queries = {_query_key(query) for query in state.get("search_queries", [])}
-        exclude = set(visited) | {_normalize_url(link) for link in links}
         candidates = _collect_candidates(
             state.get("searches", []),
-            current_queries,
-            exclude,
+            {_normalize_url(link) for link in links},
         )
         budget = self.limits.max_pages_per_round - len(links)
         chosen: list[str] = []
@@ -695,15 +531,13 @@ class ResearchAgent:
         fetch_query = (
             (state.get("fetch_query") or "").strip() or state["original_question"]
         )
-        gap = state.get("knowledge_gap", "")
         logger.debug(
-            "[select_urls] candidates=%d budget=%d links=%s triaged=%s fetch_query=%r knowledge_gap=%r",
+            "[select_urls] candidates=%d budget=%d links=%s triaged=%s fetch_query=%r",
             len(candidates),
             budget,
             links,
             chosen,
             fetch_query,
-            gap,
         )
         if not urls:
             logger.warning("No pages selected for this round")
@@ -717,8 +551,6 @@ class ResearchAgent:
                         url=url,
                         title=titles.get(_normalize_url(url), ""),
                         fetch_query=fetch_query,
-                        original_question=state["original_question"],
-                        knowledge_gap=gap,
                     ),
                 )
                 for url in urls
@@ -770,12 +602,10 @@ class ResearchAgent:
         return chosen
 
     async def web_fetch(self, state: _WebFetchState, config: RunnableConfig) -> dict[str, Any]:
-        """Fetch one selected page and extract its verbatim evidence."""
+        """Fetch one selected page; the fetch tool's own filter picks its passages."""
         url = state["url"]
         await _report(config, f"Reading: {url}")
-        fetch_query = (
-            (state.get("fetch_query") or "").strip() or state["original_question"]
-        )
+        fetch_query = state["fetch_query"].strip()
         fetched = await self.config.fetch(url, fetch_query)
         visit = PageVisit(url=url, ok=fetched.ok)
         logger.debug(
@@ -788,107 +618,57 @@ class ResearchAgent:
             len(fetched.content),
         )
         if not fetched.ok or not fetched.content.strip():
-            logger.debug("[web_fetch] %s yields no evidence: failed or empty fetch", url)
-            return {"visits": [visit], "evidence": []}
-        try:
-            evidence = await self._extract(
-                url=url,
-                title=state.get("title", ""),
-                content=fetched.content,
-                question=state["original_question"],
-                gap=state.get("knowledge_gap", "").strip(),
-            )
-        except Exception as error:  # one page's extraction must never fail the round
-            logger.warning("Extraction failed for %s: %s", url, error)
-            return {"visits": [visit], "evidence": []}
-        logger.info("Visited %s, kept %d evidence items", url, len(evidence))
-        return {"visits": [visit], "evidence": evidence}
-
-    async def _extract(
-        self,
-        url: str,
-        title: str,
-        content: str,
-        question: str,
-        gap: str | None,
-    ) -> list[Evidence]:
-        """Ask the fast model for relevant line ranges and slice them verbatim."""
-        numbered = _number_lines(content, self.limits.line_wrap_chars)
-        numbered_text = "\n".join(
-            f"{number}: {piece}"
-            for number, (_, piece) in enumerate(numbered, start=1)
-        )
-        gap_section = f"KNOWLEDGE GAP: {gap}\n" if gap else ""
-        prompt = (
-            f"QUESTION: {question}\n"
-            f"{gap_section}"
-            f"URL: {url}\n"
-            f"TITLE: {title}\n"
-            f"{numbered_text}"
-        )
-        predicted = await _invoke_structured(
-            self.config.fast,
-            ExtractedRanges,
-            _EXTRACT_PROMPT,
-            prompt,
-        )
-        ranges = _parse_ranges(predicted.ranges, len(numbered))
-        evidence = [Evidence(url=url, text=text) for text in _slice(numbered, ranges)]
-        if logger.isEnabledFor(logging.DEBUG):
-            logger.debug(
-                "[extract] %s lines=%d raw ranges=%r parsed=%s",
-                url,
-                len(numbered),
-                predicted.ranges,
-                ranges,
-            )
-            logger.debug(
-                "[extract] %s evidence:\n%s",
-                url,
-                "\n---\n".join(item["text"] for item in evidence) or "(none)",
-            )
-        return evidence
+            return {"visits": [visit], "pages": []}
+        # logger.debug("[web_fetch] %s content:\n%s", url, fetched.content)
+        page = Page(url=url, title=state.get("title", ""), content=fetched.content)
+        return {"visits": [visit], "pages": [page]}
 
     async def reflection(self, state: OverallState, config: RunnableConfig) -> dict[str, Any]:
-        """Audit evidence and the search view, then plan the next round."""
+        """Add this round to the conversation, then plan the next round."""
         loop_count = state.get("research_loop_count", 0) + 1
         await _report(config, f"Evaluating research (round {loop_count})...")
         gap = state.get("knowledge_gap", "").strip()
         gap_section = f"\n\nKNOWLEDGE GAP: {gap}" if gap else ""
-        human = (
+        round_message = HumanMessage(
             f"QUESTION: {state['original_question']}{gap_section}\n\n"
-            f"Search results:\n{_render_search_view(state.get('searches', []), state.get('visits', []), state.get('evidence', []))}\n\n"
-            f"Evidence:\n{_render_evidence(state.get('evidence', []))}"
+            f"Search results:\n{_render_search_view(state.get('searches', []), state.get('visits', []))}\n\n"
+            f"Fetched pages:\n{_render_pages(state.get('pages', []))}"
         )
-        logger.debug("[reflection] round %d prompt:\n%s", loop_count, human)
-        parsed = await _invoke_structured(
-            self.config.small,
-            Reflection,
-            _REFLECTION_PROMPT,
-            human,
+        logger.debug("[reflection] round %d prompt:\n%s", loop_count, round_message.content)
+        chain = self.config.small.with_structured_output(
+            Reflection, include_raw=True, method="json_schema"
         )
-        executed = {_query_key(run["query"]) for run in state.get("searches", [])}
-        visited = {_normalize_url(visit["url"]) for visit in state.get("visits", [])}
+        result = cast(
+            dict[str, Any],
+            await chain.ainvoke([*state["messages"], round_message]),
+        )
+        parsed = cast(Reflection | None, result["parsed"])
+        if parsed is None:
+            logger.warning("Reflection round %d returned unparsable output, finalizing", loop_count)
+            return {
+                "messages": [round_message],
+                "searches": Overwrite(value=[]),
+                "visits": Overwrite(value=[]),
+                "pages": Overwrite(value=[]),
+                "research_loop_count": loop_count,
+                "is_sufficient": True,
+                "search_queries": [],
+                "pending_links": [],
+            }
         queries = _dedupe(
             parsed.search_queries,
-            executed,
+            set(),
             _query_key,
             self.limits.max_follow_ups,
         )
         links = _dedupe(
             _valid_links(parsed.links),
-            visited,
+            set(),
             _normalize_url,
             self.limits.max_follow_ups,
         )
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug("[reflection] round %d raw: %s", loop_count, parsed.model_dump_json())
-            logger.debug(
-                "[reflection] round %d kept after dedupe against executed/visited: queries=%s links=%s",
-                loop_count,
-                queries,
-                links,
-            )
         logger.info(
             "Reflection round %d: is_sufficient=%s, queries=%d, links=%d, knowledge_gap=%s",
             loop_count,
@@ -898,6 +678,10 @@ class ResearchAgent:
             parsed.knowledge_gap[:1200],
         )
         return {
+            "messages": [round_message, result["raw"]],
+            "searches": Overwrite(value=[]),
+            "visits": Overwrite(value=[]),
+            "pages": Overwrite(value=[]),
             "research_loop_count": loop_count,
             "is_sufficient": parsed.is_sufficient,
             "knowledge_gap": parsed.knowledge_gap,
@@ -913,11 +697,9 @@ class ResearchAgent:
         state: OverallState,
     ) -> Literal["finalize_answer"] | list[Send] | Literal["select_urls"]:
         """Finalize when sufficient, out of time, or out of follow-ups; else continue."""
-        if state.get("is_sufficient") and state.get("evidence"):
-            logger.debug("[evaluate_research] sufficient evidence, finalizing")
-            return "finalize_answer"
         if state.get("is_sufficient"):
-            logger.debug("[evaluate_research] marked sufficient without evidence, continuing")
+            logger.debug("[evaluate_research] sufficient, finalizing")
+            return "finalize_answer"
         elapsed = self.clock() - state.get("started_at", 0)
         if elapsed > self.limits.round_start_budget:
             logger.info("Round budget exceeded (%.1fs), finalizing", elapsed)
@@ -929,44 +711,21 @@ class ResearchAgent:
         return self.route_round(state)
 
     async def finalize_answer(self, state: OverallState, config: RunnableConfig) -> dict[str, Any]:
-        """Render a cited atomic answer, or a fixed reply when no evidence exists."""
+        """Answer from the whole conversation, whether research ended sufficient or at a limit."""
         await _report(config, "Synthesizing final answer...")
-        evidence = state.get("evidence", [])
-        if not evidence:
-            return {
-                "answer": _NO_EVIDENCE_ANSWER,
-                "explanation": _render_not_found_queries(state),
-                "sources_gathered": [],
-            }
-        gap = state.get("knowledge_gap", "").strip()
-        gap_section = f"\n\nKNOWLEDGE GAP: {gap}" if gap else ""
-        human = (
-            f"QUESTION: {state['original_question']}\n\n"
-            f"Evidence:\n{_render_evidence(evidence)}{gap_section}"
-        )
-        logger.debug("[finalize] prompt:\n%s", human)
-        response = await _invoke_structured(
+        response = await _invoke_structured_history(
             self.config.small,
             FinalAnswer,
-            _FINALIZE_PROMPT,
-            human,
+            [*state["messages"], HumanMessage(_FINALIZE_PROMPT)],
         )
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug("[finalize] raw: %s", response.model_dump_json())
-            logger.debug(
-                "[finalize] dropped uncited claims: %s",
-                [
-                    claim.text
-                    for claim in [*response.answer, *response.claims]
-                    if not any(1 <= item <= len(evidence) for item in claim.evidence)
-                ],
-            )
-        answer, explanation, sources_gathered = _render_cited(response, evidence)
-        logger.info("Final answer generated: %s. Explanation: %s", answer, explanation[:1000])
+        sources = list(dict.fromkeys(url for url in response.sources if _is_http_url(url)))
+        logger.info("Final answer generated: %s. Explanation: %s", response.answer, response.explanation[:1000])
         return {
-            "answer": answer,
-            "explanation": explanation,
-            "sources_gathered": sources_gathered,
+            "answer": response.answer,
+            "explanation": response.explanation,
+            "sources_gathered": sources,
         }
 
     async def __call__(
