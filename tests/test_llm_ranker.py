@@ -5,12 +5,13 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from collections.abc import Sequence
 from typing import Any
 
 import httpx
 import pytest
 
-from mcps.research.tools.filtering import RelevanceFilter
+from mcps.research.tools.filtering import Fragment, RelevanceFilter
 from mcps.research.tools.filtering_models import RouterPassageModels
 from mcps.research.tools.llm_ranker import LlmRanker
 from mcps.research.tools.models import FetchResult, FetchStatus
@@ -25,8 +26,17 @@ def page(content: str, mime: str = "text/plain") -> FetchResult:
     )
 
 
-def by_paragraph(text: str) -> list[str]:
-    return text.split("\n\n")
+class ParagraphChunker:
+    def split(self, text: str) -> list[Fragment]:
+        fragments: list[Fragment] = []
+        offset = 0
+        for part in text.split("\n\n"):
+            fragments.append(Fragment(part, ((offset, offset + len(part)),)))
+            offset += len(part) + 2
+        return fragments
+
+    def merge(self, text: str, fragments: Sequence[Fragment]) -> str:
+        return "\n\n".join(fragment.text for fragment in fragments)
 
 
 ROUTER_BASE = "https://router.example/v1"
@@ -347,7 +357,7 @@ def make_filter(
         "llm_request_chars": 8000,
     }
     options.update(ranker_options)
-    return RelevanceFilter(by_paragraph, LlmRanker(models, **options))
+    return RelevanceFilter(ParagraphChunker(), LlmRanker(models, **options))
 
 
 QUANTUM = "QUANTUM_LEXICAL: quantum routing reduces latency."
