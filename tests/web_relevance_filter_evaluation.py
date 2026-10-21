@@ -10,7 +10,8 @@ the decision ranker question, for example
 ``--filter bm25 --max-chars 3000 --overlap-chars 500 --threshold 2.0``. Every
 report row records the effective values under ``settings``.
 
-Pages and queries come from the fetch smoke dataset. ``expectations.json`` lists,
+Pages and queries come from the fetch baseline and smoke datasets; smoke rows
+win on a shared case id. ``expectations.json`` lists,
 per case, passages the filter must keep and boilerplate it must drop.
 
 Outputs go to ``tmp/``: ``relevance-<filter>-<timestamp>.log`` and a
@@ -604,9 +605,11 @@ async def main(argv: list[str] | None = None) -> None:
     expectations: dict[str, dict] = json.loads(
         (PAGES_DIR / "expectations.json").read_text(encoding="utf-8")
     )
+    # Smoke rows override baseline rows sharing a case id.
     cases = {
         case.case_id: case
-        for case in load_cases(CASES_DIR / "fetch-cases-smoke.jsonl")
+        for dataset in ("fetch-cases-baseline.jsonl", "fetch-cases-smoke.jsonl")
+        for case in load_cases(CASES_DIR / dataset)
     }
     case_ids = sorted(expectations)[: args.limit]
     logger.info(
