@@ -37,12 +37,13 @@ Arrow columnar data format used by LanceDB for schemas and table operations.
 ### markdown
 Python Markdown parser.
 **Version**: `>=3.10.0`
-**Used by**: document processing pipeline.
+**Used by**: (currently unused by application code; the legacy `MarkdownToHtml` normalizer was removed in the filter pipeline refactor)
 **Docs**: [python-markdown.github.io](https://python-markdown.github.io/)
 
 ### rank_bm25
-BM25 keyword relevance scoring (reserved for future hybrid search integration).
+BM25 keyword relevance scoring. The `Bm25Ranker` uses `BM25L` over fragments, which avoids zero/negative-IDF loss on small corpora.
 **Version**: unpinned
+**Used by**: [src/mcps/research/tools/bm25_ranker.py](../src/mcps/research/tools/bm25_ranker.py)
 **Docs**: [github.com/dorianbrown/rank_bm25](https://github.com/dorianbrown/rank_bm25)
 
 ### python-dotenv
@@ -57,14 +58,10 @@ YAML frontmatter parser for Obsidian markdown files.
 **Used by**: [src/mcps/rag/document_processing.py:12](../src/mcps/rag/document_processing.py#L12)
 **Docs**: [python-frontmatter.readthedocs.io](https://python-frontmatter.readthedocs.io/)
 
-### html2text
-Converts HTML documents to clean markdown.
-**Version**: `>=2025.4.15`
-
 ### lxml
 HTML/XML parsing for web research content extraction.
 **Version**: `>=5.0.0`
-**Used by**: [src/mcps/research/tools.py:16](../src/mcps/research/tools.py#L16)
+**Used by**: [src/mcps/research/tools/duckduckgo.py](../src/mcps/research/tools/duckduckgo.py)
 
 ### arxiv-to-prompt
 Formats arXiv papers for context-window use.
@@ -77,7 +74,12 @@ PDF text extraction.
 ### httpx
 Shared async HTTP client for model router and web requests.
 **Version**: `>=0.28.0`
-**Used by**: [src/mcps/server.py:7](../src/mcps/server.py#L7), [src/mcps/tools/obsidian_vault.py:9](../src/mcps/tools/obsidian_vault.py#L9), [src/mcps/research/tools.py:15](../src/mcps/research/tools.py#L15)
+**Used by**: [src/mcps/server.py:7](../src/mcps/server.py#L7), [src/mcps/tools/obsidian_vault.py:9](../src/mcps/tools/obsidian_vault.py#L9), [src/mcps/research/tools/](../src/mcps/research/tools/common.py)
+
+### crawl4ai
+Mandatory dependency. Renders generic pages in a CDP browser (Obscura) and provides the HTML-to-Markdown generator (pruning filter, links kept) shared by the browser fetch and `HtmlToMarkdown`. Content filtering and model selection do not run inside crawl4ai.
+**Version**: `>=0.7`
+**Used by**: [src/mcps/research/tools/browser.py](../src/mcps/research/tools/browser.py), [src/mcps/research/tools/html_markdown.py](../src/mcps/research/tools/html_markdown.py)
 
 ### pydantic
 Data validation and modeling.
@@ -87,9 +89,9 @@ Data validation and modeling.
 ## Model Providers
 
 ### langchain-openai
-OpenAI-compatible chat and embedding adapters, used against the model router.
+OpenAI-compatible chat and embedding adapters, used against the model router for RAG indexing, search, and reranking.
 **Version**: `>=1.1.11`
-**Used by**: [src/mcps/rag/vault.py:15](../src/mcps/rag/vault.py#L15), [src/mcps/research/config.py:16](../src/mcps/research/config.py#L16)
+**Used by**: [src/mcps/rag/vault.py:15](../src/mcps/rag/vault.py#L15), [src/mcps/research/config.py:21](../src/mcps/research/config.py#L21)
 
 ### langchain-google-genai
 Google Gemini model adapter for web research.

@@ -3,10 +3,12 @@
 
 Run from the repository root: ``uv run python tests/web_research_evaluation.py``.
 Judge model: ``RESEARCH_EVAL_MODEL`` (falls back to ``RESEARCH_INFER_MODEL``).
+Pass ``-v`` to log the research agent at DEBUG level.
 """
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import datetime
 import logging
@@ -24,16 +26,22 @@ from mcps.research.config import build_research_config
 
 timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 REPORT_DIR.mkdir(exist_ok=True)
-logging.basicConfig(
-    filename=REPORT_DIR / f"evaluation-{timestamp}.log",
-    encoding="utf-8",
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s:%(lineno)d - %(levelname)s - %(message)s",
-)
-logging.getLogger("httpx").setLevel(logging.WARNING)
-logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
+
+
+def _configure_logging(verbose: bool) -> None:
+    """Log to the report folder; ``verbose`` enables DEBUG for the research package."""
+    logging.basicConfig(
+        filename=REPORT_DIR / f"evaluation-{timestamp}.log",
+        encoding="utf-8",
+        level=logging.INFO,
+        format="%(asctime)s - %(name)s:%(lineno)d - %(levelname)s - %(message)s",
+    )
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+    if verbose:
+        logging.getLogger("mcps.research").setLevel(logging.DEBUG)
 
 
 async def main():
@@ -41,18 +49,22 @@ async def main():
     load_dotenv()
     server_config = create_config()
     async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as http_client:
-        logger.info("Creating research configuration...")
-        config = build_research_config(server_config, http_client=http_client)
-        judge = create_judge_model(server_config, http_client=http_client)
+        async with build_research_config(server_config, http_client) as config:
+            if config is None:
+                raise RuntimeError(
+                    "No browser available: set BROWSER_CDP_URL to a reachable CDP "
+                    "browser before running the evaluation."
+                )
+            judge = create_judge_model(server_config, http_client=http_client)
 
-        logger.info("Creating research agent...")
-        agent = create_researcher(config, implementation="deep_research")
+            logger.info("Creating research agent...")
+            agent = create_researcher(config, implementation="deep_research")
 
-        logger.info("Loading DRACO questions (Technology + Academic)...")
-        questions = load_draco_questions()
+            logger.info("Loading DRACO questions (Technology + Academic)...")
+            questions = load_draco_questions()[:3]
 
-        logger.info("Running evaluation on %d questions...", len(questions))
-        summary, results = await run_evaluation(agent, judge, questions)
+            logger.info("Running evaluation on %d questions...", len(questions))
+            summary, results = await run_evaluation(agent, judge, questions)
 
     print("\n" + "=" * 60)
     print("DRACO EVALUATION RESULTS")
@@ -71,4 +83,12 @@ async def main():
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="log the research agent at DEBUG level",
+    )
+    _configure_logging(parser.parse_args().verbose)
     asyncio.run(main())

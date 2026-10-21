@@ -6,7 +6,9 @@ from pathlib import Path
 
 import httpx
 from fastmcp import Context, FastMCP
+from fastmcp.exceptions import ToolError
 from fastmcp.server.server import Transport
+from starlette.responses import PlainTextResponse
 
 # from mcp import ClientCapabilities, RootsCapability
 # from mcp.server.session import ServerSession
@@ -18,7 +20,8 @@ import mcps.tools.obsidian_vault as obsidian_vault
 from mcps.config import ServerConfig, create_config
 from mcps.logs import setup_logging
 from mcps.rag.vault import create_vault
-from mcps.research.agent import ResearchResponse
+from mcps.research.agent import ProgressReporter
+from mcps.research.jobs import JobNotFoundError, ResearchJobResponse, ResearchJobs
 from mcps.research.lifespan import build_research_lifespan
 
 logger = logging.getLogger("mcps")
@@ -82,12 +85,44 @@ _WEB_RESEARCH_DESCRIPTION = (
     "reading local files, running code, or answering from "
     "existing context.\n"
     "\n"
+    "Research can take minutes, so it runs as a background job and this "
+    "call waits only a limited time.\n"
+    "\n"
     "Args:\n"
     "    query (str): question to research\n"
     "\n"
     "Returns:\n"
-    "    str: answer found by the researcher agent"
+    "    job record with `status`. 'completed': `result` holds the answer, "
+    "explanation and sources. 'running': the research is not finished; "
+    "follow `instructions` and call web_research_status with the `job_id`. "
+    "'failed': `error` explains why."
 )
+
+_WEB_RESEARCH_STATUS_DESCRIPTION = (
+    "Get the progress and result of a research job started by web_research.\n"
+    "\n"
+    "Call this only with a `job_id` returned by web_research while its "
+    "status is 'running'. It waits for the job to finish for a limited "
+    "time (about 25 seconds by default), so call it again right away "
+    "while the status is still 'running' - do not sleep between calls. "
+    "Unknown or expired jobs "
+    "return an error: start a new web_research call.\n"
+    "\n"
+    "Args:\n"
+    "    job_id (str): job name returned by web_research, e.g. "
+    "'amber-falcon-river'\n"
+    "\n"
+    "Returns:\n"
+    "    job record: same shape as the web_research result"
+)
+
+
+def _progress_reporter(ctx: Context) -> ProgressReporter:
+    async def _report(message: str, progress: float, total: float | None) -> None:
+        await ctx.info(message)
+        await ctx.report_progress(progress, total, message)
+
+    return _report
 
 
 class DevAutomationServer:
@@ -119,14 +154,33 @@ class DevAutomationServer:
 
 
         @self.mcp.tool(name="web_research", description=_WEB_RESEARCH_DESCRIPTION)
-        async def web_research(query: str, ctx: Context) -> ResearchResponse:
-            researcher = ctx.lifespan_context["researcher"]
+        async def web_research(query: str, ctx: Context) -> ResearchJobResponse:
+            jobs: ResearchJobs = ctx.lifespan_context["research_jobs"]
+            job_id = await jobs.start(query)
+            try:
+                return await jobs.wait(
+                    job_id, progress=_progress_reporter(ctx), from_start=True
+                )
+            except asyncio.CancelledError:
+                # The caller left before learning the job name: nobody can
+                # read this job, so stop it.
+                jobs.cancel(job_id)
+                raise
 
-            async def _report(message: str, progress: float, total: float | None) -> None:
-                await ctx.info(message)
-                await ctx.report_progress(progress, total)
-
-            return await researcher(query, progress=_report)
+        @self.mcp.tool(
+            name="web_research_status", description=_WEB_RESEARCH_STATUS_DESCRIPTION
+        )
+        async def web_research_status(job_id: str, ctx: Context) -> ResearchJobResponse:
+            jobs: ResearchJobs = ctx.lifespan_context["research_jobs"]
+            try:
+                return await jobs.wait(
+                    job_id, progress=_progress_reporter(ctx), from_start=False
+                )
+            except JobNotFoundError:
+                raise ToolError(
+                    f"Research job '{job_id}' is unknown or expired. "
+                    "Start a new web_research call."
+                ) from None
 
         if self.config.vault_dir:
             obsidian_vault.register_tools(self.mcp)
@@ -139,6 +193,11 @@ class DevAutomationServer:
             kwargs["host"] = host
         if port is not None:
             kwargs["port"] = port
+        if transport in {"http","sse","streamable-http"}:
+            @self.mcp.custom_route("/health", methods=["GET"])
+            async def health_check(request):
+                """Exposes a 200 OK endpoint for Kubernetes or load balancer probes."""
+                return PlainTextResponse("ok", status_code=200)
         await self.mcp.run_async(transport=transport, **kwargs)
 
 

@@ -1,14 +1,19 @@
 """Research configuration factory for LangChain models and tools.
 
-The module exposes a lifespan-friendly builder `build_research_config` that
-accepts a pre-constructed `ServerConfig` instance and an ``httpx.AsyncClient``
-so the FastMCP lifespan owns the connection pool.
+The module exposes a lifespan-friendly async context manager
+``build_research_config`` that accepts a pre-constructed ``ServerConfig`` and an
+``httpx.AsyncClient`` so the FastMCP lifespan owns the connection pool. It
+enters the fetch tool (which owns the browser) and yields ``None`` when no
+browser is available.
 """
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+import logging
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from typing import AsyncGenerator
 
 import httpx
 from langchain_core.language_models import BaseChatModel
@@ -18,17 +23,21 @@ from pydantic import SecretStr
 
 from mcps.config import ServerConfig
 from mcps.research.tools import (
+    Fetch,
+    Search,
     SearchResult,
     create_duckduckgo_search,
-    create_fetch,
     create_google_search,
 )
+from mcps.research.tools.fetch import build_fetch_tool
 
 __all__ = [
     "ResearchConfig",
     "SearchResult",
     "build_research_config",
 ]
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -37,8 +46,8 @@ class ResearchConfig:
 
     fast: BaseChatModel
     small: BaseChatModel
-    search: Callable[[str], Awaitable[list[SearchResult]]]
-    fetch: Callable[[str], Awaitable[str]]
+    search: Search
+    fetch: Fetch
 
 
 def _is_google_cse_configured(config: ServerConfig) -> bool:
@@ -80,8 +89,8 @@ def create_search_tool(
     *,
     config: ServerConfig,
     http_client: httpx.AsyncClient | None = None,
-) -> Callable[[str], Awaitable[list[SearchResult]]]:
-    """Return GoogleSearchTool or DuckDuckGoSearchTool fallback."""
+) -> Search:
+    """Return the Google search when configured, else DuckDuckGo."""
     if _is_google_cse_configured(config):
         return create_google_search(
             config.google_api_key,
@@ -91,41 +100,38 @@ def create_search_tool(
     return create_duckduckgo_search(http_client=http_client)
 
 
-def create_fetch_tool(
-    *, http_client: httpx.AsyncClient | None = None
-) -> Callable[[str], Awaitable[str]]:
-    """Return FetchTool for web content extraction."""
-    return create_fetch(http_client=http_client)
-
-
-def build_research_config(
+@asynccontextmanager
+async def build_research_config(
     config: ServerConfig,
-    *,
     http_client: httpx.AsyncClient,
-) -> ResearchConfig:
-    """Build a ResearchConfig using injected ServerConfig and HTTP client.
+) -> AsyncGenerator[ResearchConfig | None]:
+    """Build a ResearchConfig for the duration of the context, or ``None``.
 
-    The FastMCP lifespan is expected to provide a pooled
-    ``httpx.AsyncClient``. It is threaded through to models and the
-    HTTP-speaking tools so they reuse a single connection pool.
-
-    Args:
-        config: Populated ServerConfig instance.
-        http_client: Shared httpx.AsyncClient for connection pooling.
+    Enters :func:`build_fetch_tool` in required-browser mode first: when no
+    browser is available the context yields ``None`` without constructing any
+    models. Otherwise the models and search tool are built once and yielded for
+    the lifetime of the context. The lifespan provides the pooled
+    ``httpx.AsyncClient``; it is borrowed and never closed here.
     """
-    return ResearchConfig(
-        fast=_create_chat_model(
-            model_name=config.research_fast_model,
-            router_url=config.router_api_base,
-            router_key=config.router_api_key,
-            http_client=http_client,
-        ),
-        small=_create_chat_model(
-            model_name=config.research_infer_model,
-            router_url=config.router_api_base,
-            router_key=config.router_api_key,
-            http_client=http_client,
-        ),
-        search=create_search_tool(config=config, http_client=http_client),
-        fetch=create_fetch_tool(http_client=http_client),
-    )
+    async with build_fetch_tool(
+        config, http_client, require_browser=True
+    ) as fetch:
+        if fetch is None:
+            yield None
+            return
+        yield ResearchConfig(
+            fast=_create_chat_model(
+                model_name=config.research_fast_model,
+                router_url=config.router_api_base,
+                router_key=config.router_api_key,
+                http_client=http_client,
+            ),
+            small=_create_chat_model(
+                model_name=config.research_infer_model,
+                router_url=config.router_api_base,
+                router_key=config.router_api_key,
+                http_client=http_client,
+            ),
+            search=create_search_tool(config=config, http_client=http_client),
+            fetch=fetch,
+        )

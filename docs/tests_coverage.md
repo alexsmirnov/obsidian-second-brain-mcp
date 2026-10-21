@@ -88,6 +88,30 @@ Tests for `ServerConfig` creation, environment variable precedence, CLI override
 ### [tests/test_deep_research.py](../tests/test_deep_research.py)
 Contract tests for the LangGraph deep research agent with mocked models and HTTP calls.
 
+### [tests/test_fetch_combinators.py](../tests/test_fetch_combinators.py)
+Contract tests for `FetchResult` (`ok`, `is_retryable`) and the combinators `Filtered`, `Fallback`, `UrlSelector`, `FilterSelector`, `FilterChain`, `Throttled`, `Blocked`, `Truncate`, using recording stubs. `Truncate` cases cover syntax-safe Markdown fences/tables/reference definitions, orphan-heading avoidance, and plain-text word boundaries.
+
+### [tests/test_research_tools.py](../tests/test_research_tools.py)
+Contract tests for search parsing (Google, DuckDuckGo), the composed `create_fetch` (routing, restricted domains, escalation, truncation, concurrency), per-source status mapping and native mime/text preservation (HTML, Markdown, other textual types, raw PDF text), and exceptions becoming `UNSUPPORTED` results (HTTP mocked with pytest-httpx). Large HTML and PDF fixtures make sure that start/middle/end evidence survives composed local filtering, and that distant unselected windows are dropped.
+
+### [tests/test_research_fallback_fetchers.py](../tests/test_research_fallback_fetchers.py)
+Contract tests for the browser (fake crawl4ai crawler), Scrape.do and Bright Data fallbacks: request shape, target vs. provider status mapping, provider selection from `ServerConfig`, and crawler connection lifetime (reuse across repeated and overlapping fetches, no replacement on failure, single open/close, startup failure yielding no crawler).
+
+### [tests/test_markdown_chunker.py](../tests/test_markdown_chunker.py), [tests/test_html_markdown.py](../tests/test_html_markdown.py), [tests/test_relevance_filter.py](../tests/test_relevance_filter.py), [tests/test_bm25_ranker.py](../tests/test_bm25_ranker.py)
+Contract tests for the filter pipeline units: `MarkdownChunker` (windows that target `max_chars`, snap to nearby headings and lines after blank lines, overlap neighbors, keep exact source slices, advance with maximal overlap, and reject invalid sizes, plus `merge`: shared overlap once, touching and gapped ranges, order, duplicates, contained fragments), `HtmlToMarkdown` (conversion, links kept, selector pass-through, error mapping), `RelevanceFilter` with fake chunker and ranker (guards, blank query, empty selection, split/merge hand-off, document order, failure mapping for split, ranker and merge), and `Bm25Ranker`.
+
+### [tests/test_browser_runtime.py](../tests/test_browser_runtime.py)
+Tests for `create_browser_fetch` (configured, unset, and unreachable CDP), the lifespan enabling/disabling only the research tools (`web_research` and `web_research_status`), and the research lifespan owning one browser crawler (reused across fetches, closed on exit).
+
+### [tests/test_research_jobs.py](../tests/test_research_jobs.py), [tests/test_research_job_tools.py](../tests/test_research_job_tools.py)
+Contract tests for background research jobs. `test_research_jobs.py` covers `ResearchJobs` and `InMemoryJobStore` with `FakeResearcher` and `FakeClock` from [tests/research_fakes.py](../tests/research_fakes.py): completed and running results, job names, progress forwarding and last-message storage, failures, unknown ids, store-only waiting, expiry, cancel and close. `test_research_job_tools.py` calls `web_research` and `web_research_status` through a FastMCP `Client`: completion, job then status, unknown job error, progress notifications, cancelling an abandoned first call (and keeping the job after an abandoned status call), and tool listing.
+
+### [tests/conftest.py](../tests/conftest.py)
+Stops the test session with setup instructions when the NLTK data used by the BM25 ranker is missing. Run tests with `NLTK_DATA="${XDG_CACHE_HOME:-$HOME/.cache}/nltk_data"` exported.
+
+### [tests/test_web_fetch_evaluation.py](../tests/test_web_fetch_evaluation.py)
+Contract tests for `load_cases` and `summarize` of the fetch evaluation script, including loading the shipped case files.
+
 ### [tests/test_llm_reranker.py](../tests/test_llm_reranker.py)
 Integration tests for `LlmReranker` with different model pairs and embedding fusion.
 
@@ -133,6 +157,11 @@ Integration tests for the DRACO LLM criterion judge against a real router model.
 DRACO benchmark (`perplexity-ai/draco`, Technology + Academic domains) for the deep-research agent behind `web_research`. Each rubric criterion is scored by an LLM judge (`RESEARCH_EVAL_MODEL`, falling back to `RESEARCH_INFER_MODEL`). Support package: [tests/evaluation/](../tests/evaluation/).
 
 **Run**: `uv run python tests/web_research_evaluation.py` from the repository root. Log and HTML report are written to `tmp/`.
+
+### [tests/web_fetch_evaluation.py](../tests/web_fetch_evaluation.py)
+Replays JSONL fetch cases through the production `fetch(url, query)` and prints failure counts (restricted domains are not failures) and mean response size versus the saved baseline. Cases: `tests/evaluation/data/fetch-cases-smoke.jsonl` (8, default) and `fetch-cases-baseline.jsonl` (279).
+
+**Run**: `uv run tests/web_fetch_evaluation.py --output tmp/fetch-smoke.jsonl [--cases tests/evaluation/data/fetch-cases-baseline.jsonl]`. Requires a reachable CDP browser (`BROWSER_CDP_URL`).
 
 ### [tests/vault_evaluation.py](../tests/vault_evaluation.py)
 Comprehensive evaluation test for vault search functionality measuring precision, recall, and F-score.

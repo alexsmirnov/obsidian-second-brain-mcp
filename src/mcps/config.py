@@ -54,6 +54,33 @@ class ServerConfig:
     research_fast_model: str = ""
     # used for reflection and final result generation
     research_infer_model: str = ""
+    # CDP endpoint used to render generic pages; empty or unreachable disables
+    # web_research.
+    browser_cdp_url: str = ""
+    # web_research waits this long for a job before returning its name; keep it
+    # below the MCP client timeout (30 s by default).
+    research_wait_seconds: float = 25.0
+    # Finished research jobs are dropped this long after their last update.
+    research_job_ttl_seconds: float = 3600.0
+    # Commercial unblocking provider for blocked (401/403/429), empty, timeout,
+    # or browser-unavailable pages: "scrape_do", "bright_data", or "" (disabled).
+    scraper_provider: str = ""
+    scrape_do_token: str = ""
+    bright_data_api_key: str = ""
+    bright_data_zone: str = ""
+    # Content filtering and fetch routing
+    # Router decision model (TypeSafe System One) for per-fragment relevance.
+    # Empty selects local lexical filtering.
+    decision_model: str = ""
+    # Hostnames (and their subdomains) fetch must never visit.
+    fetch_restricted_domains: tuple[str, ...] = ()
+    # Max parallel browser renders across all research branches.
+    fetch_concurrency: int = 2
+
+def _parse_restricted_domains(raw: str) -> tuple[str, ...]:
+    """Parse a comma-separated domain list into lowercase, trimmed entries."""
+    return tuple(domain.strip().lower() for domain in raw.split(",") if domain.strip())
+
 
 def create_config(
     prompts_dir: Path = Path("./prompts"),
@@ -117,7 +144,21 @@ def create_config(
         max_chunk_size=int(os.environ.get("MAX_CHUNK_SIZE") or 1000),
         min_score=float(os.environ.get("MIN_SCORE") or 0.0),
         google_api_key=os.environ.get("GOOGLE_API_KEY", ""),
-        google_search_id=os.environ.get("GOOGLE_SEARCH_ID", "")
+        google_search_id=os.environ.get("GOOGLE_SEARCH_ID", ""),
+        browser_cdp_url=os.environ.get("BROWSER_CDP_URL", ""),
+        research_wait_seconds=float(os.environ.get("RESEARCH_WAIT_SECONDS") or 25.0),
+        research_job_ttl_seconds=float(
+            os.environ.get("RESEARCH_JOB_TTL_SECONDS") or 3600.0
+        ),
+        scraper_provider=os.environ.get("SCRAPER_PROVIDER", ""),
+        scrape_do_token=os.environ.get("SCRAPE_DO_TOKEN", ""),
+        bright_data_api_key=os.environ.get("BRIGHT_DATA_API_KEY", ""),
+        bright_data_zone=os.environ.get("BRIGHT_DATA_ZONE", ""),
+        decision_model=os.environ.get("DECISION_MODEL", ""),
+        fetch_restricted_domains=_parse_restricted_domains(
+            os.environ.get("FETCH_RESTRICTED_DOMAINS", "")
+        ),
+        fetch_concurrency=int(os.environ.get("FETCH_CONCURRENCY") or 2),
     )
     validate_config(config)
     return config
@@ -155,6 +196,11 @@ def validate_config(config: ServerConfig) -> None:
             logger.warning(
                 "Web research models are configured but ROUTER_API_BASE is empty. "
                 "Web research will fail until a router URL is provided."
+            )
+        if config.decision_model:
+            logger.warning(
+                "DECISION_MODEL is configured but ROUTER_API_BASE is empty. "
+                "Fetch filtering will use lexical ranking."
             )
         if config.rag_embedding_model:
             logger.warning(

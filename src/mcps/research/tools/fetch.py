@@ -1,0 +1,246 @@
+"""Fetch tool composition: routing, restrictions, browser, fallback, filters."""
+
+from __future__ import annotations
+
+import logging
+from collections.abc import AsyncGenerator, Callable, Sequence
+from contextlib import asynccontextmanager
+from urllib.parse import urlparse
+
+import httpx
+
+from mcps.common.decisions import DecisionClient
+from mcps.config import ServerConfig
+from mcps.research.tools.arxiv import ArxivFetch, is_arxiv_url
+from mcps.research.tools.bm25_ranker import Bm25Ranker
+from mcps.research.tools.bright_data import BrightDataFetch
+from mcps.research.tools.browser import create_browser_fetch
+from mcps.research.tools.combinators import (
+    Blocked,
+    Fallback,
+    FilterChain,
+    Filtered,
+    FilterSelector,
+    Throttled,
+    Truncate,
+    UrlSelector,
+)
+from mcps.research.tools.common import valid_router_url
+from mcps.research.tools.decision_ranker import DecisionRanker
+from mcps.research.tools.default import HttpFetch
+from mcps.research.tools.filtering import Ranker, RelevanceFilter
+from mcps.research.tools.github import (
+    GitHubBlobFetch,
+    GitHubRepoFetch,
+    is_github_blob_url,
+    is_github_repo_url,
+)
+from mcps.research.tools.html_markdown import (
+    HtmlToMarkdown,
+    create_markdown_generator,
+    is_html,
+)
+from mcps.research.tools.markdown_chunker import MarkdownChunker
+from mcps.research.tools.models import Fetch, Filter
+from mcps.research.tools.scrape_do import ScrapeDoFetch
+from mcps.research.tools.wikipedia import (
+    WIKIPEDIA_HEADERS,
+    WikipediaFetch,
+    is_wikipedia_url,
+)
+
+__all__ = ["build_fetch_tool", "create_fetch", "create_page_filter"]
+
+logger = logging.getLogger(__name__)
+
+
+def _is_restricted(domains: Sequence[str]):
+    """Predicate: hostname equals or is a subdomain of a blocked domain."""
+
+    def matches(url: str) -> bool:
+        hostname = urlparse(url).hostname or ""
+        return any(
+            hostname == domain or hostname.endswith(f".{domain}")
+            for domain in domains
+        )
+
+    return matches
+
+
+def _is_pdf_url(url: str) -> bool:
+    return urlparse(url).path.lower().endswith(".pdf")
+
+
+def create_fetch(
+    *,
+    http_client: httpx.AsyncClient,
+    browser: Fetch | None = None,
+    provider: Fetch | None = None,
+    page_filter: Filter,
+    restricted_domains: Sequence[str] = (),
+    concurrency: int = 2,
+    max_chars: int = 15000,
+) -> Fetch:
+    """Compose the page fetch returning query-relevant Markdown.
+
+    A restricted host is refused without I/O. GitHub, arXiv and Wikipedia use
+    their specialized fetcher and never fall back. ``.pdf`` and (when no browser is
+    available) every other URL use the httpx extractor; all remaining URLs are
+    rendered in the browser, at most ``concurrency`` at a time. A blocked,
+    empty, timed-out, or unavailable generic result escalates once to
+    ``provider`` when configured. Every successful source is converted to
+    Markdown when HTML, passed through ``page_filter`` and truncated to
+    ``max_chars``.
+    """
+    http = HttpFetch(http_client)
+    wikipedia_http = HttpFetch(http_client, WIKIPEDIA_HEADERS)
+    generic: Fetch = Throttled(browser, concurrency) if browser else http
+    generic = UrlSelector([(_is_pdf_url, http)], default=generic)
+    if provider is not None:
+        generic = Fallback(generic, provider)
+
+    routed = UrlSelector(
+        [
+            (_is_restricted(restricted_domains), Blocked()),
+            (is_arxiv_url, ArxivFetch(http)),
+            (is_github_blob_url, GitHubBlobFetch(http)),
+            (is_github_repo_url, GitHubRepoFetch(http)),
+            (is_wikipedia_url, WikipediaFetch(wikipedia_http)),
+        ],
+        default=generic,
+    )
+    to_markdown = FilterSelector(
+        [(is_html, HtmlToMarkdown(create_markdown_generator()))]
+    )
+    return Filtered(
+        routed, FilterChain(to_markdown, page_filter, Truncate(max_chars))
+    )
+
+
+def _create_provider_fallback(
+    config: ServerConfig, http_client: httpx.AsyncClient
+) -> Fetch | None:
+    """Build the commercial unblocking provider, or None when unconfigured."""
+    match config.scraper_provider:
+        case "":
+            return None
+        case "scrape_do" if config.scrape_do_token:
+            return ScrapeDoFetch(
+                config.scrape_do_token,
+                http_client=http_client,
+            )
+        case "bright_data" if config.bright_data_api_key and config.bright_data_zone:
+            return BrightDataFetch(
+                config.bright_data_api_key,
+                config.bright_data_zone,
+                http_client=http_client,
+            )
+        case "scrape_do" | "bright_data":
+            logger.warning(
+                "SCRAPER_PROVIDER=%s is missing credentials; provider fallback "
+                "disabled.",
+                config.scraper_provider,
+            )
+        case _:
+            logger.warning(
+                "Unknown SCRAPER_PROVIDER=%s (expected scrape_do or bright_data); "
+                "provider fallback disabled.",
+                config.scraper_provider,
+            )
+    return None
+
+
+RankerBuilder = Callable[[ServerConfig, httpx.AsyncClient], Ranker]
+
+# Chunker (max_chars, overlap_chars) per ranker. BM25 scores short windows so
+# boilerplate lands in fragments of its own; the decision ranker pays one
+# model call per window. Tuning: tasks/relevance-experiments-generated.md.
+BM25_WINDOW = (300, 0)
+BM25_THRESHOLD = 0.0
+BM25_RELATIVE_CUTOFF = 0.075
+BM25_SMOOTHING = 0.2
+DECISION_WINDOW = (5000, 1500)
+
+
+def _decision_configured(config: ServerConfig) -> bool:
+    """True when DECISION_MODEL and a valid router URL are set."""
+    if not config.decision_model:
+        return False
+    if valid_router_url(config.router_api_base):
+        return True
+    logger.warning(
+        "DECISION_MODEL=%s requires a valid router URL; "
+        "falling back to the next ranker.",
+        config.decision_model,
+    )
+    return False
+
+
+def _decision_ranker(config: ServerConfig, http_client: httpx.AsyncClient) -> Ranker:
+    client = DecisionClient(
+        http_client,
+        router_url=config.router_api_base,
+        router_key=config.router_api_key,
+        model=config.decision_model,
+    )
+    return DecisionRanker(client)
+
+
+def _bm25_ranker(config: ServerConfig, http_client: httpx.AsyncClient) -> Ranker:
+    return Bm25Ranker(
+        threshold=BM25_THRESHOLD,
+        relative_cutoff=BM25_RELATIVE_CUTOFF,
+        smoothing=BM25_SMOOTHING,
+    )
+
+
+# Ordered registry: the first entry whose predicate holds builds the ranker.
+# To add an implementation, append an entry before the BM25 catch-all.
+_RANKERS: tuple[
+    tuple[Callable[[ServerConfig], bool], RankerBuilder, tuple[int, int]], ...
+] = (
+    (_decision_configured, _decision_ranker, DECISION_WINDOW),
+    (lambda _: True, _bm25_ranker, BM25_WINDOW),
+)
+
+
+def create_page_filter(
+    config: ServerConfig, http_client: httpx.AsyncClient
+) -> RelevanceFilter:
+    """Build the first ranker whose predicate holds for ``config`` and its chunker."""
+    for is_configured, build, (max_chars, overlap_chars) in _RANKERS:
+        if is_configured(config):
+            return RelevanceFilter(
+                MarkdownChunker(max_chars=max_chars, overlap_chars=overlap_chars),
+                build(config, http_client),
+            )
+    raise AssertionError("ranker registry lacks a catch-all entry")
+
+
+@asynccontextmanager
+async def build_fetch_tool(
+    config: ServerConfig,
+    http_client: httpx.AsyncClient,
+    *,
+    require_browser: bool = False,
+) -> AsyncGenerator[Fetch | None]:
+    """Compose the page fetch for ``config`` for the duration of the context.
+
+    Owns the browser lifecycle (see :func:`create_browser_fetch`) so the caller
+    only enters a single context manager. With ``require_browser`` the context
+    yields ``None`` when no browser is available; otherwise it falls back to
+    plain httpx for generic pages. The supplied ``http_client`` is borrowed and
+    never closed here.
+    """
+    async with create_browser_fetch(config) as browser:
+        if browser is None and require_browser:
+            yield None
+            return
+        yield create_fetch(
+            http_client=http_client,
+            browser=browser,
+            provider=_create_provider_fallback(config, http_client),
+            page_filter=create_page_filter(config, http_client),
+            restricted_domains=config.fetch_restricted_domains,
+            concurrency=config.fetch_concurrency,
+        )

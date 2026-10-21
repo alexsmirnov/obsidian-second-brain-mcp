@@ -199,14 +199,81 @@ Google Custom Search API key. Required only when using Google instead of DuckDuc
 **Type**: str
 **Default**: `""`
 **Environment**: `GOOGLE_API_KEY`
-**Used by**: [src/mcps/config.py:103](../src/mcps/config.py#L103), [src/mcps/research/tools.py](../src/mcps/research/tools.py)
+**Used by**: [src/mcps/config.py](../src/mcps/config.py), [src/mcps/research/tools/google.py](../src/mcps/research/tools/google.py)
 
 #### `google_search_id` #config
 Google Custom Search Engine ID. Required only when `GOOGLE_API_KEY` is set.
 **Type**: str
 **Default**: `""`
 **Environment**: `GOOGLE_SEARCH_ID`
-**Used by**: [src/mcps/config.py:104](../src/mcps/config.py#L104), [src/mcps/research/tools.py](../src/mcps/research/tools.py)
+**Used by**: [src/mcps/config.py](../src/mcps/config.py), [src/mcps/research/tools/google.py](../src/mcps/research/tools/google.py)
+
+### Web Fetch
+
+`fetch(url, query)` returns a `FetchResult` (see [Packages & Modules](packages_modules.md)). Routing: restricted domains return status `RESTRICTED` without I/O; GitHub and arXiv use specialized fetchers (no fallback); `.pdf` paths use the httpx + PyMuPDF extractor; all other URLs render in the CDP browser via crawl4ai. Sources reach the filter natively: HTML is rendered once to Markdown, Markdown keeps its source structure, and other textual types (including raw PDF text) stay plain. A nonblank query selects source passages and resolves web links absolutely. It uses local BM25L by default, or per-fragment router decision scores when `DECISION_MODEL` is set. Selection units are windows that target 300 characters with no overlap for BM25L, and 5,000 characters with a 1,500-character overlap for decision scores. Each cut moves up to a tenth of the window size to the nearest H1-H6 heading or the line after a blank line. BM25L blends each window score with its neighbors (weight 0.2) and keeps matching windows that score at least 0.075 of the best window on the page. A window holds the exact source slice, so blank lines stay in place. Local selection ranks matching windows by score and keeps the best ones that fit the 15,000-char output budget, in source order; when matching windows are dropped the result ends with `[Content truncated]`. A blank query keeps the prepared whole document without any model call. The result is truncated to 15,000 chars at a safe Markdown/word boundary. When the browser or PDF result is 401/403/429, empty, timeout, or browser-unavailable, the configured `SCRAPER_PROVIDER` is used; if the provider is unavailable the original result is kept.
+
+#### `browser_cdp_url` #config
+CDP endpoint of a running browser (e.g. `ws://127.0.0.1:9222`). Must be unauthenticated. The browser runs outside the server (Obscura service in docker compose). If unset or unreachable at startup, only the `web_research` tool is disabled.
+**Type**: str
+**Default**: `""`
+**Environment**: `BROWSER_CDP_URL`
+**Used by**: [src/mcps/research/tools/fetch.py](../src/mcps/research/tools/fetch.py), [src/mcps/research/tools/browser.py](../src/mcps/research/tools/browser.py)
+
+#### `research_wait_seconds` #config
+How long `web_research` and `web_research_status` wait for a research job before they return its current state. Keep it below the MCP client timeout (30 s by default).
+**Type**: float
+**Default**: `25.0`
+**Environment**: `RESEARCH_WAIT_SECONDS`
+**Used by**: [src/mcps/research/lifespan.py](../src/mcps/research/lifespan.py)
+
+#### `research_job_ttl_seconds` #config
+How long a finished research job stays readable after its last update.
+**Type**: float
+**Default**: `3600.0`
+**Environment**: `RESEARCH_JOB_TTL_SECONDS`
+**Used by**: [src/mcps/research/lifespan.py](../src/mcps/research/lifespan.py)
+
+#### `scraper_provider` #config
+Commercial unblocking provider used for blocked, empty, timed-out, or browser-unavailable pages: `scrape_do`, `bright_data`, or empty.
+**Type**: str
+**Default**: `""` (disabled)
+**Environment**: `SCRAPER_PROVIDER`
+**Used by**: [src/mcps/research/tools/fetch.py](../src/mcps/research/tools/fetch.py)
+
+#### `scrape_do_token` #config
+Scrape.do API token. Required when `SCRAPER_PROVIDER=scrape_do`.
+**Type**: str
+**Default**: `""`
+**Environment**: `SCRAPE_DO_TOKEN`
+**Used by**: [src/mcps/research/tools/scrape_do.py](../src/mcps/research/tools/scrape_do.py)
+
+#### `bright_data_api_key`, `bright_data_zone` #config
+Bright Data API key and Web Unlocker zone name. Both required when `SCRAPER_PROVIDER=bright_data`.
+**Type**: str
+**Default**: `""`
+**Environment**: `BRIGHT_DATA_API_KEY`, `BRIGHT_DATA_ZONE`
+**Used by**: [src/mcps/research/tools/bright_data.py](../src/mcps/research/tools/bright_data.py)
+
+#### `decision_model` #config
+Router decision model (TypeSafe System One, for example `jev-latest`) that scores each fragment with one yes/no question: "does the passage help answer the query?". Fragments with a probability of at least 0.6 are kept, in source order. It needs a valid router URL. Without one, `create_page_filter` logs a startup warning and uses lexical filtering. Requests go to `POST /v1/systemone` on the router root, with `ROUTER_API_KEY` as the bearer token when set. Any decision failure returns `FILTER_FAILED` and never falls back to lexical output.
+**Type**: str
+**Default**: `""`
+**Environment**: `DECISION_MODEL`
+**Used by**: [src/mcps/research/tools/fetch.py](../src/mcps/research/tools/fetch.py), [src/mcps/research/tools/decision_ranker.py](../src/mcps/research/tools/decision_ranker.py), [src/mcps/common/decisions/client.py](../src/mcps/common/decisions/client.py)
+
+#### `fetch_restricted_domains` #config
+Comma-separated hostnames; the hostname itself and its subdomains are never fetched (status `RESTRICTED`).
+**Type**: tuple[str, ...]
+**Default**: `()`
+**Environment**: `FETCH_RESTRICTED_DOMAINS`
+**Used by**: [src/mcps/research/tools/fetch.py](../src/mcps/research/tools/fetch.py)
+
+#### `fetch_concurrency` #config
+Maximum concurrent browser fetches across all research branches.
+**Type**: int
+**Default**: `2`
+**Environment**: `FETCH_CONCURRENCY`
+**Used by**: [src/mcps/research/tools/fetch.py](../src/mcps/research/tools/fetch.py)
 
 ## Environment File Loading
 

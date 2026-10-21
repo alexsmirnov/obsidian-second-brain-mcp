@@ -4,7 +4,7 @@ import httpx
 import pyarrow as pa
 from lancedb.rerankers import Reranker, RRFReranker
 
-logger = logging.getLogger(__file__)
+logger = logging.getLogger(__name__)
 
 FALLBACK = RRFReranker(return_score="relevance")
 

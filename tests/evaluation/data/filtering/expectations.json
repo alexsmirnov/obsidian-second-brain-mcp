@@ -1,0 +1,506 @@
+{
+  "baseline-001": {
+    "file": "baseline-001.md",
+    "mime": "text/markdown",
+    "relevant": [
+      "this estimator can be biased for the ATT when there is treatment effect heterogeneity over time since treatment",
+      "They highlight that the estimators differ in which units they use when forming the comparison group",
+      "trade-offs between efficiency and the strength of the corresponding parallel trends assumption",
+      "when there are concerns about the validity of the parallel trends assumption over longer time periods",
+      "Larger breakdown values indicate more robustness of the analysis to violations of the conditional parallel trends",
+      "Although this assumption can be relaxed to allow for some anticipation behaviour"
+    ],
+    "irrelevant": [
+      "Department of Health Services Research and Policy, London School of Hygiene and Tropical Medicine",
+      "K.E. was funded by the National Institute for Health and Care Research",
+      "Physicians under pressure: Evidence from antibiotics prescribing in England",
+      "How is primary care access changing? A retrospective, repeated cross-sectional study of patient-initiated demand",
+      "Oxford University Press is a department of the University of Oxford"
+    ]
+  },
+  "baseline-003": {
+    "file": "baseline-003.md",
+    "mime": "text/markdown",
+    "relevant": [
+      "it adjusts the path of outcomes for newly treated units by the path of outcomes for already treated units",
+      "it is possible to come up with examples where the effect of participating in the treatment is positive for all units",
+      "Unfortunately, this robustness to treatment effect heterogeneity does not continue to hold",
+      "this assumption does restrict some pre-treatment trends across different groups",
+      "you can estimate the ATT(g,t)'s using outcome-regressions, inverse probability weighting, or doubly-robust methods",
+      "a natural way to aggregate the group-time average treatment effect to highlight treatment effect dynamics"
+    ],
+    "irrelevant": [
+      "Revisiting Event Study Designs: Robust and Efficient Estimation",
+      "Journal of the Association of Environmental and Resource Economists, Vol. 8, No. 2",
+      "American Economic Review 110.9 (2020): 2964-96.",
+      "This vignette has covered basic background issues on DiD with multiple periods.",
+      "A vignette for how to use the `did` package is available"
+    ]
+  },
+  "baseline-015": {
+    "file": "baseline-015.txt",
+    "mime": "text/plain",
+    "relevant": [
+      "advances in econometric theory show that such designs are likely to be biased in the presence",
+      "opposite sign compared to the true ATE or ATT, even when the researcher is able to randomize",
+      "average treatment eﬀects,” and proposes a two-step estimation strategy with a bootstrap procedure",
+      "indicators may be biased, because the weights assigned to the diﬀerent CATTs need not be positive",
+      "estimate each CATTg,k, which they call an “interaction-weighted” (IW) estimator. The DiD using",
+      "comparison units are those that are never-treated (or the last treated group, which is then never"
+    ],
+    "irrelevant": [
+      "Funding for this research was provided in part by Harvard Business School.",
+      "We thank David Childers, Andrew Goodman-Bacon, Kirill Borusyak, Pamela Jakiela, Pedro Sant’Ana (discussant),",
+      "Biden, J. (2016). How Short-Termism Saps the Economy. Wall Street Journal, September 27,",
+      "Karpoﬀ, J. M. and M. D. Wittry (2018). Institutional and Legal Context in Natural Experiments:",
+      "Fried, J. M. and C. C. Y. Wang (2019). Short-Termism and Capital Flows. Review of Corporate",
+      "the Glenn and Mary Jane Creamer Associate Professor of Business Administration at Harvard Business School."
+    ]
+  },
+  "baseline-019": {
+    "file": "baseline-019.md",
+    "mime": "text/markdown",
+    "relevant": [
+      "It is tailored for staggered adoption design and relaxes the parallel trend assumption",
+      "imputing potential outcomes using observed untreated responses within a fixed effect model framework",
+      "weighted Average Treatment Effect on the Treated in scenarios featuring heterogeneous causal effects",
+      "assuming parallel trends and the absence of anticipation effects",
+      "methods such as DiD and DiD Imputation, which rely on this assumption, fail to accurately estimate treatment effect"
+    ],
+    "irrelevant": [
+      "arXiv is now an independent nonprofit!",
+      "Interrupted time series analysis using autoregressive integrated moving average (arima) models",
+      "The tree prior put a strong regularization on tree depth",
+      "XBART generates entirely new trees with each iteration",
+      "An evaluation of the swedish system of active labor market programs in the 1990s"
+    ]
+  },
+  "baseline-027": {
+    "file": "baseline-027.md",
+    "mime": "text/markdown",
+    "relevant": [
+      "This paper synthesizes recent advances in the econometrics of difference-in-differences (DiD)",
+      "articulating a simple set of “canonical” assumptions under which the econometrics of DiD are well-understood",
+      "recent advances in DiD methods can be broadly classified as relaxing some components of the canonical DiD setup",
+      "with a focus on (i) multiple periods and variation in treatment timing,(i i) potential violations of parallel trends",
+      "(i i i) alternative frameworks for inference",
+      "helps to clarify when each of the papers will be relevant for empirical work"
+    ],
+    "irrelevant": [
+      "The system can't perform the operation now. Try again later.",
+      "J Roth, PHC Sant'Anna, A Bilinski, J Poe - Preprint posted January, 2022",
+      "J Roth, PHC Sant'Anna, A Bilinski, J Poe - arXiv preprint arxiv.2201.01194, 2022",
+      "J Roth, PH Sant'Anna, A Bilinski, J Poe - arXiv preprint arXiv:2201.01194"
+    ]
+  },
+  "baseline-037": {
+    "file": "baseline-037.md",
+    "mime": "text/markdown",
+    "relevant": [
+      "# Pretest with Caution: Event-Study Estimates after Testing for Parallel Trends",
+      "First, conventional pre-trends tests may have low power.",
+      "conditioning the analysis on the result of a pretest can distort estimation and inference",
+      "potentially exacerbating the bias of point estimates and under-coverage of confidence intervals",
+      "simulations calibrated to a survey of recent papers in leading economics journals",
+      "Handle: _RePEc:aea:aerins:v:4:y:2022:i:3:p:305-22_ DOI: 10.1257/aeri.20210236"
+    ],
+    "irrelevant": [
+      "Economics Virtual Seminar Calendar",
+      "If you have authored this item and are not yet registered with RePEc, we encourage you to do it",
+      "Please note that corrections may take a couple of weeks to filter through the various RePEc services.",
+      "Who was a student of whom, using RePEc",
+      "RePEc uses bibliographic data supplied by the respective publishers."
+    ]
+  },
+  "baseline-038": {
+    "file": "baseline-038.md",
+    "mime": "text/markdown",
+    "relevant": [
+      "# Designing Difference in Difference Studies With Staggered Treatment Adoption: Key Concepts and Practical Guidelines",
+      "A growing methods literature points out potential problems with DID estimators when treatment is staggered in adoption and varies with time.",
+      "We draw insights by comparing the simple 2 × 2 DID design (single treatment group, single control group, two time periods)",
+      "relying on a decomposition that shows how the more complex DID are an average of simpler 2X2 DID sub-experiments.",
+      "Despite this, no practical guide exists for addressing these new critiques in public health research.",
+      "When Can We Use Two-Way Fixed-Effects (TWFE): A Comparison of TWFE and Novel Dynamic Difference-in-Differences Estimators"
+    ],
+    "irrelevant": [
+      "Krause, Thomas & Sfrappini, Eleonora & Tonzer, Lena & Zgherea, Cristina, 2025.",
+      "All material on this site has been provided by the respective publishers and authors.",
+      "We have no bibliographic references for this item. You can help adding them by using",
+      "For technical questions regarding this item, or to correct its authors, title, abstract, bibliographic or download information",
+      "Please note that corrections may take a couple of weeks to filter through the various RePEc services."
+    ]
+  },
+  "baseline-046": {
+    "file": "baseline-046.md",
+    "mime": "text/markdown",
+    "relevant": [
+      "pre-trends test, we can calculate its ex ante power: how big would a",
+      "minimal detectable effect (MDE) size commonly reported for RCTs.",
+      "approach imposes that the post-treatment violations of parallel trends",
+      "forms confidence intervals for the treatment effect that take into",
+      "can accommodate an event-study from any asymptotically normal estimator,",
+      "column is that if we only analyze our event-study conditional on not"
+    ],
+    "irrelevant": [
+      "You can install the released version of pretrends from Github using the",
+      "If you’re not an R user, you may also be interested in the associated",
+      "(Please cite the paper if you enjoy the package!)",
+      "We first load the pretrends package."
+    ]
+  },
+  "baseline-065": {
+    "file": "baseline-065.md",
+    "mime": "text/markdown",
+    "relevant": [
+      "Their `HonestDiD` package converts hypotheses about post-treatment trend deviations into confidence sets for the causal target.",
+      "Confidence sets remain valid even when parallel trends is violated within a researcher-specified amount.",
+      "`HonestDiD` implements this with fixed-length and conditional-FLCI procedures",
+      "Honest CIs are wider; the gap quantifies the price of robustness.",
+      "Assumes the chosen restriction class plausibly contains the true trend.",
+      "The breakdown value is the smallest restriction parameter at which the honest confidence set first includes zero"
+    ],
+    "irrelevant": [
+      "staggered_panel  mtcars  iris  airquality  ToothGrowth  PlantGrowth  ChickWeight  CO2  sleep  faithful  women",
+      "Using this calculator in research or coursework? Cite it like this:",
+      "MetricGate. (2026). Rambachan-Roth (2023) Honest DiD Inference Explained Calculator [Web application].",
+      "Stop struggling with complex R code or clunky software. Launch our blazing-fast, AI-powered calculator directly in your browser."
+    ]
+  },
+  "baseline-072": {
+    "file": "baseline-072.md",
+    "mime": "text/markdown",
+    "relevant": [
+      "We investigate difference-in-differences estimation under staggered adoptions.",
+      "imposing these restrictions in an ad hoc way could reintroduce bias if the wrong restrictions are imposed",
+      "To the best of our knowledge, this is the first work establishing the consistency of a difference-in-differences estimator",
+      "the asymptotic variance of its estimates depend only on the parameters of the smaller restricted model",
+      "This requires that before treatment, in conditional expectation each individual’s expected outcome is identical",
+      "it selects appropriate restrictions automatically rather than relying on hand-selected restrictions, which could be biased."
+    ],
+    "irrelevant": [
+      "Gregory Faletto ††thanks: gregory.faletto@marshall.usc.edu Affiliation: University of Southern California",
+      "I thank Jacob Bien for very helpful discussions that shaped the direction of this work and edits to an early draft.",
+      "This work was supported by the University of Southern California.",
+      "Abadie [2005] A. Abadie.  Semiparametric difference-in-differences estimators.",
+      "Abadie and Imbens [2006] A. Abadie and G. W. Imbens.  Large sample properties of matching estimators"
+    ]
+  },
+  "baseline-079": {
+    "file": "baseline-079.md",
+    "mime": "text/markdown",
+    "relevant": [
+      "However, Recall, mAP50, mAP, and decreased by 1.199, 0.263, 0.232, and 0.387 percentage points, respectively",
+      "the model file size decreased from 19.2 MB to 11.9 MB, corresponding to a reduction of approximately 38.0%",
+      "the selected YOLOv11s model was applied to an unlabeled Raw-Subset of approximately 800 images to generate pseudo-labels",
+      "EPR-YOLO achieves an mAP50 of 71.654%, improving the YOLOv11s baseline by 0.854 percentage points",
+      "Independent test results show that quantization introduces only limited performance degradation"
+    ],
+    "irrelevant": [
+      "Multiple requests from the same IP address are counted as one view.",
+      "This research received no external funding.",
+      "Department of Crop and Soil Sciences, College of Agriculture and Environmental Sciences, University of Georgia",
+      "The authors declare no conflicts of interest.",
+      "Licensee MDPI, Basel, Switzerland. This article is an open access article distributed under the terms",
+      "the authors used ChatGPT 5.6 (OpenAI) solely for English language polishing and improving grammatical clarity"
+    ]
+  },
+  "baseline-080": {
+    "file": "baseline-080.md",
+    "mime": "text/markdown",
+    "relevant": [
+      "If you choose, Amazon SageMaker Ground Truth can use active learning to automate the labeling of your input data for certain built-in task types.",
+      "Typically, as you provide more data, the potential for high accuracy predictions goes up.",
+      "Before you use an the automated-labeling model in production, you need to fine-tune or test it, or both.",
+      "Ground Truth selects data points with low confidence scores from this dataset and sends them to human workers.",
+      "Ground Truth uses logic to find a label-prediction confidence level that corresponds to at least 95% label accuracy.",
+      "For semantic segmentation, the expected mean IoU of the auto-labeled images is 0.7."
+    ],
+    "irrelevant": [
+      "We use essential cookies and similar tools that are necessary to provide our site and services.",
+      "Advertising cookies may be set through our site by us or our advertising partners and help us deliver relevant marketing content.",
+      "You may review and change your choices at any time by selecting Cookie preferences in the footer of this site.",
+      "We will only store essential cookies at this time, because we were unable to save your cookie preferences.",
+      "Up-to-date AWS docs, tested procedures, and IAM guardrails via a single setup prompt in your AI coding agent."
+    ]
+  },
+  "baseline-091": {
+    "file": "baseline-091.md",
+    "mime": "text/markdown",
+    "relevant": [
+      "benchmarking against MedViTV2 deployed on the NVIDIA Jetson Orin Nano with custom CUDA kernels optimized for performance.",
+      "Profiling the linear layers in BiTMedViT as shown in Figure shows a 4.9 to 39 reduction in weight traffic",
+      "On the Orin Nano, TensorRT had limited support for dynamic INT8 activations and would upcast them to FP16 at the plugin boundary.",
+      "BiTMedViT achieves 16.88 ms latency per inference versus 366.63 ms for the MedViTv2-L baseline (21.7 faster).",
+      "enabling 16.8 ms inference at an energy efficiency up to 41 that of SOTA models at 183.62 GOPs/J on the Orin Nano",
+      "Jetson Orin Nano Power Versus Time for the Ternary Precision (TP) BitMedVit(Ours) and Full precision (FP) MedVitV2-L teacher"
+    ],
+    "irrelevant": [
+      "Affiliation: Department of Electrical and Computer Engineering Johns Hopkins University",
+      "An image is worth 16x16 words: Transformers for image recognition at scale.",
+      "Grad-cam: Visual explanations from deep networks via gradient-based localization.",
+      "A distillation approach to transformer-based medical image classification with limited data.",
+      "Ai chatbots, health privacy, and challenges to hipaa compliance."
+    ]
+  },
+  "baseline-138": {
+    "file": "baseline-138.md",
+    "mime": "text/markdown",
+    "relevant": [
+      "INT8 quantization fails with error in title on Jetson AGX Orin in latest JetPack 6.0 container.",
+      "I also tried this previously on JetPack 5.1.2 and it failed with the same issue so I tried the latest version of TensorRT 8.6.2.",
+      "so aarch64 not x86 and JetPack 6.0 is the latest for at least half a year probably more",
+      "[01/29/2024-20:52:47] [TRT] [E] 10: Could not find any implementation for node /model.0/conv/Conv",
+      "Missing scale and zero-point for tensor /model.22/dfl/Softmax_output_0, expect fall back to non-int8 implementation"
+    ],
+    "irrelevant": [
+      "Details ONNX: starting export with onnx 1.16.0 opset 17",
+      "Here is a reproducible example. Run 'python3 reproducible_int8_exporter.py'.",
+      "Sorry for the late reply, I'm checking internally.",
+      "closing since no activity for more than 3 weeks, pls reopen if you still have question. Thanks!"
+    ]
+  },
+  "baseline-140": {
+    "file": "baseline-140.md",
+    "mime": "text/markdown",
+    "relevant": [
+      "Fine-tuning the LPD model on the OpenALPR dataset using TAO Toolkit achieves 82.28% average precision",
+      "Fine-tuning the LPR model with a pretrained ResNet18 backbone reaches 90.90% validation accuracy in 24 epochs",
+      "In the first phase, the network is trained with regularization to facilitate pruning.",
+      "To run inference using INT8 precision, you can also generate an INT8 calibration table in the model export step.",
+      "The pretrained model provides a great starting point for training and fine-tuning on your own dataset.",
+      "The following table just shows the inference throughput in frames per seconds (FPS) of the US LPD pruned model"
+    ],
+    "irrelevant": [
+      "Powered by NVIDIA Nemotron. AI-generated content may summarize information incompletely. Verify important information.",
+      "Yue Zhu is a senior system software engineer at NVIDIA, focusing on perception algorithms development for automotive driving",
+      "Fei Chen is a senior system software engineer at NVIDIA, focusing on DeepStream and multimedia software for intelligent video analytics.",
+      "These cookies enable core functionality such as security, network management, and accessibility.",
+      "We and our third-party partners (including social media, advertising, and analytics partners) use cookies and other tracking technologies"
+    ]
+  },
+  "baseline-143": {
+    "file": "baseline-143.md",
+    "mime": "text/markdown",
+    "relevant": [
+      "TensorRT 11.X is now released with powerful new capabilities designed to accelerate your AI inference workflows.",
+      "Weakly-typed networks and related APIs have been removed, replaced by",
+      "Implicit quantization and related APIs have been removed, replaced by",
+      "It includes the sources for TensorRT plugins and ONNX parser, as well as sample applications demonstrating usage and capabilities",
+      "cross-compile for Jetson (aarch64) with cuda-13.4 (JetPack SDK)",
+      "Example: Native build on Jetson Thor (aarch64) with cuda-13.4"
+    ],
+    "irrelevant": [
+      "Need enterprise support? NVIDIA global support is available for TensorRT with the",
+      "stay current on the latest product updates, bug fixes, content, best practices, and more.",
+      "For press and other inquiries, please contact Hector Marinez at",
+      "`sudo` password for Ubuntu build containers is 'nvidia'.",
+      "Write permission to this folder is required as this folder will be mounted inside the docker container"
+    ]
+  },
+  "baseline-159": {
+    "file": "baseline-159.md",
+    "mime": "text/markdown",
+    "relevant": [
+      "UQ-ViT: Harmonizing Extreme Activations with Hardware-Friendly Uniform Quantization in Vision Transformers",
+      "BOFA: Bridge-Layer Orthogonal Low-Rank Fusion for CLIP-Based Class-Incremental Learning",
+      "HiCL: Hippocampal-Inspired Continual Learning",
+      "Stratified Knowledge-Density Super-Network for Scalable Vision Transformers"
+    ],
+    "irrelevant": [
+      "DANS-KGC: Diffusion Based Adaptive Negative Sampling for Knowledge Graph Completion",
+      "Transformers in Pseudo-Random Number Generation: A Dual Perspective on Theory and Practice",
+      "Dormant Backdoor: Weaponizing Model Finetuning for Feasible Backdoor Attacks Against Pretrained Models",
+      "Robust Detection of Synthetic Tabular Data Under Schema Variability",
+      "601 Pennsylvania Ave, NW, Suite 900, Washington, DC 20004All Rights Reserved"
+    ]
+  },
+  "baseline-162": {
+    "file": "baseline-162.md",
+    "mime": "text/markdown",
+    "relevant": [
+      "I see no speed improvements when testing fp16 and the best flag, in fact I consistently see a very slight performance degradation.",
+      "considering the model is compute bound and Jetson is an Ampere Chip, I am focussing on INT8 and INT8_SQ calibration",
+      "Tested on 2 different setups, evirinment variables defined for both. I am using Jetpack 6.1 for the Jetson Orin 8Gb.",
+      "From these results it suggests that FP16 kernels have similar performance to INT8. This is true for a few model architectures",
+      "GPU compute time is unstable, with coefficient of variance = 9.52036%.",
+      "For Transformer-like network, please use ModelOpt to insert Q/DQ ops into the ONNX file to utilize INT8/FP8 perf improvements."
+    ],
+    "irrelevant": [
+      "Historical kludge: add a small number to avoid floating point error in the interpolation",
+      "Simply specify an output size instead of a scale factor",
+      "base_model = torch.hub.load('facebookresearch/dinov2', 'dinov2_vits14_reg')",
+      "torch.save(torch.randn(*INPUT_SIZE), folder / f\"dummy_{i}.pt\")"
+    ]
+  },
+  "baseline-172": {
+    "file": "baseline-172.md",
+    "mime": "text/markdown",
+    "relevant": [
+      "For combinatorial optimization problems no proven exponential speed up has ever been found.",
+      "The relative speed-up of the quantum algorithm is an open research question.",
+      "However, it is an open question whether this can be done in a feasible way.",
+      "A rigorous comparison of QAOA with classical algorithms can give estimates on depth",
+      "therefore, this does not establish a general exponential quantum advantage for low-rank SDPs",
+      "The goals of these approaches include overcoming hardware connectivity limitations"
+    ],
+    "irrelevant": [
+      "Implementation of the QAOA algorithm for the knapsack problem with Classiq",
+      "title = Quantum-inspired sublinear algorithm for solving low-rank semidefinite programming",
+      "the bit string 0101 represents a cover consisting of the second and fourth vertex",
+      "The fit's quality is measured by some criteria, usually the distance between the function and the data points.",
+      "title = Quantum SDP Solvers: Large Speed-ups, Optimality, and Applications to Quantum Learning"
+    ]
+  },
+  "baseline-192": {
+    "file": "baseline-192.md",
+    "mime": "text/markdown",
+    "relevant": [
+      "Up to this point, long distance quantum communication has been a challenge due to the fragile state of the quantum particles involved",
+      "Quantum Xchange is currently leading the way for quantum communications through",
+      "The enabling factor in the network is QuantumXchange’s Trusted Node technology, which extends the working distance of a QKD system beyond 100km",
+      "IDQ has effectively used their quantum random number generators (QRNG) to generate keys for security applications",
+      "IDQ, working with the United Kingdom’s Colt Technologies and Services Group, deployed a secure critical backbone link",
+      "Although several limitations with quantum encryption still need to be addressed, overcoming the distance limitation"
+    ],
+    "irrelevant": [
+      "We use cookies to enhance your browsing experience, serve personalized ads or content, and analyze our traffic.",
+      "These cookies do not store any personally identifiable data.",
+      "This cookie, set by Cloudflare, is used to support Cloudflare Bot Management.",
+      "GAO Quantum Computing Report: How to Close the Post-Quantum Cryptography Readiness Gap",
+      "Your PQC Migration Plan Is Due October 22: What OMB M-26-15 Requires",
+      "Have our experts show you how to meet EO 14412 and OMB M-26-15 on your existing network. Sponsored by Carahsoft."
+    ]
+  },
+  "baseline-196": {
+    "file": "baseline-196.md",
+    "mime": "text/markdown",
+    "relevant": [
+      "we explore the potential impact of quantum computing on the drug discovery and development pipeline",
+      "We identify and discuss specific classes of quantum chemistry problems that present challenges for classical computing methods",
+      "A hybrid quantum computing pipeline for real world drug discovery.",
+      "The Future of Drug Development with Quantum Computing.",
+      "Quantum computing for near-term applications in generative chemistry and drug discovery.",
+      "Quantum Computing Calculations of Protein-Ligand Binding Energies Using Decomposition Methods on Simulated and Real Quantum Hardware."
+    ],
+    "irrelevant": [
+      "Clipboard, Search History, and several other advanced features are temporarily unavailable.",
+      "Federal government websites often end in .gov or .mil.",
+      "Email address has not been verified.",
+      "Create a file for external citation management software",
+      "The PubMed wordmark and PubMed logo are registered trademarks of the U.S. Department of Health and Human Services (HHS).",
+      "Get the Latest Updates and FAQs on the transition"
+    ]
+  },
+  "baseline-210": {
+    "file": "baseline-210.md",
+    "mime": "text/markdown",
+    "relevant": [
+      "Quantum computing is poised to solve practically useful problems which are computationally intractable for classical supercomputers.",
+      "As such, real-time decoding is essential to realize fault-tolerant quantum computing and to achieve quantum advantage.",
+      "Recent advances in both quantum hardware and software fronts have brought the practical realization of quantum computing",
+      "However, there remain serious challenges which must be resolved before a practical quantum advantage can be realized.",
+      "the QEC-cycle times are usually in excess of many milliseconds",
+      "To date, all hardware demonstrations of QEC have fallen short of unambiguously achieving logical lifetimes better than physical lifetimes"
+    ],
+    "irrelevant": [
+      "We and our 3 partners use cookies and other tracking technologies to improve your experience on our website.",
+      "Please note that your choices apply across all our subdomains.",
+      "Any further distribution of this work must maintain attribution to the author(s) and the title of the work, journal citation and DOI.",
+      "Nanyang Technological University, Electrical and Electronic Engineering",
+      "Tenure-Track Professor in Materials Science and Mechanical Engineering"
+    ]
+  },
+  "baseline-245": {
+    "file": "baseline-245.md",
+    "mime": "text/markdown",
+    "relevant": [
+      "The RSA encryption system, for example, is based on multiplying two large prime numbers together.",
+      "quantum computers threaten to change this, breaking RSA completely while leaving lattice-based cryptography secure.",
+      "Shor’s algorithm, a quantum algorithm developed in 1994, is designed to find this period.",
+      "Unlike factoring, these problems don’t have a useful repeating structure for a quantum computer to exploit.",
+      "RSA is at risk in the quantum era because quantum algorithms like Shor’s can break it by factoring large numbers efficiently.",
+      "the best path forward is to adopt hybrid cryptographic mechanisms combining classical and post-quantum algorithms"
+    ],
+    "irrelevant": [
+      "The CA/Browser Forum has spent years crafting the Baseline Requirements, a Certificate Profile (CP) that tells",
+      "Since I have a strong understanding of both quantum mechanics and financial key management",
+      "Create your free account or sign in to continue your search",
+      "By clicking Continue to join or sign in, you agree to LinkedIn’s"
+    ]
+  },
+  "baseline-247": {
+    "file": "baseline-247.md",
+    "mime": "text/markdown",
+    "relevant": [
+      "Quantum computing offers new heuristics for combinatorial problems.",
+      "We show that the number of qubits needed for this mapping scales quadratically with the number of customers.",
+      "we simulate problem instances with up to 21 qubits, which corresponds to three customers and two trucks",
+      "We considered three distinct problems, requiring 11, 19, and 21 qubits, respectively",
+      "the basinhopping and differential-evolution algorithms seem well suited to optimize the variational parameters of the quantum circuit",
+      "the performance is not competitive with modern high-performance heuristics which can solve instances with more than 1,000 customers"
+    ],
+    "irrelevant": [
+      "We use essential cookies to make sure the site can function.",
+      "By accepting optional cookies, you consent to the processing of your personal data",
+      "This article is licensed under a Creative Commons Attribution 4.0 International License",
+      "Provided by the Springer Nature SharedIt content-sharing initiative",
+      "Get the most important science stories of the day, free in your inbox."
+    ]
+  },
+  "baseline-252": {
+    "file": "baseline-252.md",
+    "mime": "text/markdown",
+    "relevant": [
+      "we numerically investigate the practical implications of this scaling for CO problems",
+      "CO problems have many practically relevant applications in industry, such as supply chain optimization",
+      "For problem size 31, the VQE outperforms sampling on roughly 95% of instances",
+      "For size 31, VQE achieves a higher approximation ratio than the greedy algorithm on up to 75% of instances",
+      "we observed that randomly sampling solutions already yields high approximation ratios",
+      "At present, benchmarking VQAs in this way, as is common for state-of-the-art classical solvers, is not yet feasible"
+    ],
+    "irrelevant": [
+      "We use essential cookies to make sure the site can function.",
+      "Parallel circuit implementation of variational quantum algorithms",
+      "Quantum Approximate Optimization Algorithms in Combinatorial Problems",
+      "Gurobi Optimization LLC (2023) Gurobi Optimizer Reference Manual.",
+      "Springer Nature remains neutral with regard to jurisdictional claims in published maps and institutional affiliations."
+    ]
+  },
+  "baseline-262": {
+    "file": "baseline-262.md",
+    "mime": "text/markdown",
+    "relevant": [
+      "is a hybrid quantum-classical iterative method for solving combinatorial optimization problems",
+      "Combinatorial optimization also appears in sustainability challenges, such as planning delivery routes to reduce fuel use",
+      "The same pipeline handles weighted graphs and other QUBO-expressible problems without changing the rest of the workflow.",
+      "the quantum computer evaluates the cost function, and a classical optimizer updates the parameters until convergence",
+      "the true optimum is easy to brute-force, so you can double-check the results by comparing the QAOA result against the exact answer",
+      "You have access to many devices with over 100 qubits on IBM Quantum Platform."
+    ],
+    "irrelevant": [
+      "(NOTE: This is an estimate only. Your runtime might vary.)",
+      "Qiskit Runtime v0.22 or later (`pip install qiskit-ibm-runtime`)",
+      "from qiskit_addon_opt_mapper.converters import OptimizationProblemToQubo",
+      "We use this to vectorize expectation-value evaluation across all Pauli terms.",
+      "explores advanced strategies for improving QAOA performance"
+    ]
+  },
+  "baseline-263": {
+    "file": "baseline-263.md",
+    "mime": "text/markdown",
+    "relevant": [
+      "we investigate a problem of substantial commercial value, multi-truck vehicle routing for supply chain logistics",
+      "We test our methods using simulated annealing and the D-Wave Hybrid solver as a place-holder",
+      "demonstrate that the quantum annealer significantly outperforms classical methods in terms of runtime",
+      "real-time optimized solutions for use at the second largest container terminal at the Port of Los Angeles",
+      "weekly manual efforts for initial scheduling creation was reduced by ~80%"
+    ],
+    "irrelevant": [
+      "D-Wave Launches Gate-Model Simulator Beta Program",
+      "NEC reveals its plans to drive higher sustained performance using D-Wave’s quantum technologies",
+      "Computed tomography (CT) is an important imaging technique used in medical analysis",
+      "The HP model has favorable interactions between adjacent, not directly bound hydrophobic residues."
+    ]
+  }
+}

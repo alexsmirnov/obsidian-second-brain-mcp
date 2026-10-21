@@ -167,6 +167,15 @@ class TestValidateConfig:
         assert "ROUTER_API_BASE is empty" in caplog.text
         assert "Obsidian vault" in caplog.text
 
+    def test_warns_when_decision_model_without_router(self, caplog):
+        config = ServerConfig(decision_model="jev-latest")
+
+        with caplog.at_level("WARNING", logger="mcps.config"):
+            validate_config(config)
+
+        assert "DECISION_MODEL" in caplog.text
+        assert "ROUTER_API_BASE is empty" in caplog.text
+
     def test_warns_when_embedding_dimensions_missing(self, caplog):
         config = ServerConfig(
             router_api_base="http://localhost:4000",
@@ -279,3 +288,68 @@ class TestCreateConfigMinScore:
 
         assert "MIN_SCORE" in caplog.text
 
+
+class TestCreateConfigFetch:
+    def test_fetch_settings_defaults(self, monkeypatch):
+        monkeypatch.delenv("FETCH_RESTRICTED_DOMAINS", raising=False)
+        monkeypatch.delenv("FETCH_CONCURRENCY", raising=False)
+
+        config = create_config()
+
+        assert config.fetch_restricted_domains == ()
+        assert config.fetch_concurrency == 2
+
+    def test_fetch_settings_read_env_vars(self, monkeypatch):
+        monkeypatch.setenv("FETCH_RESTRICTED_DOMAINS", " A.com, b.org ,")
+        monkeypatch.setenv("FETCH_CONCURRENCY", "3")
+
+        config = create_config()
+
+        assert config.fetch_restricted_domains == ("a.com", "b.org")
+        assert config.fetch_concurrency == 3
+
+    def test_decision_model_defaults_to_empty_and_reads_env_var(self, monkeypatch):
+        monkeypatch.delenv("DECISION_MODEL", raising=False)
+        assert create_config().decision_model == ""
+
+        monkeypatch.setenv("DECISION_MODEL", "jev-latest")
+
+        assert create_config().decision_model == "jev-latest"
+
+    def test_empty_fetch_concurrency_env_var_falls_back_to_default(self, monkeypatch):
+        monkeypatch.setenv("FETCH_CONCURRENCY", "")
+
+        config = create_config()
+
+        assert config.fetch_concurrency == 2
+
+
+
+class TestCreateConfigResearchJobs:
+    def test_research_job_defaults_are_sane(self, monkeypatch):
+        monkeypatch.delenv("RESEARCH_WAIT_SECONDS", raising=False)
+        monkeypatch.delenv("RESEARCH_JOB_TTL_SECONDS", raising=False)
+
+        config = create_config()
+
+        # The wait must stay below the MCP client's default 30 s timeout.
+        assert 0 < config.research_wait_seconds < 30
+        assert config.research_job_ttl_seconds > config.research_wait_seconds
+
+    def test_research_job_settings_read_env_vars(self, monkeypatch):
+        monkeypatch.setenv("RESEARCH_WAIT_SECONDS", "7")
+        monkeypatch.setenv("RESEARCH_JOB_TTL_SECONDS", "60")
+
+        config = create_config()
+
+        assert config.research_wait_seconds == 7.0
+        assert config.research_job_ttl_seconds == 60.0
+
+    def test_empty_research_job_env_vars_fall_back_to_defaults(self, monkeypatch):
+        monkeypatch.setenv("RESEARCH_WAIT_SECONDS", "")
+        monkeypatch.setenv("RESEARCH_JOB_TTL_SECONDS", "")
+
+        config = create_config()
+
+        assert 0 < config.research_wait_seconds < 30
+        assert config.research_job_ttl_seconds > config.research_wait_seconds

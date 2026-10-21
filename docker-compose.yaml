@@ -1,0 +1,44 @@
+# Obscura CDP browser + MCP server fleet.
+#
+# The two services share one network namespace: Obscura binds CDP on
+# 127.0.0.1:9222 and the MCP container reaches it over loopback, so CDP is
+# never exposed outside the host. The MCP port is published on the browser
+# service because of `network_mode: service:browser`.
+services:
+  browser:
+    image: h4ckf0r0day/obscura:0.2.5
+    command: ["serve", "--stealth", "--allow-private-network","--quiet"]
+    environment:
+      - RUST_MIN_STACK=16777216
+    ports:
+      # - "127.0.0.1:9222:9222"
+      - "127.0.0.1:8000:8000"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "/obscura", "fetch", "http://localhost:9222/json/version", "--allow-private-network", "--dump", "original"]
+      interval: 60s
+      timeout: 15s
+      retries: 3
+      start_period: 5s
+
+  mcps:
+    build: .
+    network_mode: "service:browser"
+    depends_on:
+      browser:
+        condition: service_healthy
+    env_file:
+      - path: .env
+        required: true
+    environment:
+      BROWSER_CDP_URL: "ws://127.0.0.1:9222/devtools/browser"
+    volumes:
+      - "${HOST_VAULT}:/vault"
+    healthcheck:
+      # Native Python 3.13 script that checks the HTTP server status
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=2)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
