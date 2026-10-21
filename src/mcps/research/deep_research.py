@@ -114,7 +114,7 @@ _FINALIZE_PROMPT = """Write the final answer to the user's question using ONLY t
 class ResearchLimits:
     """Tunable bounds for one research run."""
 
-    round_start_budget: float = 300.0  # seconds since start; no new round after it
+    round_start_budget: float = 180.0  # seconds since start; no new round after it
     max_pages_per_round: int = 10
     max_initial_queries: int = 3
     max_follow_ups: int = 5  # independent limit for search_queries and for links

@@ -8,6 +8,7 @@ import httpx
 from fastmcp import Context, FastMCP
 from fastmcp.exceptions import ToolError
 from fastmcp.server.server import Transport
+from starlette.responses import PlainTextResponse
 
 # from mcp import ClientCapabilities, RootsCapability
 # from mcp.server.session import ServerSession
@@ -192,6 +193,11 @@ class DevAutomationServer:
             kwargs["host"] = host
         if port is not None:
             kwargs["port"] = port
+        if transport in {"http","sse","streamable-http"}:
+            @self.mcp.custom_route("/health", methods=["GET"])
+            async def health_check(request):
+                """Exposes a 200 OK endpoint for Kubernetes or load balancer probes."""
+                return PlainTextResponse("ok", status_code=200)
         await self.mcp.run_async(transport=transport, **kwargs)
 
 
