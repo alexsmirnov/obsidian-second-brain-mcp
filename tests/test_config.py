@@ -323,3 +323,33 @@ class TestCreateConfigFetch:
 
         assert config.fetch_concurrency == 2
 
+
+
+class TestCreateConfigResearchJobs:
+    def test_research_job_defaults_are_sane(self, monkeypatch):
+        monkeypatch.delenv("RESEARCH_WAIT_SECONDS", raising=False)
+        monkeypatch.delenv("RESEARCH_JOB_TTL_SECONDS", raising=False)
+
+        config = create_config()
+
+        # The wait must stay below the MCP client's default 30 s timeout.
+        assert 0 < config.research_wait_seconds < 30
+        assert config.research_job_ttl_seconds > config.research_wait_seconds
+
+    def test_research_job_settings_read_env_vars(self, monkeypatch):
+        monkeypatch.setenv("RESEARCH_WAIT_SECONDS", "7")
+        monkeypatch.setenv("RESEARCH_JOB_TTL_SECONDS", "60")
+
+        config = create_config()
+
+        assert config.research_wait_seconds == 7.0
+        assert config.research_job_ttl_seconds == 60.0
+
+    def test_empty_research_job_env_vars_fall_back_to_defaults(self, monkeypatch):
+        monkeypatch.setenv("RESEARCH_WAIT_SECONDS", "")
+        monkeypatch.setenv("RESEARCH_JOB_TTL_SECONDS", "")
+
+        config = create_config()
+
+        assert 0 < config.research_wait_seconds < 30
+        assert config.research_job_ttl_seconds > config.research_wait_seconds

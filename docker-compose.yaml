@@ -6,40 +6,32 @@
 # service because of `network_mode: service:browser`.
 services:
   browser:
-    image: h4ckf0r0day/obscura:0.2.3@sha256:475def3ddf1ec513b3d1bc36e8ad15f0d192538cb15f814c77215aa70c418ca2
-    command: ["serve", "--stealth", "--allow-private-network"]
+    image: h4ckf0r0day/obscura:0.2.5
+    command: ["serve", "--stealth", "--allow-private-network","--quiet"]
     environment:
       - RUST_MIN_STACK=16777216
     ports:
+      # - "127.0.0.1:9222:9222"
       - "127.0.0.1:8000:8000"
     restart: unless-stopped
-
-  # The Obscura image is distroless (no shell/curl/wget), so readiness of its
-  # CDP endpoint is checked from this sidecar sharing the browser's loopback.
-  browser-health:
-    image: busybox:1.37
-    command: ["sleep", "infinity"]
-    network_mode: "service:browser"
-    depends_on:
-      - browser
     healthcheck:
-      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:9222/json/version"]
+      test: ["CMD", "/obscura", "fetch", "http://localhost:9222/json/version", "--allow-private-network", "--dump", "original"]
       interval: 10s
-      timeout: 3s
+      timeout: 5s
       retries: 3
-      start_period: 30s
-      start_interval: 1s
-    restart: unless-stopped
+      start_period: 5s
 
   mcps:
     build: .
     network_mode: "service:browser"
     depends_on:
-      browser-health:
+      browser:
         condition: service_healthy
     env_file:
       - path: .env
-        required: false
+        required: true
     environment:
-      BROWSER_CDP_URL: "ws://127.0.0.1:9222"
+      BROWSER_CDP_URL: "ws://127.0.0.1:9222/devtools/browser"
+    volumes:
+      - "${HOST_VAULT}:/vault"
     restart: unless-stopped

@@ -219,6 +219,20 @@ CDP endpoint of a running browser (e.g. `ws://127.0.0.1:9222`). Must be unauthen
 **Environment**: `BROWSER_CDP_URL`
 **Used by**: [src/mcps/research/tools/fetch.py](../src/mcps/research/tools/fetch.py), [src/mcps/research/tools/browser.py](../src/mcps/research/tools/browser.py)
 
+#### `research_wait_seconds` #config
+How long `web_research` and `web_research_status` wait for a research job before they return its current state. Keep it below the MCP client timeout (30 s by default).
+**Type**: float
+**Default**: `25.0`
+**Environment**: `RESEARCH_WAIT_SECONDS`
+**Used by**: [src/mcps/research/lifespan.py](../src/mcps/research/lifespan.py)
+
+#### `research_job_ttl_seconds` #config
+How long a finished research job stays readable after its last update.
+**Type**: float
+**Default**: `3600.0`
+**Environment**: `RESEARCH_JOB_TTL_SECONDS`
+**Used by**: [src/mcps/research/lifespan.py](../src/mcps/research/lifespan.py)
+
 #### `scraper_provider` #config
 Commercial unblocking provider used for blocked, empty, timed-out, or browser-unavailable pages: `scrape_do`, `bright_data`, or empty.
 **Type**: str

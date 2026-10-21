@@ -101,7 +101,13 @@ Contract tests for the browser (fake crawl4ai crawler), Scrape.do and Bright Dat
 Contract tests for the filter pipeline units: `MarkdownChunker` (windows that target `max_chars`, snap to nearby headings and lines after blank lines, overlap neighbors, keep exact source slices, advance with maximal overlap, and reject invalid sizes, plus `merge`: shared overlap once, touching and gapped ranges, order, duplicates, contained fragments), `HtmlToMarkdown` (conversion, links kept, selector pass-through, error mapping), `RelevanceFilter` with fake chunker and ranker (guards, blank query, empty selection, split/merge hand-off, document order, failure mapping for split, ranker and merge), and `Bm25Ranker`.
 
 ### [tests/test_browser_runtime.py](../tests/test_browser_runtime.py)
-Tests for `create_browser_fetch` (configured, unset, and unreachable CDP), the lifespan enabling/disabling only `web_research`, and the research lifespan owning one browser crawler (reused across fetches, closed on exit).
+Tests for `create_browser_fetch` (configured, unset, and unreachable CDP), the lifespan enabling/disabling only the research tools (`web_research` and `web_research_status`), and the research lifespan owning one browser crawler (reused across fetches, closed on exit).
+
+### [tests/test_research_jobs.py](../tests/test_research_jobs.py), [tests/test_research_job_tools.py](../tests/test_research_job_tools.py)
+Contract tests for background research jobs. `test_research_jobs.py` covers `ResearchJobs` and `InMemoryJobStore` with `FakeResearcher` and `FakeClock` from [tests/research_fakes.py](../tests/research_fakes.py): completed and running results, job names, progress forwarding and last-message storage, failures, unknown ids, store-only waiting, expiry, cancel and close. `test_research_job_tools.py` calls `web_research` and `web_research_status` through a FastMCP `Client`: completion, job then status, unknown job error, progress notifications, cancelling an abandoned first call (and keeping the job after an abandoned status call), and tool listing.
+
+### [tests/conftest.py](../tests/conftest.py)
+Stops the test session with setup instructions when the NLTK data used by the BM25 ranker is missing. Run tests with `NLTK_DATA="${XDG_CACHE_HOME:-$HOME/.cache}/nltk_data"` exported.
 
 ### [tests/test_web_fetch_evaluation.py](../tests/test_web_fetch_evaluation.py)
 Contract tests for `load_cases` and `summarize` of the fetch evaluation script, including loading the shipped case files.

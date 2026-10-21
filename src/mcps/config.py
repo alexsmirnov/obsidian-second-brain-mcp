@@ -57,6 +57,11 @@ class ServerConfig:
     # CDP endpoint used to render generic pages; empty or unreachable disables
     # web_research.
     browser_cdp_url: str = ""
+    # web_research waits this long for a job before returning its name; keep it
+    # below the MCP client timeout (30 s by default).
+    research_wait_seconds: float = 25.0
+    # Finished research jobs are dropped this long after their last update.
+    research_job_ttl_seconds: float = 3600.0
     # Commercial unblocking provider for blocked (401/403/429), empty, timeout,
     # or browser-unavailable pages: "scrape_do", "bright_data", or "" (disabled).
     scraper_provider: str = ""
@@ -141,6 +146,10 @@ def create_config(
         google_api_key=os.environ.get("GOOGLE_API_KEY", ""),
         google_search_id=os.environ.get("GOOGLE_SEARCH_ID", ""),
         browser_cdp_url=os.environ.get("BROWSER_CDP_URL", ""),
+        research_wait_seconds=float(os.environ.get("RESEARCH_WAIT_SECONDS") or 25.0),
+        research_job_ttl_seconds=float(
+            os.environ.get("RESEARCH_JOB_TTL_SECONDS") or 3600.0
+        ),
         scraper_provider=os.environ.get("SCRAPER_PROVIDER", ""),
         scrape_do_token=os.environ.get("SCRAPE_DO_TOKEN", ""),
         bright_data_api_key=os.environ.get("BRIGHT_DATA_API_KEY", ""),

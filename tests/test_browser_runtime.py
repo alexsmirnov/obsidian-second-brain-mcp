@@ -52,6 +52,8 @@ class FakeAsyncWebCrawler:
             cleaned_html="<html><body><p>hello world</p></body></html>",
             html="<html><body><p>hello world</p></body></html>",
             response_headers=None,
+            redirected_url=None,
+            markdown=None,
             error_message="",
         )
 
@@ -134,6 +136,7 @@ async def test_startup_failure_hides_only_web_research(monkeypatch):
     names = await _list_tool_names(monkeypatch, reachable=False)
 
     assert "web_research" not in names
+    assert "web_research_status" not in names
 
 
 async def test_reachable_browser_keeps_web_research(monkeypatch):
@@ -185,5 +188,5 @@ async def test_research_lifespan_crawler_failure_hides_web_research(monkeypatch)
     async with lifespan(server) as ctx:  # type: ignore[arg-type]
         assert ctx["researcher"] is None
 
-    assert server.disabled == {"web_research"}
+    assert server.disabled == {"web_research", "web_research_status"}
     assert server.enabled == set()
