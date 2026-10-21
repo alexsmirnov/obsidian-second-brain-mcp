@@ -698,3 +698,26 @@ async def test_create_page_filter_selects_by_config(
     messages = " ".join(record.getMessage() for record in caplog.records)
     warned = {name for name in ("DECISION_MODEL",) if name in messages}
     assert warned == set(warns)
+
+
+async def test_default_page_filter_drops_unrelated_section_of_short_page(
+    client: httpx.AsyncClient,
+):
+    # Arrange: both sections fit one window of the decision ranker's chunker.
+    relevant = "Quantum routing reduces latency in mesh networks. " * 6
+    unrelated = "Bread flour needs water, salt and time to rise. " * 30
+    source = FetchResult(
+        "https://a.example",
+        FetchStatus.OK,
+        "text/markdown",
+        f"{relevant}\n\n{unrelated}DISTANT_MARKER",
+    )
+    page_filter = create_page_filter(ServerConfig(), client)
+
+    # Act
+    result = await page_filter(source, "quantum routing latency")
+
+    # Assert
+    assert result.status is FetchStatus.OK
+    assert relevant.strip() in result.content
+    assert "DISTANT_MARKER" not in result.content

@@ -152,6 +152,15 @@ def _create_provider_fallback(
 
 RankerBuilder = Callable[[ServerConfig, httpx.AsyncClient], Ranker]
 
+# Chunker (max_chars, overlap_chars) per ranker. BM25 scores short windows so
+# boilerplate lands in fragments of its own; the decision ranker pays one
+# model call per window. Tuning: tasks/relevance-experiments-generated.md.
+BM25_WINDOW = (300, 0)
+BM25_THRESHOLD = 0.0
+BM25_RELATIVE_CUTOFF = 0.075
+BM25_SMOOTHING = 0.2
+DECISION_WINDOW = (5000, 1500)
+
 
 def _decision_configured(config: ServerConfig) -> bool:
     """True when DECISION_MODEL and a valid router URL are set."""
@@ -178,25 +187,31 @@ def _decision_ranker(config: ServerConfig, http_client: httpx.AsyncClient) -> Ra
 
 
 def _bm25_ranker(config: ServerConfig, http_client: httpx.AsyncClient) -> Ranker:
-    return Bm25Ranker()
+    return Bm25Ranker(
+        threshold=BM25_THRESHOLD,
+        relative_cutoff=BM25_RELATIVE_CUTOFF,
+        smoothing=BM25_SMOOTHING,
+    )
 
 
 # Ordered registry: the first entry whose predicate holds builds the ranker.
 # To add an implementation, append an entry before the BM25 catch-all.
-_RANKERS: tuple[tuple[Callable[[ServerConfig], bool], RankerBuilder], ...] = (
-    (_decision_configured, _decision_ranker),
-    (lambda _: True, _bm25_ranker),
+_RANKERS: tuple[
+    tuple[Callable[[ServerConfig], bool], RankerBuilder, tuple[int, int]], ...
+] = (
+    (_decision_configured, _decision_ranker, DECISION_WINDOW),
+    (lambda _: True, _bm25_ranker, BM25_WINDOW),
 )
 
 
 def create_page_filter(
     config: ServerConfig, http_client: httpx.AsyncClient
 ) -> RelevanceFilter:
-    """Build the chunker and the first ranker whose predicate holds for ``config``."""
-    for is_configured, build in _RANKERS:
+    """Build the first ranker whose predicate holds for ``config`` and its chunker."""
+    for is_configured, build, (max_chars, overlap_chars) in _RANKERS:
         if is_configured(config):
             return RelevanceFilter(
-                MarkdownChunker(max_chars=5000, overlap_chars=1500),
+                MarkdownChunker(max_chars=max_chars, overlap_chars=overlap_chars),
                 build(config, http_client),
             )
     raise AssertionError("ranker registry lacks a catch-all entry")

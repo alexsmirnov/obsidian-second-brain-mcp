@@ -44,6 +44,13 @@ from mcps.research.deep_research import FETCH_QUERY_INSTRUCTIONS, FetchQuery
 from mcps.research.tools.bm25_ranker import Bm25Ranker
 from mcps.research.tools.common import valid_router_url
 from mcps.research.tools.decision_ranker import RELEVANCE_QUESTION, DecisionRanker
+from mcps.research.tools.fetch import (
+    BM25_RELATIVE_CUTOFF,
+    BM25_SMOOTHING,
+    BM25_THRESHOLD,
+    BM25_WINDOW,
+    DECISION_WINDOW,
+)
 from mcps.research.tools.filtering import Ranker, RelevanceFilter
 from mcps.research.tools.markdown_chunker import MarkdownChunker
 from mcps.research.tools.models import FetchResult, FetchStatus
@@ -132,13 +139,15 @@ RankerBuilder = Callable[
 def bm25_ranker(
     _config: ServerConfig, _http_client: httpx.AsyncClient, tuning: RankerTuning
 ) -> Bm25Ranker:
-    options = _Bm25Options()
-    if tuning.threshold is not None:
-        options["threshold"] = tuning.threshold
-    if tuning.relative_cutoff is not None:
-        options["relative_cutoff"] = tuning.relative_cutoff
-    if tuning.smoothing is not None:
-        options["smoothing"] = tuning.smoothing
+    options = _Bm25Options(
+        threshold=BM25_THRESHOLD if tuning.threshold is None else tuning.threshold,
+        relative_cutoff=(
+            BM25_RELATIVE_CUTOFF
+            if tuning.relative_cutoff is None
+            else tuning.relative_cutoff
+        ),
+        smoothing=BM25_SMOOTHING if tuning.smoothing is None else tuning.smoothing,
+    )
     if tuning.link_penalty is not None:
         options["link_penalty"] = tuning.link_penalty
     return Bm25Ranker(**options)
@@ -495,15 +504,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="use the recorded query or generate one with the fetch-query fragment",
     )
     parser.add_argument(
-        "--max-chars", type=int, default=5000, help="chunker fragment size"
+        "--max-chars",
+        type=int,
+        help=f"chunker fragment size (default bm25 {BM25_WINDOW[0]}, "
+        f"decision {DECISION_WINDOW[0]})",
     )
     parser.add_argument(
-        "--overlap-chars", type=int, default=1500, help="chunker fragment overlap"
+        "--overlap-chars",
+        type=int,
+        help=f"chunker fragment overlap (default bm25 {BM25_WINDOW[1]}, "
+        f"decision {DECISION_WINDOW[1]})",
     )
     parser.add_argument(
         "--threshold",
         type=float,
-        help="BM25 score cutoff (default 1.0) or decision probability (default 0.6)",
+        help=f"BM25 score cutoff (default {BM25_THRESHOLD}) "
+        "or decision probability (default 0.6)",
     )
     parser.add_argument(
         "--fetch-query-prompt",
@@ -516,12 +532,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--relative-cutoff",
         type=float,
         help="keep fragments scoring at least this fraction of the page best "
-        "(0-1, default 0)",
+        f"(0-1, default {BM25_RELATIVE_CUTOFF})",
     )
     bm25.add_argument(
         "--smoothing",
         type=float,
-        help="weight of each neighbour score blended in (0-0.5, default 0)",
+        help="weight of each neighbour score blended in "
+        f"(0-0.5, default {BM25_SMOOTHING})",
     )
     bm25.add_argument(
         "--link-penalty",
@@ -555,6 +572,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         parser.error(
             "--relative-cutoff, --smoothing and --link-penalty require --filter bm25"
         )
+    max_chars, overlap_chars = BM25_WINDOW if args.filter == "bm25" else DECISION_WINDOW
+    if args.max_chars is None:
+        args.max_chars = max_chars
+    if args.overlap_chars is None:
+        args.overlap_chars = overlap_chars
     return args
 
 
