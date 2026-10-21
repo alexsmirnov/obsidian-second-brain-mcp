@@ -5,7 +5,8 @@ Run from the repository root:
 ``uv run tests/web_relevance_filter_evaluation.py --filter bm25 --limit 5``.
 
 Tuning arguments override the chunker size and overlap, the ranker threshold,
-the fetch-query prompt and the decision ranker question, for example
+the fetch-query prompt, the BM25 relative cutoff, smoothing and link penalty, and
+the decision ranker question, for example
 ``--filter bm25 --max-chars 3000 --overlap-chars 500 --threshold 2.0``. Every
 report row records the effective values under ``settings``.
 
@@ -106,6 +107,16 @@ class RankerTuning:
 
     threshold: float | None = None
     decision_question: Noul | None = None
+    relative_cutoff: float | None = None
+    smoothing: float | None = None
+    link_penalty: float | None = None
+
+
+class _Bm25Options(TypedDict, total=False):
+    threshold: float
+    relative_cutoff: float
+    smoothing: float
+    link_penalty: float
 
 
 class _DecisionOptions(TypedDict, total=False):
@@ -121,9 +132,16 @@ RankerBuilder = Callable[
 def bm25_ranker(
     _config: ServerConfig, _http_client: httpx.AsyncClient, tuning: RankerTuning
 ) -> Bm25Ranker:
-    if tuning.threshold is None:
-        return Bm25Ranker()
-    return Bm25Ranker(threshold=tuning.threshold)
+    options = _Bm25Options()
+    if tuning.threshold is not None:
+        options["threshold"] = tuning.threshold
+    if tuning.relative_cutoff is not None:
+        options["relative_cutoff"] = tuning.relative_cutoff
+    if tuning.smoothing is not None:
+        options["smoothing"] = tuning.smoothing
+    if tuning.link_penalty is not None:
+        options["link_penalty"] = tuning.link_penalty
+    return Bm25Ranker(**options)
 
 
 def decision_ranker(
@@ -150,6 +168,10 @@ def decision_ranker(
 def ranker_settings(ranker: Bm25Ranker | DecisionRanker) -> dict[str, object]:
     """Effective ranker settings recorded with every report row."""
     settings: dict[str, object] = {"threshold": ranker.threshold}
+    if isinstance(ranker, Bm25Ranker):
+        settings["relative_cutoff"] = ranker.relative_cutoff
+        settings["smoothing"] = ranker.smoothing
+        settings["link_penalty"] = ranker.link_penalty
     if isinstance(ranker, DecisionRanker):
         criteria = ranker.question.criteria or NoulCriteria()
         settings["decision_question"] = {
@@ -489,6 +511,23 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="file replacing FETCH_QUERY_INSTRUCTIONS; "
         "requires --query-source generated",
     )
+    bm25 = parser.add_argument_group("bm25 tuning", "--filter bm25")
+    bm25.add_argument(
+        "--relative-cutoff",
+        type=float,
+        help="keep fragments scoring at least this fraction of the page best "
+        "(0-1, default 0)",
+    )
+    bm25.add_argument(
+        "--smoothing",
+        type=float,
+        help="weight of each neighbour score blended in (0-0.5, default 0)",
+    )
+    bm25.add_argument(
+        "--link-penalty",
+        type=float,
+        help="score reduction per link/DOI/year density (default 0)",
+    )
     decision = parser.add_argument_group(
         "decision prompts", "override RELEVANCE_QUESTION fields; --filter decision"
     )
@@ -511,6 +550,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         text is not None for text in decision_overrides
     ):
         parser.error("--decision-* arguments require --filter decision")
+    bm25_overrides = (args.relative_cutoff, args.smoothing, args.link_penalty)
+    if args.filter != "bm25" and any(value is not None for value in bm25_overrides):
+        parser.error(
+            "--relative-cutoff, --smoothing and --link-penalty require --filter bm25"
+        )
     return args
 
 
@@ -555,7 +599,13 @@ async def main(argv: list[str] | None = None) -> None:
         ranker = FILTERS[args.filter](
             config,
             http_client,
-            RankerTuning(args.threshold, decision_question(args)),
+            RankerTuning(
+                args.threshold,
+                decision_question(args),
+                relative_cutoff=args.relative_cutoff,
+                smoothing=args.smoothing,
+                link_penalty=args.link_penalty,
+            ),
         )
         settings: dict[str, object] = {
             "max_chars": args.max_chars,

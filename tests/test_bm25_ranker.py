@@ -103,3 +103,81 @@ def test_bm25_ranker_rejects_invalid_threshold(threshold: float):
 def test_bm25_ranker_exposes_threshold():
     assert Bm25Ranker().threshold == 1.0
     assert Bm25Ranker(threshold=2.5).threshold == 2.5
+
+
+async def test_bm25_ranker_relative_cutoff_keeps_only_fragments_near_the_best_score():
+    # Arrange
+    ranker = Bm25Ranker(threshold=0.0, relative_cutoff=0.9)
+
+    # Act
+    indices = await ranker(FRAGMENTS, "quantum routing latency")
+
+    # Assert
+    assert indices == [1]
+
+
+async def test_bm25_ranker_link_penalty_drops_citation_dense_fragment():
+    # Arrange
+    fragments = [
+        "Quantum routing reduces latency in networks.",
+        "[Quantum routing](https://doi.org/10.1/qr) (2020) https://example.org",
+    ]
+    ranker = Bm25Ranker(threshold=0.0, link_penalty=10.0)
+
+    # Act
+    indices = await ranker(fragments, "quantum routing")
+
+    # Assert
+    assert indices == [0]
+
+
+async def test_bm25_ranker_smoothing_keeps_fragment_between_strong_neighbours():
+    # Arrange
+    fragments = [
+        "Quantum routing reduces latency in networks.",
+        "Nothing relevant here at all.",
+        "Quantum routing lowers latency again.",
+    ]
+    ranker = Bm25Ranker(threshold=0.0, smoothing=0.2)
+
+    # Act
+    indices = await ranker(fragments, "quantum routing latency")
+
+    # Assert
+    assert indices == [0, 1, 2]
+
+
+async def test_bm25_ranker_smoothing_selects_nothing_without_query_overlap():
+    ranker = Bm25Ranker(threshold=0.0, smoothing=0.2, relative_cutoff=0.5)
+
+    assert await ranker(FRAGMENTS, "the and of") == []
+
+
+@pytest.mark.parametrize(
+    ("option", "value"),
+    [
+        ("relative_cutoff", -0.1),
+        ("relative_cutoff", 1.1),
+        ("relative_cutoff", float("nan")),
+        ("smoothing", -0.1),
+        ("smoothing", 0.6),
+        ("smoothing", float("nan")),
+        ("link_penalty", -1.0),
+        ("link_penalty", float("nan")),
+        ("link_penalty", float("inf")),
+    ],
+)
+def test_bm25_ranker_rejects_invalid_tuning(option: str, value: float):
+    with pytest.raises(ValueError, match=option):
+        Bm25Ranker(**{option: value})
+
+
+def test_bm25_ranker_exposes_tuning():
+    # Arrange
+    ranker = Bm25Ranker(relative_cutoff=0.2, smoothing=0.3, link_penalty=10.0)
+
+    # Act
+    tuning = (ranker.relative_cutoff, ranker.smoothing, ranker.link_penalty)
+
+    # Assert
+    assert tuning == (0.2, 0.3, 10.0)
