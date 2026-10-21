@@ -117,7 +117,7 @@ class ResearchLimits:
     round_start_budget: float = 300.0  # seconds since start; no new round after it
     max_pages_per_round: int = 10
     max_initial_queries: int = 3
-    max_follow_ups: int = 4  # independent limit for search_queries and for links
+    max_follow_ups: int = 5  # independent limit for search_queries and for links
 
 
 _DEFAULT_LIMITS = ResearchLimits()

@@ -6,7 +6,7 @@ import asyncio
 import logging
 
 from mcps.common.decisions import DecisionClient, DecisionError, Noul, NoulCriteria
-from mcps.research.tools.filtering_models import FilterModelError
+from mcps.research.tools.filtering import FilterModelError
 
 __all__ = ["DecisionRanker"]
 

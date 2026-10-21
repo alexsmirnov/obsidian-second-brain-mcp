@@ -64,11 +64,8 @@ class ServerConfig:
     bright_data_api_key: str = ""
     bright_data_zone: str = ""
     # Content filtering and fetch routing
-    # Chat model for hybrid source-window selection; empty selects local
-    # lexical filtering. Requires rag_embedding_model when set.
-    fetch_model: str = ""
-    # Router decision model (TypeSafe System One) for per-fragment relevance;
-    # used when the fetch_model ranker is not active. Empty disables it.
+    # Router decision model (TypeSafe System One) for per-fragment relevance.
+    # Empty selects local lexical filtering.
     decision_model: str = ""
     # Hostnames (and their subdomains) fetch must never visit.
     fetch_restricted_domains: tuple[str, ...] = ()
@@ -148,7 +145,6 @@ def create_config(
         scrape_do_token=os.environ.get("SCRAPE_DO_TOKEN", ""),
         bright_data_api_key=os.environ.get("BRIGHT_DATA_API_KEY", ""),
         bright_data_zone=os.environ.get("BRIGHT_DATA_ZONE", ""),
-        fetch_model=os.environ.get("FETCH_MODEL", ""),
         decision_model=os.environ.get("DECISION_MODEL", ""),
         fetch_restricted_domains=_parse_restricted_domains(
             os.environ.get("FETCH_RESTRICTED_DOMAINS", "")

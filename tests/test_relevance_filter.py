@@ -18,18 +18,18 @@ class ParagraphChunker:
     """Splits on blank lines with real offsets and records every merge call."""
 
     def __init__(self) -> None:
-        self.merges: list[tuple[str, list[Fragment]]] = []
+        self.merges: list[list[Fragment]] = []
 
     def split(self, text: str) -> list[Fragment]:
         fragments: list[Fragment] = []
         offset = 0
         for part in text.split("\n\n"):
-            fragments.append(Fragment(part, ((offset, offset + len(part)),)))
+            fragments.append(Fragment(part, offset, offset + len(part)))
             offset += len(part) + 2
         return fragments
 
-    def merge(self, text: str, fragments: Sequence[Fragment]) -> str:
-        self.merges.append((text, list(fragments)))
+    def merge(self, fragments: Sequence[Fragment]) -> str:
+        self.merges.append(list(fragments))
         return "\n\n".join(fragment.text for fragment in fragments)
 
 
@@ -39,12 +39,12 @@ class BrokenSplitChunker(ParagraphChunker):
 
 
 class BrokenMergeChunker(ParagraphChunker):
-    def merge(self, text: str, fragments: Sequence[Fragment]) -> str:
+    def merge(self, fragments: Sequence[Fragment]) -> str:
         raise RuntimeError("boom")
 
 
 class FixedMergeChunker(ParagraphChunker):
-    def merge(self, text: str, fragments: Sequence[Fragment]) -> str:
+    def merge(self, fragments: Sequence[Fragment]) -> str:
         return "MERGED"
 
 
@@ -78,9 +78,7 @@ async def test_relevance_filter_merges_selected_fragments_in_document_order():
     assert result.content == "a\n\nc"
     assert result.mime == "text/markdown"
     assert ranker.calls == [(["a", "b", "c"], "q")]
-    assert chunker.merges == [
-        ("a\n\nb\n\nc", [Fragment("a", ((0, 1),)), Fragment("c", ((6, 7),))])
-    ]
+    assert chunker.merges == [[Fragment("a", 0, 1), Fragment("c", 6, 7)]]
 
 
 async def test_relevance_filter_content_is_what_merge_returns():
@@ -194,4 +192,4 @@ async def test_relevance_filter_no_fragments_skips_the_ranker():
     assert result.status is FetchStatus.OK
     assert result.content == ""
     assert ranker.calls == []
-    assert chunker.merges == [("   ", [])]
+    assert chunker.merges == [[]]

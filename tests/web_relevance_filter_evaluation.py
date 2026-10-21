@@ -35,10 +35,9 @@ from mcps.config import ServerConfig, create_config
 from mcps.research.config import _create_chat_model
 from mcps.research.deep_research import FETCH_QUERY_INSTRUCTIONS, FetchQuery
 from mcps.research.tools.bm25_ranker import Bm25Ranker
+from mcps.research.tools.common import valid_router_url
 from mcps.research.tools.decision_ranker import DecisionRanker
 from mcps.research.tools.filtering import Ranker, RelevanceFilter
-from mcps.research.tools.filtering_models import RouterPassageModels, valid_router_url
-from mcps.research.tools.llm_ranker import LlmRanker
 from mcps.research.tools.markdown_chunker import MarkdownChunker
 from mcps.research.tools.models import FetchResult, FetchStatus
 
@@ -102,28 +101,6 @@ def bm25_ranker(_config: ServerConfig, _http_client: httpx.AsyncClient) -> Ranke
     return Bm25Ranker()
 
 
-def llm_ranker(config: ServerConfig, http_client: httpx.AsyncClient) -> Ranker:
-    if not (
-        config.fetch_model
-        and config.rag_embedding_model
-        and config.router_api_key
-        and valid_router_url(config.router_api_base)
-    ):
-        raise RuntimeError(
-            "FETCH_MODEL, RAG_EMBEDDING_MODEL or router settings not set"
-        )
-    return LlmRanker(
-        RouterPassageModels(
-            http_client,
-            router_url=config.router_api_base,
-            router_key=config.router_api_key,
-            fetch_model=config.fetch_model,
-            embedding_model=config.rag_embedding_model,
-            embedding_dimensions=config.rag_embedding_dimensions,
-        )
-    )
-
-
 def decision_ranker(config: ServerConfig, http_client: httpx.AsyncClient) -> Ranker:
     if not (config.decision_model and valid_router_url(config.router_api_base)):
         raise RuntimeError("DECISION_MODEL or router settings not set")
@@ -140,7 +117,6 @@ def decision_ranker(config: ServerConfig, http_client: httpx.AsyncClient) -> Ran
 # Append an entry to compare another filter implementation on the same pages.
 FILTERS: dict[str, RankerBuilder] = {
     "bm25": bm25_ranker,
-    "llm": llm_ranker,
     "decision": decision_ranker,
 }
 

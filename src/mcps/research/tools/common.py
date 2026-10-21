@@ -15,6 +15,7 @@ __all__ = [
     "failure",
     "normalize_mime",
     "textual_mime",
+    "valid_router_url",
 ]
 
 MIME_HTML = "text/html"
@@ -65,3 +66,16 @@ def failure(
 def extract_hostname(url: str) -> str:
     """Return the lowercase network location of ``url``."""
     return urlparse(url).netloc.lower()
+
+
+def valid_router_url(router_url: str) -> bool:
+    """True for an HTTP(S) base with a host and no credentials or query parts."""
+    parsed = urlparse(router_url)
+    return (
+        parsed.scheme in ("http", "https")
+        and bool(parsed.hostname)
+        and not parsed.username
+        and not parsed.password
+        and not parsed.query
+        and not parsed.fragment
+    )

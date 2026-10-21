@@ -89,9 +89,9 @@ Data validation and modeling.
 ## Model Providers
 
 ### langchain-openai
-OpenAI-compatible chat and embedding adapters, used against the model router. The fetch filter uses `OpenAIEmbeddings` with the borrowed async client for hybrid window shortlisting.
+OpenAI-compatible chat and embedding adapters, used against the model router for RAG indexing, search, and reranking.
 **Version**: `>=1.1.11`
-**Used by**: [src/mcps/rag/vault.py:15](../src/mcps/rag/vault.py#L15), [src/mcps/research/config.py:16](../src/mcps/research/config.py#L16), [src/mcps/research/tools/filtering_models.py](../src/mcps/research/tools/filtering_models.py)
+**Used by**: [src/mcps/rag/vault.py:15](../src/mcps/rag/vault.py#L15), [src/mcps/research/config.py:21](../src/mcps/research/config.py#L21)
 
 ### langchain-google-genai
 Google Gemini model adapter for web research.

@@ -633,97 +633,7 @@ async def test_unusable_provider_config_keeps_target_failure(
     assert outcome(result) == (FetchStatus.HTTP_ERROR, 403)
 
 
-async def test_build_fetch_tool_wires_both_models_and_preserves_borrowed_client(
-    monkeypatch,
-):
-    crawler = FakeCrawler(
-        result=crawl_result(
-            cleaned_html=(
-                "<html><body><h2>Quantum optimization</h2><p>"
-                + "quantum optimization improves routing " * 30
-                + "</p><h2>Recipes</h2><p>"
-                + "bread flour baking kitchen " * 30
-                + "</p></body></html>"
-            )
-        )
-    )
-    _script_crawlers(monkeypatch, crawler)
-    requests: list[httpx.Request] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        requests.append(request)
-        if request.url.path.endswith("/embeddings"):
-            body = json.loads(request.content)
-            vectors = [[1.0, 0.0, 0.0] for _ in body["input"]]
-            return httpx.Response(
-                200,
-                json={
-                    "object": "list",
-                    "data": [
-                        {"object": "embedding", "index": index, "embedding": vector}
-                        for index, vector in enumerate(vectors)
-                    ],
-                },
-            )
-        body = json.loads(request.content)
-        user = json.loads(body["messages"][1]["content"])
-        ids = [
-            window["id"]
-            for window in user["windows"]
-            if "quantum" in window["text"]
-        ]
-        return httpx.Response(
-            200,
-            json={
-                "choices": [
-                    {
-                        "index": 0,
-                        "finish_reason": "stop",
-                        "message": {
-                            "role": "assistant",
-                            "content": json.dumps({"selected_ids": ids}),
-                        },
-                    }
-                ]
-            },
-        )
-
-    transport = httpx.MockTransport(handler)
-    async with httpx.AsyncClient(transport=transport) as client:
-        config = ServerConfig(
-            browser_cdp_url="ws://cdp",
-            fetch_model="fetch-test",
-            rag_embedding_model="embed-test",
-            rag_embedding_dimensions=3,
-            router_api_base="https://router.example/v1",
-            router_api_key="test-key",
-        )
-
-        async with build_fetch_tool(config, client) as fetch:
-            assert fetch is not None
-            result = await fetch(TARGET, "quantum optimization")
-
-        assert result.ok
-        assert "quantum optimization" in result.content
-        assert "bread flour" not in result.content
-        assert client.is_closed is False
-
-    assert crawler.open is False
-    assert any(
-        request.url.path.endswith("/embeddings") for request in requests
-    )
-    assert any(
-        request.url.path.endswith("/chat/completions") for request in requests
-    )
-
-
 ROUTER = "http://router/v1"
-LLM_CONFIG = {
-    "fetch_model": "m",
-    "rag_embedding_model": "e",
-    "router_api_base": ROUTER,
-    "router_api_key": "k",
-}
 
 
 @pytest.mark.parametrize(
@@ -734,48 +644,13 @@ LLM_CONFIG = {
             {"rag_embedding_model": "e", "router_api_base": ROUTER},
             None,
             (),
-            id="no-fetch-model",
-        ),
-        pytest.param(LLM_CONFIG, "/embeddings", (), id="fully-configured"),
-        pytest.param(
-            {"fetch_model": "m", "router_api_base": ROUTER},
-            None,
-            ("FETCH_MODEL",),
-            id="no-embedding-model",
-        ),
-        pytest.param(
-            {"fetch_model": "m", "rag_embedding_model": "e", "router_api_base": ""},
-            None,
-            ("FETCH_MODEL",),
-            id="empty-router",
-        ),
-        pytest.param(
-            {
-                "fetch_model": "m",
-                "rag_embedding_model": "e",
-                "router_api_base": "ftp://router",
-            },
-            None,
-            ("FETCH_MODEL",),
-            id="bad-router-scheme",
+            id="unrelated-rag-config-falls-to-bm25",
         ),
         pytest.param(
             {"decision_model": "jev", "router_api_base": ROUTER},
             "/v1/systemone",
             (),
-            id="decision-only",
-        ),
-        pytest.param(
-            {**LLM_CONFIG, "decision_model": "jev"},
-            "/embeddings",
-            (),
-            id="llm-wins-over-decision",
-        ),
-        pytest.param(
-            {"fetch_model": "m", "decision_model": "jev", "router_api_base": ROUTER},
-            "/v1/systemone",
-            ("FETCH_MODEL",),
-            id="partial-llm-falls-to-decision",
+            id="decision-configured",
         ),
         pytest.param(
             {"decision_model": "jev", "router_api_base": "ftp://router"},
@@ -821,5 +696,5 @@ async def test_create_page_filter_selects_by_config(
         assert router_calls[0].url.path.endswith(router_path)
         assert result.status is FetchStatus.FILTER_FAILED
     messages = " ".join(record.getMessage() for record in caplog.records)
-    warned = {name for name in ("FETCH_MODEL", "DECISION_MODEL") if name in messages}
+    warned = {name for name in ("DECISION_MODEL",) if name in messages}
     assert warned == set(warns)

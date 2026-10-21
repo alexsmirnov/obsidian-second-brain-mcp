@@ -13,7 +13,7 @@ import pytest
 
 from mcps.common.decisions import DecisionClient, DecisionError
 from mcps.research.tools.decision_ranker import DecisionRanker
-from mcps.research.tools.filtering_models import FilterModelError
+from mcps.research.tools.filtering import FilterModelError
 
 ROUTER = "http://router/v1"
 

@@ -147,18 +147,16 @@ Async web search and content fetching. The fetch tool is a chain of small classe
 |---|---|
 | `result.py`, `combinators.py` | Contracts and combinators above |
 | `models.py` | `SearchResult` |
-| `common.py` | `MIME_HTML`/`MIME_MARKDOWN`/`MIME_PLAIN` constants, `normalize_mime`/`textual_mime` classifiers, the `failure` result builder, and `extract_hostname` |
+| `common.py` | `MIME_HTML`/`MIME_MARKDOWN`/`MIME_PLAIN` constants, `normalize_mime`/`textual_mime` classifiers, the `failure` result builder, `extract_hostname`, and `valid_router_url` |
 | `google.py`, `duckduckgo.py` | `Search` factories |
 | `default.py` | `HttpFetch`: the single owner of page GETs (shared or owned client, browser-like Chrome headers) and of content-type extraction; HTML stays `text/html`, Markdown stays `text/markdown`, every other supported textual type and raw PDF text is `text/plain` |
 | `arxiv.py`, `github.py`, `wikipedia.py` | `ArxivFetch` (HTML, then PDF, then abstract), `GitHubBlobFetch`, `GitHubRepoFetch` (README), `WikipediaFetch` (raw wikitext via `action=raw` for `wikipedia.org` and its subdomains): thin wrappers over an injected `Fetch`; results are retargeted at the requested URL |
 | `browser.py` | `BrowserFetch` renders pages on an open crawl4ai crawler; `create_browser_fetch` opens one crawler on `BROWSER_CDP_URL` (yields `None` when unset or unreachable) and closes it on exit, so fetches never reconnect |
 | `scrape_do.py`, `bright_data.py` | `ScrapeDoFetch`, `BrightDataFetch`: commercial unblocking fallbacks |
 | `html_markdown.py` | `create_markdown_generator` (the crawl4ai generator shared with `browser.py`: pruning filter, links kept), `is_html`, and `HtmlToMarkdown`, the filter converting an HTML result to Markdown |
-| `filtering.py` | The `Chunker` (`split` text to fragments, `merge` selected fragments back to one text) and `Ranker` (fragment texts to relevant indices) protocols, the `Fragment(text, spans)` type (the text a ranker sees, plus half-open source offsets that may overlap other fragments), and `RelevanceFilter`, which splits a textual result, ranks the fragment texts, and merges the selected fragments in document order |
-| `markdown_chunker.py` | `MarkdownChunker`: one fragment per paragraph, fence or table, prefixed with its own H1-H3 heading; oversized paragraphs split at lines, then spaces. Each fragment keeps a heading span and a body span; `merge` joins the union of the selected spans as source text, so overlapping text and a shared heading appear once |
+| `filtering.py` | The `Chunker` (`split` text to fragments, `merge` selected fragments back to one text) and `Ranker` (fragment texts to relevant indices) protocols, the `Fragment(text, start, end)` type (one contiguous source slice addressed by half-open offsets that may overlap other fragments), the `FilterModelError` ranker failure, and `RelevanceFilter`, which splits a textual result, ranks the fragment texts, and merges the selected fragments in document order |
+| `markdown_chunker.py` | `MarkdownChunker`: windows that target `max_chars` characters. Each cut moves up to a tenth of that size to the nearest H1-H6 heading or the line after a blank line, and neighbors overlap by `overlap_chars`. A `Fragment` holds the exact source slice, so `merge` rebuilds the selected text from offsets alone |
 | `bm25_ranker.py` | `Bm25Ranker` and `lexical_scores`: local BM25L ranking of fragments |
-| `llm_ranker.py` | `LlmRanker`: BM25 plus embedding shortlist, then router-model selection by fragment index |
-| `filtering_models.py` | `RouterPassageModels`: borrowed-client embeddings via `OpenAIEmbeddings` and `ChatOpenAI` chat selection without retries, with warning logs for each model failure, returning only validated fragment IDs |
 | `fetch.py` | `create_fetch`: the composition root; `build_fetch_tool`: lifespan-friendly context manager that owns the browser via `create_browser_fetch` and assembles the fetch |
 
 #### Composition ([fetch.py](../src/mcps/research/tools/fetch.py)) #architecture
@@ -168,7 +166,7 @@ generic = Fallback(generic, provider)                     # when a provider is c
 routed  = UrlSelector([restricted -> Blocked, arXiv, GitHub blob, GitHub repo, Wikipedia], default=generic)
 fetch   = Filtered(routed, FilterChain(FilterSelector([html -> HtmlToMarkdown]), create_page_filter(config), Truncate))
 ```
-`create_page_filter` walks an ordered registry in `fetch.py` (`_RANKERS`) once at startup and returns a `RelevanceFilter` combining a `MarkdownChunker` with the first ranker whose config predicate holds (`LlmRanker` when `FETCH_MODEL`, `RAG_EMBEDDING_MODEL` and a valid router URL are set; else `DecisionRanker` when `DECISION_MODEL` and a valid router URL are set; else `Bm25Ranker`); a new ranker is one class plus one registry entry. HTML is converted to Markdown once by `HtmlToMarkdown` before the filter, other textual types pass through, and output size is bounded only by `Truncate`. The arXiv, GitHub and Wikipedia routes sit outside the `Fallback`, so they never escalate.
+`create_page_filter` walks an ordered registry in `fetch.py` (`_RANKERS`) once at startup and returns a `RelevanceFilter` combining a `MarkdownChunker` with the first ranker whose config predicate holds (`DecisionRanker` when `DECISION_MODEL` and a valid router URL are set, else `Bm25Ranker`). A new ranker is one class plus one registry entry. HTML is converted to Markdown once by `HtmlToMarkdown` before the filter, other textual types pass through, and output size is bounded only by `Truncate`. The arXiv, GitHub and Wikipedia routes sit outside the `Fallback`, so they never escalate.
 
 #### Adding a provider
 - **Fetch provider**: write a class with `async __call__(url, query=None, /) -> FetchResult` that returns `failure(url, FetchStatus.UNAVAILABLE)` when the service itself fails and declares its `mime`. Add it as a route in `create_fetch` (site-specific) or build it in `research.tools.fetch._create_provider_fallback` (unblocking fallback).

@@ -11,37 +11,46 @@ from typing import Protocol
 from mcps.research.tools.common import failure, textual_mime
 from mcps.research.tools.models import FetchResult, FetchStatus
 
-__all__ = ["Chunker", "Fragment", "Ranker", "RelevanceFilter"]
+__all__ = ["Chunker", "FilterModelError", "Fragment", "Ranker", "RelevanceFilter"]
 
 logger = logging.getLogger(__name__)
 
 
+class FilterModelError(ValueError):
+    """A model-backed ranker failed or returned unusable output."""
+
+
 @dataclass(frozen=True, slots=True)
 class Fragment:
-    """A piece of a source text, ranked by its ``text`` and rebuilt from its ``spans``.
+    """One contiguous slice of a source text, ranked by its ``text``.
 
-    Each span is a half-open ``(start, end)`` range of offsets into the source.
-    Spans of different fragments may overlap, and one fragment may have several.
+    ``start`` and ``end`` are half-open character offsets into the source, so
+    ``text`` equals ``source[start:end]``. Fragments of one source may overlap
+    and may arrive in any order.
     """
 
     text: str
-    spans: tuple[tuple[int, int], ...]
+    start: int
+    end: int
 
     def __post_init__(self) -> None:
-        if any(start < 0 or end < start for start, end in self.spans):
-            raise ValueError(f"invalid fragment spans: {self.spans}")
+        if self.start < 0 or self.end < self.start:
+            raise ValueError(f"invalid fragment range: [{self.start}, {self.end})")
+        if len(self.text) != self.end - self.start:
+            raise ValueError(f"fragment text does not match [{self.start}, {self.end})")
 
 
 class Chunker(Protocol):
     """Split content into fragments and merge the selected ones back into text.
 
-    Fragment spans are offsets into the text given to ``split`` and may overlap;
-    ``merge`` receives that same text and owns the removal of shared parts.
+    Fragment offsets address the text given to ``split``. Fragments may overlap
+    and arrive in any order. ``merge`` rebuilds the text from the fragments
+    alone, so it needs no copy of the source.
     """
 
     def split(self, text: str) -> list[Fragment]: ...
 
-    def merge(self, text: str, fragments: Sequence[Fragment]) -> str: ...
+    def merge(self, fragments: Sequence[Fragment]) -> str: ...
 
 
 class Ranker(Protocol):
@@ -95,9 +104,7 @@ class RelevanceFilter:
                 else []
             )
             kept = sorted({index for index in selected if 0 <= index < len(fragments)})
-            content = self._chunker.merge(
-                result.content, [fragments[index] for index in kept]
-            )
+            content = self._chunker.merge([fragments[index] for index in kept])
         except Exception as error:
             logger.warning(
                 "Relevance filtering failed for %s: %r", result.url, error

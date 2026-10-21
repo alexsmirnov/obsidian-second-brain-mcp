@@ -25,13 +25,10 @@ from mcps.research.tools.combinators import (
     Truncate,
     UrlSelector,
 )
+from mcps.research.tools.common import valid_router_url
 from mcps.research.tools.decision_ranker import DecisionRanker
 from mcps.research.tools.default import HttpFetch
 from mcps.research.tools.filtering import Ranker, RelevanceFilter
-from mcps.research.tools.filtering_models import (
-    RouterPassageModels,
-    valid_router_url,
-)
 from mcps.research.tools.github import (
     GitHubBlobFetch,
     GitHubRepoFetch,
@@ -43,7 +40,6 @@ from mcps.research.tools.html_markdown import (
     create_markdown_generator,
     is_html,
 )
-from mcps.research.tools.llm_ranker import LlmRanker
 from mcps.research.tools.markdown_chunker import MarkdownChunker
 from mcps.research.tools.models import Fetch, Filter
 from mcps.research.tools.scrape_do import ScrapeDoFetch
@@ -157,20 +153,6 @@ def _create_provider_fallback(
 RankerBuilder = Callable[[ServerConfig, httpx.AsyncClient], Ranker]
 
 
-def _llm_configured(config: ServerConfig) -> bool:
-    """True when FETCH_MODEL and the router boundary it needs are usable."""
-    if not config.fetch_model:
-        return False
-    if config.rag_embedding_model and valid_router_url(config.router_api_base):
-        return True
-    logger.warning(
-        "FETCH_MODEL=%s requires RAG_EMBEDDING_MODEL and a valid router URL; "
-        "falling back to the next ranker.",
-        config.fetch_model,
-    )
-    return False
-
-
 def _decision_configured(config: ServerConfig) -> bool:
     """True when DECISION_MODEL and a valid router URL are set."""
     if not config.decision_model:
@@ -183,18 +165,6 @@ def _decision_configured(config: ServerConfig) -> bool:
         config.decision_model,
     )
     return False
-
-
-def _llm_ranker(config: ServerConfig, http_client: httpx.AsyncClient) -> Ranker:
-    models = RouterPassageModels(
-        http_client,
-        router_url=config.router_api_base,
-        router_key=config.router_api_key,
-        fetch_model=config.fetch_model,
-        embedding_model=config.rag_embedding_model,
-        embedding_dimensions=config.rag_embedding_dimensions,
-    )
-    return LlmRanker(models)
 
 
 def _decision_ranker(config: ServerConfig, http_client: httpx.AsyncClient) -> Ranker:
@@ -214,7 +184,6 @@ def _bm25_ranker(config: ServerConfig, http_client: httpx.AsyncClient) -> Ranker
 # Ordered registry: the first entry whose predicate holds builds the ranker.
 # To add an implementation, append an entry before the BM25 catch-all.
 _RANKERS: tuple[tuple[Callable[[ServerConfig], bool], RankerBuilder], ...] = (
-    (_llm_configured, _llm_ranker),
     (_decision_configured, _decision_ranker),
     (lambda _: True, _bm25_ranker),
 )
@@ -226,7 +195,10 @@ def create_page_filter(
     """Build the chunker and the first ranker whose predicate holds for ``config``."""
     for is_configured, build in _RANKERS:
         if is_configured(config):
-            return RelevanceFilter(MarkdownChunker(), build(config, http_client))
+            return RelevanceFilter(
+                MarkdownChunker(max_chars=5000, overlap_chars=1500),
+                build(config, http_client),
+            )
     raise AssertionError("ranker registry lacks a catch-all entry")
 
 

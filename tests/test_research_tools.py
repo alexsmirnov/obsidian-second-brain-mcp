@@ -21,8 +21,8 @@ from mcps.research.tools.bm25_ranker import Bm25Ranker
 from mcps.research.tools.default import HttpFetch
 from mcps.research.tools.filtering import RelevanceFilter
 from mcps.research.tools.github import GitHubBlobFetch, GitHubRepoFetch
-from mcps.research.tools.models import FetchResult, FetchStatus
 from mcps.research.tools.markdown_chunker import MarkdownChunker
+from mcps.research.tools.models import FetchResult, FetchStatus
 from mcps.research.tools.wikipedia import WikipediaFetch
 
 _ERROR_SCRIPTS = {
@@ -242,7 +242,8 @@ async def test_generic_url_uses_browser_and_filters(
     result = await fetch(GENERIC, "quantum optimization")
 
     assert "https://source.example/paper" in result.content
-    assert "bread flour" not in result.content
+    # The page is one window, so the filter keeps it whole.
+    assert "bread flour" in result.content
     assert browser.calls == [GENERIC]
     assert httpx_mock.get_requests() == []
 
@@ -257,7 +258,8 @@ async def test_declared_markdown_via_browser_is_filtered(bm25, client):
     result = await fetch("https://source.example/notes.md", "quantum optimization")
 
     assert "[paper](/paper)" in result.content
-    assert "bread flour" not in result.content
+    # The page is one window, so the filter keeps it whole.
+    assert "bread flour" in result.content
     assert provider.calls == []
 
 
@@ -314,7 +316,8 @@ async def test_specialized_sources_filter_and_never_escalate(
     arxiv = await fetch("https://arxiv.org/abs/2406.02530", "quantum optimization")
 
     assert "[paper](/paper)" in github.content
-    assert "bread flour" not in github.content
+    # The README is one window, so the filter keeps it whole.
+    assert "bread flour" in github.content
     assert (arxiv.status, arxiv.http_status) == (FetchStatus.HTTP_ERROR, 403)
     assert browser.calls == []
     assert provider.calls == []
@@ -360,7 +363,8 @@ async def test_blocked_page_escalates_to_provider_filtered(
     result = await fetch(GENERIC, "quantum optimization")
 
     assert "https://source.example/paper" in result.content
-    assert "bread flour" not in result.content
+    # The page is one window, so the filter keeps it whole.
+    assert "bread flour" in result.content
     assert provider.calls == [GENERIC]
 
 
@@ -589,7 +593,11 @@ async def test_pdf_keeps_extracted_text(
 ):
     url = "https://source.example/paper.pdf"
     pdf = _pdf_paragraphs(
-        ["Quantum routing results\ncol_a   col_b\n1       2", "bread flour baking"]
+        [
+            "Quantum routing results\ncol_a   col_b\n1       2",
+            *["Bread flour kitchen dough. " * 40 for _ in range(6)],
+            "DISTANT_MARKER on a distant page",
+        ]
     )
     for _ in range(2):
         httpx_mock.add_response(
@@ -603,12 +611,13 @@ async def test_pdf_keeps_extracted_text(
     filtered = await fetch(url, "quantum routing")
 
     assert unfiltered.mime == "text/plain"
-    assert unfiltered.content == (
-        "Quantum routing results\ncol_a   col_b\n1       2\n\nbread flour baking"
+    assert unfiltered.content.startswith(
+        "Quantum routing results\ncol_a   col_b\n1       2"
     )
+    assert "DISTANT_MARKER" in unfiltered.content
     assert "col_a   col_b" in filtered.content
     assert filtered.mime == "text/plain"
-    assert "bread flour" not in filtered.content
+    assert "DISTANT_MARKER" not in filtered.content
 
 
 async def test_filter_yielding_nothing_stays_ok_with_empty_content(bm25, client):
@@ -677,7 +686,8 @@ async def test_provider_html_is_filtered_once(bm25, client):
     result = await fetch(GENERIC, "quantum optimization")
 
     assert "https://source.example/paper" in result.content
-    assert "bread flour" not in result.content
+    # The page is one window, so the filter keeps it whole.
+    assert "bread flour" in result.content
 
 
 class ExplodingClient:
@@ -1081,7 +1091,11 @@ async def test_pdf_filtered_output_preserves_extracted_text(
     httpx_mock.add_response(
         url=url,
         content=_pdf_paragraphs(
-            ["Quantum routing results\ncol_a   col_b\n1       2", "Bread flour baking"]
+            [
+                "Quantum routing results\ncol_a   col_b\n1       2",
+                *["Bread flour kitchen dough. " * 40 for _ in range(6)],
+                "DISTANT_MARKER on a distant page",
+            ]
         ),
         headers={"content-type": "application/pdf"},
     )
@@ -1092,8 +1106,33 @@ async def test_pdf_filtered_output_preserves_extracted_text(
     result = await fetch(url, "quantum routing")
 
     assert result.mime == "text/plain"
-    assert "col_a   col_b" in result.content
-    assert "Bread flour" not in result.content
+    assert result.content.startswith("Quantum routing results\ncol_a   col_b")
+    assert "DISTANT_MARKER" not in result.content
+
+
+async def test_filter_drops_unselected_markdown_windows(bm25, httpx_mock, client):
+    body = (
+        "## Quantum\n\n"
+        + "quantum routing evidence. " * 20
+        + "\n\n## Baking\n\n"
+        + "bread flour kitchen. " * 250
+        + "\n\nDISTANT_MARKER\n\n"
+        + "bread flour kitchen. " * 250
+    )
+    httpx_mock.add_response(
+        url="https://source.example/long.md",
+        text=body,
+        headers={"content-type": "text/markdown"},
+    )
+    fetch = create_fetch(
+        http_client=client, browser=None, provider=None, page_filter=bm25
+    )
+
+    result = await fetch("https://source.example/long.md", "quantum routing")
+
+    assert "quantum routing evidence" in result.content
+    assert "DISTANT_MARKER" not in result.content
+    assert len(result.content) < len(body)
 
 
 async def test_large_html_keeps_start_middle_end_evidence(
@@ -1112,17 +1151,20 @@ async def test_large_html_keeps_start_middle_end_evidence(
 
     content = result.content
     assert content.index("START") < content.index("MIDDLE") < content.index("END")
-    assert "bread flour" not in content
+    assert "Topic 10" not in content
     assert result.mime == "text/markdown"
 
 
 async def test_large_pdf_keeps_start_middle_end_evidence(
     bm25, httpx_mock: HTTPXMock, client: httpx.AsyncClient
 ):
-    pages = ["Bread flour kitchen dough. " * 12 for _ in range(60)]
-    pages[0] = "Quantum routing evidence START."
-    pages[30] = "Quantum routing evidence MIDDLE."
-    pages[59] = "Quantum routing evidence END."
+    pages = [
+        f"Page {number}. " + "Bread flour kitchen dough. " * 12
+        for number in range(60)
+    ]
+    pages[0] = "Page 0. Quantum routing evidence START."
+    pages[30] = "Page 30. Quantum routing evidence MIDDLE."
+    pages[59] = "Page 59. Quantum routing evidence END."
     url = "https://source.example/big.pdf"
     httpx_mock.add_response(
         url=url,
@@ -1141,8 +1183,7 @@ async def test_large_pdf_keeps_start_middle_end_evidence(
 
     content = result.content
     assert content.index("START") < content.index("MIDDLE") < content.index("END")
-    assert "bread" not in content
-    assert "dough" not in content
+    assert "Page 15" not in content
     assert result.mime == "text/plain"
 
 
