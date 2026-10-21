@@ -26,8 +26,18 @@ from pathlib import Path
 from typing import cast
 
 import httpx
+import nltk
 from dotenv import find_dotenv, load_dotenv
 from langchain_core.messages import HumanMessage, SystemMessage
+
+# BM25 loads stopwords at import time, including through web_fetch_evaluation.
+# ruff: noqa: E402
+for resource in ("corpora/stopwords", "tokenizers/punkt_tab"):
+    try:
+        nltk.data.find(resource)
+    except LookupError:
+        nltk.download(resource.rsplit("/", 1)[-1], raise_on_error=True)
+
 from web_fetch_evaluation import CASES_DIR, FetchCase, load_cases
 
 from mcps.common.decisions import DecisionClient
