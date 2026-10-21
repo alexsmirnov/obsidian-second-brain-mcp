@@ -2,7 +2,51 @@
 
 from __future__ import annotations
 
-from mcps.research.tools.bm25_ranker import Bm25Ranker, lexical_scores
+import subprocess
+import sys
+import textwrap
+from pathlib import Path
+
+import pytest
+
+from mcps.research.tools.bm25_ranker import Bm25Ranker
+
+
+@pytest.mark.parametrize("construct", [False, True], ids=["import", "construct"])
+def test_ranker_without_nltk_data_imports_but_construction_fails(construct: bool):
+    # Arrange: a fresh process cannot reuse already loaded NLTK corpora.
+    script = textwrap.dedent(
+        f"""\
+        import importlib
+        from unittest.mock import patch
+
+        import nltk
+
+        nltk.data.path = []
+        with patch("nltk.download", side_effect=AssertionError("Download attempted")):
+            module = importlib.import_module("mcps.research.tools.bm25_ranker")
+            if {construct!r}:
+                try:
+                    module.Bm25Ranker()
+                except LookupError as error:
+                    assert "stopwords" in str(error)
+                else:
+                    raise AssertionError("Construction must require stopwords")
+        """
+    )
+
+    # Act
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+
+    # Assert
+    assert result.returncode == 0, result.stderr
 
 FRAGMENTS = [
     "Bread flour needs water and time.",
@@ -33,7 +77,7 @@ async def test_bm25_ranker_identifiers_are_searchable():
 
 
 def test_lexical_scores_returns_one_score_per_fragment_zero_without_overlap():
-    scores = lexical_scores(FRAGMENTS, "quantum")
+    scores = Bm25Ranker().lexical_scores(FRAGMENTS, "quantum")
 
     assert len(scores) == len(FRAGMENTS)
     assert scores[0] == 0.0 and scores[2] == 0.0

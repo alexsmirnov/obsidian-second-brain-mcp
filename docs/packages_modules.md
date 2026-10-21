@@ -156,7 +156,7 @@ Async web search and content fetching. The fetch tool is a chain of small classe
 | `html_markdown.py` | `create_markdown_generator` (the crawl4ai generator shared with `browser.py`: pruning filter, links kept), `is_html`, and `HtmlToMarkdown`, the filter converting an HTML result to Markdown |
 | `filtering.py` | The `Chunker` (`split` text to fragments, `merge` selected fragments back to one text) and `Ranker` (fragment texts to relevant indices) protocols, the `Fragment(text, start, end)` type (one contiguous source slice addressed by half-open offsets that may overlap other fragments), the `FilterModelError` ranker failure, and `RelevanceFilter`, which splits a textual result, ranks the fragment texts, and merges the selected fragments in document order |
 | `markdown_chunker.py` | `MarkdownChunker`: windows that target `max_chars` characters. Each cut moves up to a tenth of that size to the nearest H1-H6 heading or the line after a blank line, and neighbors overlap by `overlap_chars`. A `Fragment` holds the exact source slice, so `merge` rebuilds the selected text from offsets alone |
-| `bm25_ranker.py` | `Bm25Ranker` and `lexical_scores`: local BM25L ranking of fragments |
+| `bm25_ranker.py` | `Bm25Ranker` ranks fragments with BM25L and exposes `lexical_scores()`. Construction loads NLTK stopwords without downloads. Imports do not load NLTK data. |
 | `fetch.py` | `create_fetch`: the composition root; `build_fetch_tool`: lifespan-friendly context manager that owns the browser via `create_browser_fetch` and assembles the fetch |
 
 #### Composition ([fetch.py](../src/mcps/research/tools/fetch.py)) #architecture

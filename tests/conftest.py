@@ -19,8 +19,7 @@ def _missing_nltk_resources() -> list[str]:
 
 
 if missing := _missing_nltk_resources():
-    # The BM25 ranker loads these at import time; fail once with a clear hint
-    # instead of a collection error per test module.
+    # Fail once with a clear setup hint instead of separate failures in ranker tests.
     pytest.exit(
         f"NLTK data not found: {', '.join(missing)}.\n"
         "Download it once and point NLTK at it:\n"
