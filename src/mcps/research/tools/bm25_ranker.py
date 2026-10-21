@@ -20,9 +20,16 @@ logger = logging.getLogger(__name__)
 class Bm25Ranker:
     """Rank fragments with BM25L using preinstalled NLTK data; never download it."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, threshold: float = 1.0) -> None:
+        if not threshold >= 0:  # also rejects NaN
+            raise ValueError("threshold must be non-negative")
+        self._threshold = threshold
         self._stop_words = frozenset(stopwords.words("english"))
         self._stemmer = SnowballStemmer("english")
+
+    @property
+    def threshold(self) -> float:
+        return self._threshold
 
     def _normalize_tokens(self, text: str) -> list[str]:
         return [
@@ -48,7 +55,9 @@ class Bm25Ranker:
 
     def _rank(self, fragments: list[str], query: str) -> list[int]:
         scores = self.lexical_scores(fragments, query)
-        matching = [index for index, score in enumerate(scores) if score > 1.0]
+        matching = [
+            index for index, score in enumerate(scores) if score > self._threshold
+        ]
         logger.info(
             "Lexical scores: [%s] matched for %d fragments of %d",
             ",".join(f"{score:.2f}" for score in scores),

@@ -11,8 +11,8 @@ from typing import Any
 import httpx
 import pytest
 
-from mcps.common.decisions import DecisionClient, DecisionError
-from mcps.research.tools.decision_ranker import DecisionRanker
+from mcps.common.decisions import DecisionClient, DecisionError, Noul, NoulCriteria
+from mcps.research.tools.decision_ranker import RELEVANCE_QUESTION, DecisionRanker
 from mcps.research.tools.filtering import FilterModelError
 
 ROUTER = "http://router/v1"
@@ -141,3 +141,38 @@ def test_invalid_options_are_rejected(options: dict[str, Any]):
 
     with pytest.raises(ValueError):
         make_ranker(handler, **options)
+
+
+CUSTOM_QUESTION = Noul(
+    instructions="Is it about X?",
+    criteria=NoulCriteria(true="About X.", false="Not X."),
+)
+
+
+async def test_default_question_is_the_relevance_question():
+    requests: list[httpx.Request] = []
+
+    await make_ranker(scripted({"alpha": 0.9}, requests=requests))(["alpha"], "q")
+
+    sent = json.loads(requests[0].content)["questions"]["relevant"]
+    assert sent == RELEVANCE_QUESTION.model_dump(mode="json", exclude_none=True)
+
+
+async def test_custom_question_is_sent_to_the_router():
+    requests: list[httpx.Request] = []
+    ranker = make_ranker(
+        scripted({"alpha": 0.9}, requests=requests), question=CUSTOM_QUESTION
+    )
+
+    await ranker(["alpha"], "q")
+
+    sent = json.loads(requests[0].content)["questions"]["relevant"]
+    assert sent["instructions"] == "Is it about X?"
+    assert sent["criteria"] == {"true": "About X.", "false": "Not X."}
+
+
+def test_exposes_question():
+    assert make_ranker(scripted({}), question=CUSTOM_QUESTION).question is (
+        CUSTOM_QUESTION
+    )
+    assert make_ranker(scripted({})).question is RELEVANCE_QUESTION

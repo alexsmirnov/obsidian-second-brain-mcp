@@ -57,7 +57,7 @@ FRAGMENTS = [
 
 
 async def test_bm25_ranker_returns_only_fragments_overlapping_the_query():
-    indices = await Bm25Ranker()(FRAGMENTS, "quantum routing")
+    indices = await Bm25Ranker(threshold=0.5)(FRAGMENTS, "quantum routing")
 
     assert set(indices) == {1, 3}
 
@@ -82,3 +82,24 @@ def test_lexical_scores_returns_one_score_per_fragment_zero_without_overlap():
     assert len(scores) == len(FRAGMENTS)
     assert scores[0] == 0.0 and scores[2] == 0.0
     assert scores[1] > 0.0 and scores[3] > 0.0
+
+
+async def test_bm25_ranker_threshold_above_all_scores_selects_nothing():
+    assert await Bm25Ranker(threshold=1000.0)(FRAGMENTS, "quantum routing") == []
+
+
+async def test_bm25_ranker_zero_threshold_keeps_every_overlapping_fragment():
+    indices = await Bm25Ranker(threshold=0.0)(FRAGMENTS, "quantum")
+
+    assert set(indices) == {1, 3}
+
+
+@pytest.mark.parametrize("threshold", [-0.1, float("nan")])
+def test_bm25_ranker_rejects_invalid_threshold(threshold: float):
+    with pytest.raises(ValueError, match="threshold"):
+        Bm25Ranker(threshold=threshold)
+
+
+def test_bm25_ranker_exposes_threshold():
+    assert Bm25Ranker().threshold == 1.0
+    assert Bm25Ranker(threshold=2.5).threshold == 2.5

@@ -4,6 +4,11 @@
 Run from the repository root:
 ``uv run tests/web_relevance_filter_evaluation.py --filter bm25 --limit 5``.
 
+Tuning arguments override the chunker size and overlap, the ranker threshold,
+the fetch-query prompt and the decision ranker question, for example
+``--filter bm25 --max-chars 3000 --overlap-chars 500 --threshold 2.0``. Every
+report row records the effective values under ``settings``.
+
 Pages and queries come from the fetch smoke dataset. ``expectations.json`` lists,
 per case, passages the filter must keep and boilerplate it must drop.
 
@@ -23,7 +28,7 @@ import logging
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import cast
+from typing import TypedDict, cast
 
 import httpx
 import nltk
@@ -31,13 +36,13 @@ from dotenv import find_dotenv, load_dotenv
 from langchain_core.messages import HumanMessage, SystemMessage
 from web_fetch_evaluation import CASES_DIR, FetchCase, load_cases
 
-from mcps.common.decisions import DecisionClient
+from mcps.common.decisions import DecisionClient, Noul, NoulCriteria
 from mcps.config import ServerConfig, create_config
 from mcps.research.config import _create_chat_model
 from mcps.research.deep_research import FETCH_QUERY_INSTRUCTIONS, FetchQuery
 from mcps.research.tools.bm25_ranker import Bm25Ranker
 from mcps.research.tools.common import valid_router_url
-from mcps.research.tools.decision_ranker import DecisionRanker
+from mcps.research.tools.decision_ranker import RELEVANCE_QUESTION, DecisionRanker
 from mcps.research.tools.filtering import Ranker, RelevanceFilter
 from mcps.research.tools.markdown_chunker import MarkdownChunker
 from mcps.research.tools.models import FetchResult, FetchStatus
@@ -95,24 +100,64 @@ def fetch_query_message(inp: FetchQueryInput) -> str:
     return f"QUESTION: {inp.question}"
 
 
-RankerBuilder = Callable[[ServerConfig, httpx.AsyncClient], Ranker]
+@dataclass(frozen=True)
+class RankerTuning:
+    """Ranker overrides; ``None`` keeps the ranker's own default."""
+
+    threshold: float | None = None
+    decision_question: Noul | None = None
 
 
-def bm25_ranker(_config: ServerConfig, _http_client: httpx.AsyncClient) -> Ranker:
-    return Bm25Ranker()
+class _DecisionOptions(TypedDict, total=False):
+    threshold: float
+    question: Noul
 
 
-def decision_ranker(config: ServerConfig, http_client: httpx.AsyncClient) -> Ranker:
+RankerBuilder = Callable[
+    [ServerConfig, httpx.AsyncClient, RankerTuning], Bm25Ranker | DecisionRanker
+]
+
+
+def bm25_ranker(
+    _config: ServerConfig, _http_client: httpx.AsyncClient, tuning: RankerTuning
+) -> Bm25Ranker:
+    if tuning.threshold is None:
+        return Bm25Ranker()
+    return Bm25Ranker(threshold=tuning.threshold)
+
+
+def decision_ranker(
+    config: ServerConfig, http_client: httpx.AsyncClient, tuning: RankerTuning
+) -> DecisionRanker:
     if not (config.decision_model and valid_router_url(config.router_api_base)):
         raise RuntimeError("DECISION_MODEL or router settings not set")
+    options = _DecisionOptions()
+    if tuning.threshold is not None:
+        options["threshold"] = tuning.threshold
+    if tuning.decision_question is not None:
+        options["question"] = tuning.decision_question
     return DecisionRanker(
         DecisionClient(
             http_client,
             router_url=config.router_api_base,
             router_key=config.router_api_key,
             model=config.decision_model,
-        )
+        ),
+        **options,
     )
+
+
+def ranker_settings(ranker: Bm25Ranker | DecisionRanker) -> dict[str, object]:
+    """Effective ranker settings recorded with every report row."""
+    settings: dict[str, object] = {"threshold": ranker.threshold}
+    if isinstance(ranker, DecisionRanker):
+        criteria = ranker.question.criteria or NoulCriteria()
+        settings["decision_question"] = {
+            "instructions": ranker.question.instructions,
+            "true": criteria.true,
+            "false": criteria.false,
+        }
+    return settings
 
 
 # Append an entry to compare another filter implementation on the same pages.
@@ -308,6 +353,7 @@ async def generate_fetch_query(
     cases: Iterable[FetchCase],
     config: ServerConfig,
     http_client: httpx.AsyncClient,
+    instructions: str = FETCH_QUERY_INSTRUCTIONS,
 ) -> str:
     """Generate one fetch query for a case via the shared production fragment."""
     if not (
@@ -336,7 +382,7 @@ async def generate_fetch_query(
         FetchQuery,
         await model.with_structured_output(FetchQuery).ainvoke(
             [
-                SystemMessage(FETCH_QUERY_INSTRUCTIONS),
+                SystemMessage(instructions),
                 HumanMessage(fetch_query_message(inp)),
             ]
         ),
@@ -392,7 +438,29 @@ async def evaluate_case(
     return metrics, row
 
 
-async def main(argv: list[str] | None = None) -> None:
+def decision_question(args: argparse.Namespace) -> Noul | None:
+    """Relevance question with CLI overrides, or ``None`` when none are given."""
+    overrides = (args.decision_instructions, args.decision_true, args.decision_false)
+    if all(text is None for text in overrides):
+        return None
+    default_criteria = RELEVANCE_QUESTION.criteria or NoulCriteria()
+    return Noul(
+        instructions=_override(
+            args.decision_instructions, RELEVANCE_QUESTION.instructions
+        ),
+        criteria=NoulCriteria(
+            true=_override(args.decision_true, default_criteria.true),
+            false=_override(args.decision_false, default_criteria.false),
+        ),
+    )
+
+
+def _override[T](value: T | None, default: T) -> T:
+    """Explicit CLI value, empty strings included, else the default."""
+    return default if value is None else value
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--filter", choices=sorted(FILTERS), default="bm25")
     parser.add_argument(
@@ -404,7 +472,55 @@ async def main(argv: list[str] | None = None) -> None:
         default="dataset",
         help="use the recorded query or generate one with the fetch-query fragment",
     )
+    parser.add_argument(
+        "--max-chars", type=int, default=5000, help="chunker fragment size"
+    )
+    parser.add_argument(
+        "--overlap-chars", type=int, default=1500, help="chunker fragment overlap"
+    )
+    parser.add_argument(
+        "--threshold",
+        type=float,
+        help="BM25 score cutoff (default 1.0) or decision probability (default 0.6)",
+    )
+    parser.add_argument(
+        "--fetch-query-prompt",
+        type=Path,
+        help="file replacing FETCH_QUERY_INSTRUCTIONS; "
+        "requires --query-source generated",
+    )
+    decision = parser.add_argument_group(
+        "decision prompts", "override RELEVANCE_QUESTION fields; --filter decision"
+    )
+    decision.add_argument("--decision-instructions", help="question instructions")
+    decision.add_argument("--decision-true", help="criteria for a yes answer")
+    decision.add_argument("--decision-false", help="criteria for a no answer")
     args = parser.parse_args(argv)
+
+    prompt: Path | None = args.fetch_query_prompt
+    if prompt is not None and args.query_source != "generated":
+        parser.error("--fetch-query-prompt requires --query-source generated")
+    if prompt is not None and not prompt.is_file():
+        parser.error(f"fetch query prompt file not found: {prompt}")
+    decision_overrides = (
+        args.decision_instructions,
+        args.decision_true,
+        args.decision_false,
+    )
+    if args.filter != "decision" and any(
+        text is not None for text in decision_overrides
+    ):
+        parser.error("--decision-* arguments require --filter decision")
+    return args
+
+
+async def main(argv: list[str] | None = None) -> None:
+    args = parse_args(argv)
+    instructions = (
+        args.fetch_query_prompt.read_text(encoding="utf-8")
+        if args.fetch_query_prompt is not None
+        else FETCH_QUERY_INSTRUCTIONS
+    )
 
     stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     stem = f"relevance-{args.filter}-{args.query_source}-{stamp}"
@@ -436,8 +552,29 @@ async def main(argv: list[str] | None = None) -> None:
 
     evaluation = FilterEvaluation(filter_name=f"{args.filter}/{args.query_source}")
     async with httpx.AsyncClient(timeout=120.0) as http_client:
-        recorder = RecordingRanker(FILTERS[args.filter](config, http_client))
-        page_filter = RelevanceFilter(MarkdownChunker(), recorder)
+        ranker = FILTERS[args.filter](
+            config,
+            http_client,
+            RankerTuning(args.threshold, decision_question(args)),
+        )
+        settings: dict[str, object] = {
+            "max_chars": args.max_chars,
+            "overlap_chars": args.overlap_chars,
+            **ranker_settings(ranker),
+            "fetch_query_prompt": (
+                str(args.fetch_query_prompt)
+                if args.fetch_query_prompt is not None
+                else None
+            ),
+        }
+        logger.info("Settings: %s", json.dumps(settings))
+        recorder = RecordingRanker(ranker)
+        page_filter = RelevanceFilter(
+            MarkdownChunker(
+                max_chars=args.max_chars, overlap_chars=args.overlap_chars
+            ),
+            recorder,
+        )
         with report_path.open("w", encoding="utf-8") as report:
             for number, case_id in enumerate(case_ids, start=1):
                 case = cases[case_id]
@@ -445,7 +582,7 @@ async def main(argv: list[str] | None = None) -> None:
                     case.query or ""
                     if args.query_source == "dataset"
                     else await generate_fetch_query(
-                        case, cases.values(), config, http_client
+                        case, cases.values(), config, http_client, instructions
                     )
                 )
                 metrics, row = await evaluate_case(
@@ -457,6 +594,7 @@ async def main(argv: list[str] | None = None) -> None:
                     args.filter,
                     args.query_source,
                 )
+                row["settings"] = settings
                 evaluation.cases.append(metrics)
                 report.write(json.dumps(row) + "\n")
                 report.flush()
