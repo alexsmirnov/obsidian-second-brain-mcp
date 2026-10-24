@@ -3,11 +3,10 @@ from contextlib import asynccontextmanager
 from datetime import timedelta
 from unittest.mock import patch
 
-import pytest
-
 from mcps.config import ServerConfig
+from mcps.rag.index_scheduler import IndexScheduler
 from mcps.rag.interfaces import IVault, Link, TraversalResult
-from mcps.tools.obsidian_vault import _periodic_update_index, build_obsidian_lifespan
+from mcps.tools.obsidian_vault import build_obsidian_lifespan
 
 
 class FakeVault(IVault):
@@ -63,60 +62,6 @@ class FakeVault(IVault):
         return TraversalResult(origin=wikilink_name)
 
 
-@pytest.fixture
-def fast_sleep(monkeypatch):
-    real_sleep = asyncio.sleep
-
-    async def _fast_sleep(_delay: float) -> None:
-        await real_sleep(0)
-
-    monkeypatch.setattr(asyncio, "sleep", _fast_sleep)
-
-
-async def test_periodic_update_index_calls_update_index_at_interval(fast_sleep) -> None:
-    vault = FakeVault()
-    task = asyncio.create_task(
-        _periodic_update_index(vault, timedelta(seconds=1))
-    )
-
-    await vault.third_call_event.wait()
-    task.cancel()
-
-    with pytest.raises(asyncio.CancelledError):
-        await task
-
-    assert vault.update_index_calls >= 3
-
-
-async def test_periodic_update_index_continues_after_failure(fast_sleep) -> None:
-    vault = FakeVault()
-    vault.fail_next_n = 1
-    task = asyncio.create_task(
-        _periodic_update_index(vault, timedelta(seconds=1))
-    )
-
-    await vault.third_call_event.wait()
-    task.cancel()
-
-    with pytest.raises(asyncio.CancelledError):
-        await task
-
-    assert vault.update_index_calls >= 3
-
-
-async def test_periodic_update_index_exits_on_cancel(fast_sleep) -> None:
-    vault = FakeVault()
-    task = asyncio.create_task(
-        _periodic_update_index(vault, timedelta(seconds=1))
-    )
-
-    await asyncio.sleep(0)
-    task.cancel()
-
-    with pytest.raises(asyncio.CancelledError):
-        await task
-
-
 async def test_obsidian_lifespan_starts_and_cancels_periodic_task(
     tmp_path, monkeypatch
 ) -> None:
@@ -130,12 +75,17 @@ async def test_obsidian_lifespan_starts_and_cancels_periodic_task(
     with patch("mcps.tools.obsidian_vault.create_vault", fake_create_vault):
         monkeypatch.setattr(
             "mcps.tools.obsidian_vault.UPDATE_INTERVAL",
-            timedelta(seconds=0),
+            timedelta(milliseconds=5),
         )
         lifespan = build_obsidian_lifespan(config)
 
         async with lifespan(None) as ctx:
             await asyncio.wait_for(fake_vault.first_call_event.wait(), timeout=1)
             assert ctx["obsidian_vault"] is fake_vault
+            scheduler = ctx["obsidian_index_scheduler"]
+            assert isinstance(scheduler, IndexScheduler)
 
+    async with asyncio.timeout(0.1):
+        fresh = await scheduler.wait_for_next_update(timedelta(seconds=10))
+    assert fresh is False
     assert fake_vault.update_index_calls >= 1

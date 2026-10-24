@@ -14,6 +14,7 @@ from fastmcp.server.lifespan import Lifespan, lifespan
 from pydantic import BaseModel, Field
 
 from mcps.config import ServerConfig
+from mcps.rag.index_scheduler import IndexScheduler
 from mcps.rag.interfaces import Chunk, IVault, Link, TraversalResult, dedupe_links
 from mcps.rag.vault import create_vault
 
@@ -180,20 +181,11 @@ class SearchResultFullItem(SearchResultItem):
     file_size: int
 
 
-UPDATE_INTERVAL = timedelta(minutes=1)
+UPDATE_INTERVAL = timedelta(minutes=5)
+INDEX_REFRESH_TIMEOUT = timedelta(seconds=20)
 MAX_BACKLINKS_PER_NOTE = 20
 MAX_SEARCH_RESULT_CHARACTERS = 25_000
 DROPPED_CONTENT = "<<Dropped: content is too big>>"
-
-
-async def _periodic_update_index(vault: IVault, interval: timedelta) -> None:
-    """Periodically synchronize the vault file system with the vector store."""
-    while True:
-        try:
-            await vault.update_index()
-        except Exception:
-            logger.exception("Periodic vault index update failed")
-        await asyncio.sleep(interval.total_seconds())
 
 
 def build_obsidian_lifespan(config: ServerConfig) -> Lifespan:
@@ -218,12 +210,15 @@ def build_obsidian_lifespan(config: ServerConfig) -> Lifespan:
                 config,
                 http_client
             ) as vault:
-                index_task = asyncio.create_task(
-                    _periodic_update_index(vault, UPDATE_INTERVAL)
-                )
+                scheduler = IndexScheduler(vault, UPDATE_INTERVAL)
+                index_task = asyncio.create_task(scheduler.run())
                 try:
                     logger.info("Obsidian vault initialized and indexing started")
-                    yield {"obsidian_vault": vault, "obsidian_config": config}
+                    yield {
+                        "obsidian_vault": vault,
+                        "obsidian_index_scheduler": scheduler,
+                        "obsidian_config": config,
+                    }
                 finally:
                     if not index_task.done():
                         index_task.cancel()
@@ -340,6 +335,7 @@ async def get_file_content(
     if invalid_message is not None:
         raise ToolError(invalid_message)
 
+    await _wait_for_fresh_index(ctx)
     try:
         return await _vault_from_context(ctx).get_file(
             wikilink_name,
@@ -509,6 +505,7 @@ async def search(
     path: PathFilter = None, # type: ignore
 ) -> list[SearchResultItem]:
     """Search for content within the Obsidian Vault using semantic search."""
+    await _wait_for_fresh_index(ctx)
     try:
         logger.info(f"Searching Obsidian Vault for: {query}")
         chunks = await _vault_from_context(ctx).search(
@@ -545,6 +542,7 @@ async def traverse_relations(
     relation_types: RelationTypes = None, # type: ignore
 ) -> TraversalResult:
     """Walk typed note relations forward and backward from one note."""
+    await _wait_for_fresh_index(ctx)
     try:
         return await _vault_from_context(ctx).traverse_relations(
             note, depth, relation_types
@@ -555,6 +553,20 @@ async def traverse_relations(
 
 def _vault_from_context(ctx: Context) -> IVault:
     return ctx.lifespan_context["obsidian_vault"]
+
+
+def _index_scheduler_from_context(ctx: Context) -> IndexScheduler:
+    return ctx.lifespan_context["obsidian_index_scheduler"]
+
+
+async def _wait_for_fresh_index(ctx: Context) -> None:
+    """Bring the index up to date with the vault files before reading it."""
+    scheduler = _index_scheduler_from_context(ctx)
+    if not await scheduler.wait_for_next_update(INDEX_REFRESH_TIMEOUT):
+        logger.warning(
+            "Index refresh did not finish in %s, answering from the current index",
+            INDEX_REFRESH_TIMEOUT,
+        )
 
 
 def _config_from_context(ctx: Context) -> ServerConfig:

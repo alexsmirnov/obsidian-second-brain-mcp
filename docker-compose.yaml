@@ -4,6 +4,7 @@
 # 127.0.0.1:9222 and the MCP container reaches it over loopback, so CDP is
 # never exposed outside the host. The MCP port is published on the browser
 # service because of `network_mode: service:browser`.
+name: vault-mcp
 services:
   browser:
     image: h4ckf0r0day/obscura:0.2.5
@@ -21,7 +22,7 @@ services:
       retries: 3
       start_period: 5s
 
-  mcps:
+  server:
     build: .
     network_mode: "service:browser"
     depends_on:

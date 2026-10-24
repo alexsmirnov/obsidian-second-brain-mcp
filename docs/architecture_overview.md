@@ -79,7 +79,7 @@ Async server start [src/mcps/server.py:125-131]
 
 The RAG pipeline in [src/mcps/rag/vault.py:252-556](../src/mcps/rag/vault.py#L252-L556) implements the `IVault` interface:
 
-**Index Update Flow** [src/mcps/rag/vault.py:285-364](../src/mcps/rag/vault.py#L285-L364):
+**Index Update Flow** [src/mcps/rag/vault.py:293-381](../src/mcps/rag/vault.py#L293-L381). The [IndexScheduler](../src/mcps/rag/index_scheduler.py) triggers it at startup, every 5 minutes, and before index-backed tool calls:
 1. Retrieve stored file metadata from vector store
 2. Traverse file system for current files
 3. Compare modification timestamps
@@ -182,7 +182,7 @@ All components implement specific interfaces enabling:
 - Multiple chunking strategies (FixedSize, Semantic)
 
 ### Async Context Managers
-Lifespans use async context managers for connection lifecycle management: the Obsidian lifespan owns the HTTP client and vault [src/mcps/tools/obsidian_vault.py:181-203](../src/mcps/tools/obsidian_vault.py#L181-L203), and the research lifespan owns the HTTP client and the whole browser stack through nested context managers (`build_research_config` → `build_fetch_tool` → `create_browser_fetch`) so fetches reuse one CDP connection [src/mcps/research/lifespan.py:14](../src/mcps/research/lifespan.py#L14).
+Lifespans use async context managers for connection lifecycle management: the Obsidian lifespan owns the HTTP client, the vault, and the index scheduler [src/mcps/tools/obsidian_vault.py:191-230](../src/mcps/tools/obsidian_vault.py#L191-L230), and the research lifespan owns the HTTP client and the whole browser stack through nested context managers (`build_research_config` → `build_fetch_tool` → `create_browser_fetch`) so fetches reuse one CDP connection [src/mcps/research/lifespan.py:14](../src/mcps/research/lifespan.py#L14).
 
 ### Factory Pattern
 Component creation isolated in factory functions:

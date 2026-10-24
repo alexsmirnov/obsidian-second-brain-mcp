@@ -378,8 +378,9 @@ class IVault(ABC):
         The method gets the list of files in the vault and saved in the storage.
         It deletes all chunks for source_paths that are not in the vault anymore
         or were modified, adds new chunks for files that were added or modified,
-        and rebuilds the vector-store indexes. It is invoked periodically by the
-        Obsidian lifespan so that search operations never block on indexing.
+        and rebuilds the vector-store indexes. The Obsidian lifespan runs it at
+        startup, every few minutes, and before index-backed tool calls through
+        ``IndexScheduler``. Vault search and read methods never call it.
         """
         pass
 

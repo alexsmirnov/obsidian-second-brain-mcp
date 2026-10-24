@@ -116,10 +116,13 @@ Contract tests for `load_cases` and `summarize` of the fetch evaluation script, 
 Integration tests for `LlmReranker` with different model pairs and embedding fusion.
 
 ### [tests/test_obsidian_vault_lifespan.py](../tests/test_obsidian_vault_lifespan.py)
-Tests for periodic vault indexing updates and error boundaries in the Obsidian lifespan.
+Test that the Obsidian lifespan starts the index scheduler, exposes it to the tools, and stops it on exit.
+
+### [tests/test_index_scheduler.py](../tests/test_index_scheduler.py)
+Contract tests for `IndexScheduler` with a controllable vault double: startup and periodic updates, updates that start after a request, one shared update for concurrent requests, timeouts that do not cancel the update, failed updates, and a scheduler that is not running.
 
 ### [tests/test_obsidian_vault_tools.py](../tests/test_obsidian_vault_tools.py)
-Tests verifying registrations, execution, and error handling of Obsidian tool definitions, including per-document search-result consolidation, gap markers, typed links/backlinks, and the 25,000-character response budget.
+Tests verifying registrations, execution, and error handling of Obsidian tool definitions, including per-document search-result consolidation, gap markers, typed links/backlinks, and the 25,000-character response budget. It also covers the index refresh before search, read, and traversal calls. A read call must find a note that a client created after the last update.
 
 ### [tests/test_proxy_reranker.py](../tests/test_proxy_reranker.py)
 Integration tests for `ProxyReranker` with OpenAI-compatible rerank endpoints.
@@ -228,7 +231,7 @@ Helper functions create test data:
 - LanceDB database operations
 - Shared `httpx.AsyncClient` injection
 - LangGraph deep research agent workflow
-- Vault lifespan and periodic indexing
+- Vault lifespan and index scheduling
 
 ### Error Handling
 - API failure scenarios

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import suppress
+from datetime import timedelta
 from pathlib import Path
 from typing import cast
 from unittest.mock import AsyncMock
@@ -10,8 +12,10 @@ from fastmcp import Context
 from fastmcp.exceptions import ToolError, ValidationError
 
 from mcps.config import ServerConfig
+from mcps.rag.index_scheduler import IndexScheduler
 from mcps.rag.interfaces import (
     Chunk,
+    IVault,
     Link,
     NoteLinks,
     TraversalResult,
@@ -33,13 +37,23 @@ class FakeContext:
         self.lifespan_context = lifespan_context
 
 
+class FakeIndexScheduler:
+    def __init__(self, events: list[str], fresh: bool = True):
+        self.events = events
+        self.fresh = fresh
+        self.timeouts: list[timedelta] = []
+
+    async def wait_for_next_update(self, timeout: timedelta) -> bool:
+        self.events.append("wait")
+        self.timeouts.append(timeout)
+        return self.fresh
+
+
 class FakeVault:
     def __init__(self):
         self.entered = False
         self.exited = False
-        self.index_started = False
-        self.index_cancelled = False
-        self._index_started = asyncio.Event()
+        self.events: list[str] = []
         self.files: dict[str, str] = {}
         self.get_file_calls: list[tuple[str, int | None, int | None]] = []
         self.search_results: list[Chunk] = []
@@ -49,13 +63,7 @@ class FakeVault:
         self.traverse_calls: list[tuple[str, int, list[str] | None]] = []
 
     async def update_index(self) -> None:
-        self.index_started = True
-        self._index_started.set()
-        try:
-            await asyncio.Event().wait()
-        except asyncio.CancelledError:
-            self.index_cancelled = True
-            raise
+        pass
 
     async def list_files(self, directory: str) -> list[str]:
         assert directory == ""
@@ -67,6 +75,7 @@ class FakeVault:
         offset: int | None = None,
         limit: int | None = None,
     ) -> str:
+        self.events.append("get_file")
         self.get_file_calls.append((file_name, offset, limit))
         if file_name not in self.files:
             raise FileNotFoundError(file_name)
@@ -82,6 +91,7 @@ class FakeVault:
         tags: list[str] | None = None,
         path: str | None = None,
     ) -> list[Chunk]:
+        self.events.append("search")
         return self.search_results
 
     async def get_backlinks(
@@ -96,8 +106,30 @@ class FakeVault:
         depth: int = 1,
         relation_types: list[str] | None = None,
     ) -> TraversalResult:
+        self.events.append("traverse")
         self.traverse_calls.append((wikilink_name, depth, relation_types))
         return self.traversal_result
+
+
+class StaleUntilIndexedVault(FakeVault):
+    """Notes in `pending` become readable only after update_index runs."""
+
+    def __init__(self):
+        super().__init__()
+        self.pending: dict[str, str] = {}
+
+    async def update_index(self) -> None:
+        self.files.update(self.pending)
+        self.pending.clear()
+
+
+def make_context(
+    vault: FakeVault, scheduler: object | None = None
+) -> Context:
+    return cast(Context, FakeContext({
+        "obsidian_vault": vault,
+        "obsidian_index_scheduler": scheduler or FakeIndexScheduler(vault.events),
+    }))
 
 
 @pytest.mark.asyncio
@@ -127,7 +159,7 @@ async def test_obsidian_tools_are_not_registered_without_vault_dir():
 @pytest.mark.asyncio
 async def test_obsidian_list_files_uses_lifespan_vault_context():
     fake_vault = FakeVault()
-    ctx = cast(Context, FakeContext({"obsidian_vault": fake_vault}))
+    ctx = make_context(fake_vault)
 
     result = await obsidian_vault.list_files("/", ctx)
 
@@ -138,7 +170,7 @@ async def test_obsidian_list_files_uses_lifespan_vault_context():
 async def test_get_file_content_validates_and_calls_vault_get_file():
     fake_vault = FakeVault()
     fake_vault.files = {"Note": "content"}
-    ctx = cast(Context, FakeContext({"obsidian_vault": fake_vault}))
+    ctx = make_context(fake_vault)
 
     result = await obsidian_vault.get_file_content("Note", ctx)
 
@@ -150,7 +182,7 @@ async def test_get_file_content_validates_and_calls_vault_get_file():
 async def test_get_file_content_reads_path_qualified_wikilink_directly():
     fake_vault = FakeVault()
     fake_vault.files = {"Folder/Note": "content"}
-    ctx = cast(Context, FakeContext({"obsidian_vault": fake_vault}))
+    ctx = make_context(fake_vault)
 
     result = await obsidian_vault.get_file_content("Folder/Note", ctx)
 
@@ -161,7 +193,7 @@ async def test_get_file_content_reads_path_qualified_wikilink_directly():
 @pytest.mark.asyncio
 async def test_get_file_content_converts_vault_value_error_to_tool_error():
     fake_vault = FakeVault()
-    ctx = cast(Context, FakeContext({"obsidian_vault": fake_vault}))
+    ctx = make_context(fake_vault)
 
     with pytest.raises(ToolError, match="Note"):
         await obsidian_vault.get_file_content("Note", ctx)
@@ -170,7 +202,7 @@ async def test_get_file_content_converts_vault_value_error_to_tool_error():
 @pytest.mark.asyncio
 async def test_get_file_content_converts_vault_not_found_to_tool_error():
     fake_vault = FakeVault()
-    ctx = cast(Context, FakeContext({"obsidian_vault": fake_vault}))
+    ctx = make_context(fake_vault)
 
     with pytest.raises(ToolError, match="Missing"):
         await obsidian_vault.get_file_content("Missing", ctx)
@@ -179,7 +211,7 @@ async def test_get_file_content_converts_vault_not_found_to_tool_error():
 @pytest.mark.asyncio
 async def test_get_file_content_rejects_relative_traversal_wikilink():
     fake_vault = FakeVault()
-    ctx = cast(Context, FakeContext({"obsidian_vault": fake_vault}))
+    ctx = make_context(fake_vault)
 
     with pytest.raises(ToolError, match="Invalid wikilink name"):
         await obsidian_vault.get_file_content("../../etc/passwd", ctx)
@@ -189,7 +221,7 @@ async def test_get_file_content_rejects_relative_traversal_wikilink():
 async def test_get_file_content_applies_offset_and_limit():
     fake_vault = FakeVault()
     fake_vault.files = {"Note": "line0\nline1\nline2\nline3\n"}
-    ctx = cast(Context, FakeContext({"obsidian_vault": fake_vault}))
+    ctx = make_context(fake_vault)
 
     result = await obsidian_vault.get_file_content("Note", ctx, offset=1, limit=2)
 
@@ -200,7 +232,7 @@ async def test_get_file_content_applies_offset_and_limit():
 @pytest.mark.asyncio
 async def test_get_file_content_rejects_negative_offset():
     fake_vault = FakeVault()
-    ctx = cast(Context, FakeContext({"obsidian_vault": fake_vault}))
+    ctx = make_context(fake_vault)
 
     with pytest.raises(ToolError, match="Invalid offset"):
         await obsidian_vault.get_file_content("Note", ctx, offset=-1)
@@ -209,7 +241,7 @@ async def test_get_file_content_rejects_negative_offset():
 @pytest.mark.asyncio
 async def test_get_file_content_rejects_negative_limit():
     fake_vault = FakeVault()
-    ctx = cast(Context, FakeContext({"obsidian_vault": fake_vault}))
+    ctx = make_context(fake_vault)
 
     with pytest.raises(ToolError, match="Invalid limit"):
         await obsidian_vault.get_file_content("Note", ctx, limit=-1)
@@ -218,7 +250,7 @@ async def test_get_file_content_rejects_negative_limit():
 @pytest.mark.asyncio
 async def test_get_file_content_rejects_md_extension_for_wikilink_names():
     fake_vault = FakeVault()
-    ctx = cast(Context, FakeContext({"obsidian_vault": fake_vault}))
+    ctx = make_context(fake_vault)
 
     with pytest.raises(ToolError, match="Invalid wikilink name"):
         await obsidian_vault.get_file_content("Note.md", ctx)
@@ -241,7 +273,7 @@ async def test_search_returns_wikilink_name_offset_and_size_in_results():
             file_size=7,
         )
     ]
-    ctx = cast(Context, FakeContext({"obsidian_vault": fake_vault}))
+    ctx = make_context(fake_vault)
 
     results = await obsidian_vault.search("query", ctx)
 
@@ -310,7 +342,7 @@ async def test_search_exposes_typed_outgoing_links():
             link_types=["requires", "related"],
         )
     ]
-    ctx = cast(Context, FakeContext({"obsidian_vault": fake_vault}))
+    ctx = make_context(fake_vault)
 
     # Act
     result = await obsidian_vault.search("query", ctx)
@@ -329,7 +361,7 @@ async def test_search_exposes_typed_backlinks():
     fake_vault = FakeVault()
     fake_vault.search_results = [make_result_chunk()]
     fake_vault.backlinks = {"Doc": [Link(type="refines", target="RAG 2.0")]}
-    ctx = cast(Context, FakeContext({"obsidian_vault": fake_vault}))
+    ctx = make_context(fake_vault)
 
     # Act
     result = await obsidian_vault.search("query", ctx)
@@ -347,7 +379,7 @@ async def test_search_requests_backlinks_for_all_returned_notes_in_one_call():
         make_result_chunk(wikilink_name="B"),
         make_result_chunk(wikilink_name="A"),
     ]
-    ctx = cast(Context, FakeContext({"obsidian_vault": fake_vault}))
+    ctx = make_context(fake_vault)
 
     # Act
     await obsidian_vault.search("query", ctx)
@@ -364,7 +396,7 @@ async def test_search_caps_backlinks_per_note():
     fake_vault.backlinks = {
         "Doc": [Link(type="related", target=f"N{i}") for i in range(25)]
     }
-    ctx = cast(Context, FakeContext({"obsidian_vault": fake_vault}))
+    ctx = make_context(fake_vault)
 
     # Act
     result = await obsidian_vault.search("query", ctx)
@@ -381,7 +413,7 @@ async def test_search_returns_empty_backlinks_when_note_has_none():
     # Arrange
     fake_vault = FakeVault()
     fake_vault.search_results = [make_result_chunk()]
-    ctx = cast(Context, FakeContext({"obsidian_vault": fake_vault}))
+    ctx = make_context(fake_vault)
 
     # Act
     result = await obsidian_vault.search("query", ctx)
@@ -421,7 +453,7 @@ async def test_search_combines_isolated_sections_into_one_document_result():
         ),
     ]
     fake_vault.backlinks = {"A": [Link(type="related", target="Source")]}
-    ctx = cast(Context, FakeContext({"obsidian_vault": fake_vault}))
+    ctx = make_context(fake_vault)
 
     # Act
     result = await obsidian_vault.search("query", ctx)
@@ -450,7 +482,7 @@ async def test_search_joins_sections_without_gap_when_ranges_touch():
         make_result_chunk("Doc", content="one\ntwo", offset=0),
         make_result_chunk("Doc", content="three", position=1, offset=2),
     ]
-    ctx = cast(Context, FakeContext({"obsidian_vault": fake_vault}))
+    ctx = make_context(fake_vault)
 
     # Act
     result = await obsidian_vault.search("query", ctx)
@@ -468,7 +500,7 @@ async def test_search_returns_all_documents_when_response_fits_budget():
     fake_vault.search_results = [
         make_result_chunk(wikilink_name=f"N{i}") for i in range(11)
     ]
-    ctx = cast(Context, FakeContext({"obsidian_vault": fake_vault}))
+    ctx = make_context(fake_vault)
 
     # Act
     result = await obsidian_vault.search("query", ctx)
@@ -488,7 +520,7 @@ async def test_search_drops_largest_content_until_response_fits_budget():
         make_result_chunk("Largest", content="a" * 13_000),
         make_result_chunk("Smaller", content="b" * 12_000),
     ]
-    ctx = cast(Context, FakeContext({"obsidian_vault": fake_vault}))
+    ctx = make_context(fake_vault)
 
     # Act
     result = await obsidian_vault.search("query", ctx)
@@ -510,7 +542,7 @@ async def test_search_drops_lower_rank_content_first_when_sizes_are_equal():
         make_result_chunk("Higher", content="a" * 12_500),
         make_result_chunk("Lower", content="b" * 12_500),
     ]
-    ctx = cast(Context, FakeContext({"obsidian_vault": fake_vault}))
+    ctx = make_context(fake_vault)
 
     # Act
     result = await obsidian_vault.search("query", ctx)
@@ -528,7 +560,7 @@ async def test_search_keeps_short_content_when_marker_would_not_reduce_size():
         make_result_chunk("Higher", content="short", title="x" * 24_900),
         make_result_chunk("Lower", content="tiny", title="y" * 100),
     ]
-    ctx = cast(Context, FakeContext({"obsidian_vault": fake_vault}))
+    ctx = make_context(fake_vault)
 
     # Act
     result = await obsidian_vault.search("query", ctx)
@@ -547,7 +579,7 @@ async def test_search_removes_lowest_rank_documents_when_metadata_exceeds_budget
         make_result_chunk(f"N{i}", content="body", title=str(i) * 9_000)
         for i in range(3)
     ]
-    ctx = cast(Context, FakeContext({"obsidian_vault": fake_vault}))
+    ctx = make_context(fake_vault)
 
     # Act
     result = await obsidian_vault.search("query", ctx)
@@ -844,7 +876,7 @@ async def test_obsidian_traverse_relations_tool_delegates_to_vault() -> None:
     # Arrange
     fake_vault = FakeVault()
     fake_vault.traversal_result = TraversalResult(origin="Doc")
-    ctx = cast(Context, FakeContext({"obsidian_vault": fake_vault}))
+    ctx = make_context(fake_vault)
 
     # Act
     result = await obsidian_vault.traverse_relations(
@@ -859,7 +891,7 @@ async def test_obsidian_traverse_relations_tool_delegates_to_vault() -> None:
 async def test_obsidian_traverse_relations_tool_converts_unknown_note() -> None:
     # Arrange
     fake_vault = FakeVault()
-    ctx = cast(Context, FakeContext({"obsidian_vault": fake_vault}))
+    ctx = make_context(fake_vault)
 
     async def raise_not_found(
         wikilink_name: str,
@@ -873,3 +905,81 @@ async def test_obsidian_traverse_relations_tool_converts_unknown_note() -> None:
     # Act / Assert
     with pytest.raises(ToolError, match="Nonexistent"):
         await obsidian_vault.traverse_relations("Nonexistent", ctx)
+
+
+async def test_search_waits_for_index_update_before_querying() -> None:
+    fake_vault = FakeVault()
+    fake_vault.search_results = [make_result_chunk()]
+    scheduler = FakeIndexScheduler(fake_vault.events)
+
+    await obsidian_vault.search("query", make_context(fake_vault, scheduler))
+
+    assert fake_vault.events[:2] == ["wait", "search"]
+    assert scheduler.timeouts == [obsidian_vault.INDEX_REFRESH_TIMEOUT]
+
+
+async def test_get_file_content_waits_for_index_update_before_reading() -> None:
+    fake_vault = FakeVault()
+    fake_vault.files = {"Note": "content"}
+
+    await obsidian_vault.get_file_content("Note", make_context(fake_vault))
+
+    assert fake_vault.events == ["wait", "get_file"]
+
+
+async def test_traverse_relations_waits_for_index_update_before_traversing() -> None:
+    fake_vault = FakeVault()
+
+    await obsidian_vault.traverse_relations("Doc", make_context(fake_vault))
+
+    assert fake_vault.events == ["wait", "traverse"]
+
+
+async def test_search_answers_from_current_index_when_update_is_late() -> None:
+    fake_vault = FakeVault()
+    fake_vault.search_results = [make_result_chunk()]
+    scheduler = FakeIndexScheduler(fake_vault.events, fresh=False)
+
+    results = await obsidian_vault.search(
+        "query", make_context(fake_vault, scheduler)
+    )
+
+    assert len(results) == 1
+
+
+async def test_get_file_content_rejects_invalid_name_without_waiting() -> None:
+    fake_vault = FakeVault()
+
+    with pytest.raises(ToolError):
+        await obsidian_vault.get_file_content("../x", make_context(fake_vault))
+
+    assert fake_vault.events == []
+
+
+async def test_list_files_does_not_wait_for_index_update() -> None:
+    fake_vault = FakeVault()
+
+    await obsidian_vault.list_files("/", make_context(fake_vault))
+
+    assert fake_vault.events == []
+
+
+async def test_read_note_finds_note_created_after_last_index_update() -> None:
+    vault = StaleUntilIndexedVault()
+    scheduler = IndexScheduler(cast(IVault, vault), timedelta(hours=1))
+    task = asyncio.create_task(scheduler.run())
+    try:
+        await asyncio.sleep(0)
+        vault.pending = {"New": "content"}
+        ctx = cast(Context, FakeContext({
+            "obsidian_vault": vault,
+            "obsidian_index_scheduler": scheduler,
+        }))
+
+        result = await obsidian_vault.get_file_content("New", ctx)
+
+        assert result == "content"
+    finally:
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task

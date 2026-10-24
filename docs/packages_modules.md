@@ -35,6 +35,11 @@ High-level vault management orchestrating document processing, storage, search, 
 **Uses**: interfaces, document_processing, database, search, embeddings, reranking, llm_reranker, proxy_reranker
 **Used by**: tools.obsidian_vault
 
+### [src/mcps/rag/index_scheduler.py](../src/mcps/rag/index_scheduler.py) #module
+Runs vault index updates at startup, on a fixed interval, and on request. Concurrent requests share one update.
+**Uses**: interfaces
+**Used by**: tools.obsidian_vault
+
 ### [src/mcps/rag/document_processing.py](../src/mcps/rag/document_processing.py) #module
 Document file discovery, markdown processing, and text chunking strategies.
 **Uses**: interfaces, frontmatter
@@ -85,8 +90,8 @@ Whole-document summary generator using a LangChain chat model.
 MCP tool implementations exposing functionality to AI assistants.
 
 ### [src/mcps/tools/obsidian_vault.py](../src/mcps/tools/obsidian_vault.py) #module
-Obsidian vault operations: file listing, content retrieval, rename/move, and semantic search. Builds the Obsidian lifespan and registers vault tools conditionally.
-**Uses**: config, rag.interfaces, rag.vault, fastmcp, httpx
+Obsidian vault operations: file listing, content retrieval, rename/move, and semantic search. Builds the Obsidian lifespan and registers vault tools conditionally. Search, read, and traversal tools wait for a fresh index before they answer.
+**Uses**: config, rag.interfaces, rag.vault, rag.index_scheduler, fastmcp, httpx
 **Used by**: server
 
 ### [src/mcps/tools/internet_search.py](../src/mcps/tools/internet_search.py) #module

@@ -256,7 +256,17 @@ Implementation: [vault.py:745-807](../src/mcps/rag/vault.py#L745-L807)
 4. Process files in batches.
 5. Rebuild indexes if changes were detected.
 
-Implementation: [vault.py:285-373](../src/mcps/rag/vault.py#L285-L373)
+Implementation: [vault.py:293-381](../src/mcps/rag/vault.py#L293-L381)
+
+### Index Update Scheduling
+
+`IndexScheduler` owns every `update_index()` call made by the Obsidian server. It runs one update at startup and then one every 5 minutes. A caller can also request an update. The `obsidian_search`, `obsidian_read_note`, and `obsidian_traverse_relations` tools request one before they read the index. This way a note that a client just edited is visible to the next tool call.
+
+A requested update always starts after the request, so it sees every file change made before the tool call. Calls that arrive while an update runs wait for the next update, and all of them share that one run.
+
+A tool call waits at most 20 seconds. If the update takes longer, the tool logs a warning and answers from the current index. The update keeps running. If the update fails, the scheduler logs the error and the tool answers from the current index. The `obsidian_list_files` tool reads the file system and does not request an update.
+
+Implementation: [index_scheduler.py:1-67](../src/mcps/rag/index_scheduler.py#L1-L67), [obsidian_vault.py:191-230](../src/mcps/tools/obsidian_vault.py#L191-L230)
 
 ## Search Flow #search
 
@@ -325,6 +335,7 @@ Returned string values have a combined 25,000-character budget. If the response 
 - [tests/test_search.py](../tests/test_search.py) — Search-engine tests.
 - [tests/test_vault.py](../tests/test_vault.py) — Vault orchestrator tests.
 - [tests/test_obsidian_vault_tools.py](../tests/test_obsidian_vault_tools.py) — Obsidian MCP tool and traversal tests.
+- [tests/test_index_scheduler.py](../tests/test_index_scheduler.py) — Index update scheduling tests.
 
 ## Related Documentation
 
