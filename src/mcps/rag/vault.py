@@ -5,10 +5,11 @@ managing all aspects of document indexing, searching, and retrieval in a RAG sys
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterable
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
+from typing import NamedTuple
 
 import httpx
 from lancedb.rerankers import Reranker, RRFReranker
@@ -47,6 +48,15 @@ from .interfaces import (
     TraversalResult,
     dedupe_links,
 )
+from .note_paths import (
+    alias_map,
+    is_malformed_reference,
+    pick_note,
+    reference_name,
+    select_matching,
+    to_note_path,
+    to_source_path,
+)
 from .reranking import LangChainReranker
 from .search import (
     HypotheticalDocumentGenerator,
@@ -56,6 +66,14 @@ from .summarization import LangChainDocumentSummaryGenerator
 
 logger = logging.getLogger("mcps.vault")
 MAX_TRAVERSAL_NODES = 100
+
+
+class _Edge(NamedTuple):
+    """A typed link between two notes, both identified by note path."""
+
+    source: str
+    type: str
+    target: str
 
 
 def _create_file_traversal(vault_path: Path) -> IFileTraversal:
@@ -451,40 +469,106 @@ class Vault(IVault):
             logger.error(f"Search operation failed: {e}")
             raise RuntimeError(f"Failed to search vault: {e}") from e
 
-    async def get_backlinks(
-        self, wikilink_names: list[str]
-    ) -> dict[str, list[Link]]:
-        """Return incoming links for the requested notes, keyed by note name.
+    async def resolve_references(
+        self, references: Iterable[str]
+    ) -> dict[str, list[str]]:
+        """Map each reference to the sorted indexed note paths it matches.
 
-        A single store query fetches every note linking to any requested
-        name; each returned Link carries the incoming edge's type and the
-        source note's wikilink_name as target. Per-note buckets are
-        deduplicated on (type, target): summary chunks carry the whole
-        document's links and would otherwise report every edge twice.
+        Notes are looked up by file name, then filtered by the reference's
+        partial path.
+        """
+        if not self._initialized:
+            raise NotInitializedError(
+                "Vault must be initialized before resolving note references"
+            )
+        distinct = list(dict.fromkeys(references))
+        matches = await asyncio.gather(
+            *(self._resolve_reference(reference) for reference in distinct)
+        )
+        return dict(zip(distinct, matches, strict=True))
+
+    async def _resolve_reference(self, reference: str) -> list[str]:
+        name = reference_name(reference)
+        if name is None:
+            return []
+        source_paths = await self.vector_store.get_sources_by_name(name)
+        return select_matching(
+            reference, (to_note_path(source_path) for source_path in source_paths)
+        )
+
+    async def _single_match(self, reference: str) -> str:
+        """Return the note a reference means, picked by `pick_note`."""
+        matches = (await self.resolve_references([reference]))[reference]
+        if not matches:
+            raise FileNotFoundError(f"No file found matching: {reference}")
+        return pick_note(matches)
+
+    async def get_backlinks(
+        self, note_paths: list[str]
+    ) -> dict[str, list[Link]]:
+        """Return incoming links for the requested notes, keyed by note path.
+
+        A single store query fetches every note linking to any alias of a
+        requested note; each returned Link carries the incoming edge's type
+        and the source note's path as target. A link counts only for the note
+        it resolves to from its source note (see `pick_note`). Per-note
+        buckets are deduplicated on (type, target): summary chunks carry the
+        whole document's links and would otherwise report every edge twice.
         """
         if not self._initialized:
             raise NotInitializedError(
                 "Vault must be initialized before fetching backlinks"
             )
-        if not wikilink_names:
+        if not note_paths:
             return {}
-        backlinks: dict[str, list[Link]] = {
-            name: [] for name in wikilink_names
-        }
-        sources = await self.vector_store.get_notes_linking_to(wikilink_names)
-        for source in sources:
-            for link in source.links:
-                if link.target in backlinks:
-                    backlinks[link.target].append(
-                        Link(type=link.type, target=source.note)
+        backlinks: dict[str, list[Link]] = {path: [] for path in note_paths}
+        sources = await self.vector_store.get_notes_linking_to(
+            list(alias_map(note_paths))
+        )
+        for edge in await self._resolve_edges(sources):
+            if edge.target in backlinks:
+                backlinks[edge.target].append(
+                    Link(type=edge.type, target=edge.source)
+                )
+        return {path: dedupe_links(links) for path, links in backlinks.items()}
+
+    async def _resolve_edges(
+        self,
+        notes: list[NoteLinks],
+        relation_types: list[str] | None = None,
+    ) -> list[_Edge]:
+        """Resolve the links of the notes to edges between note paths.
+
+        Links to notes missing from the index are dropped.
+        """
+        candidates = await self.resolve_references(
+            link.target
+            for note in notes
+            for link in self._followed_links(note, relation_types)
+        )
+        edges: list[_Edge] = []
+        for note in notes:
+            source = to_note_path(note.note)
+            for link in self._followed_links(note, relation_types):
+                if matches := candidates[link.target]:
+                    edges.append(
+                        _Edge(source, link.type, pick_note(matches, source))
                     )
-        return {
-            name: dedupe_links(links) for name, links in backlinks.items()
-        }
-    
+        return edges
+
+    @staticmethod
+    def _followed_links(
+        note: NoteLinks, relation_types: list[str] | None
+    ) -> list[Link]:
+        return [
+            link
+            for link in note.links
+            if relation_types is None or link.type in relation_types
+        ]
+
     async def traverse_relations(
         self,
-        wikilink_name: str,
+        reference: str,
         depth: int = 1,
         relation_types: list[str] | None = None,
     ) -> TraversalResult:
@@ -494,37 +578,41 @@ class Vault(IVault):
                 "Vault must be initialized before traversing relations"
             )
 
+        origin = await self._single_match(reference)
         origin_notes = await self.vector_store.get_notes_with_links(
-            [wikilink_name]
+            [to_source_path(origin)]
         )
         if not origin_notes:
-            raise FileNotFoundError(wikilink_name)
+            raise FileNotFoundError(f"No file found matching: {reference}")
 
         nodes: list[TraversalNode] = []
-        visited = {wikilink_name}
-        frontier = [wikilink_name]
+        visited = {origin}
+        frontier = [origin]
         frontier_notes = origin_notes
 
         for current_depth in range(1, depth + 1):
+            aliases = alias_map(frontier)
             incoming_notes = await self.vector_store.get_notes_linking_to(
-                frontier, relation_types
+                list(aliases), relation_types
             )
             proposals = self._relation_proposals(
-                frontier_notes,
-                incoming_notes,
-                relation_types,
+                await self._resolve_edges(frontier_notes, relation_types),
+                await self._resolve_edges(incoming_notes, relation_types),
+                set(frontier),
             )
             candidates = self._unvisited_proposals(proposals, visited)
-            candidate_names = list(dict.fromkeys(node.note for node in candidates))
-            if not candidate_names:
+            candidate_paths = list(dict.fromkeys(node.note for node in candidates))
+            if not candidate_paths:
                 break
             resolved_notes = await self.vector_store.get_notes_with_links(
-                candidate_names
+                [to_source_path(path) for path in candidate_paths]
             )
-            resolved_by_name = {note.note: note for note in resolved_notes}
+            resolved_by_path = {
+                to_note_path(note.note): note for note in resolved_notes
+            }
             resolved_nodes = self._resolved_nodes(
                 candidates,
-                resolved_by_name,
+                resolved_by_path,
                 current_depth,
             )
 
@@ -532,7 +620,7 @@ class Vault(IVault):
             if len(resolved_nodes) > remaining:
                 nodes.extend(resolved_nodes[:remaining])
                 return TraversalResult(
-                    origin=wikilink_name,
+                    origin=origin,
                     nodes=nodes,
                     truncated=True,
                     warning=(
@@ -546,40 +634,36 @@ class Vault(IVault):
             frontier = [node.note for node in resolved_nodes]
             if not frontier:
                 break
-            frontier_notes = [
-                resolved_by_name[name] for name in frontier
-            ]
+            frontier_notes = [resolved_by_path[path] for path in frontier]
 
-        return TraversalResult(origin=wikilink_name, nodes=nodes)
+        return TraversalResult(origin=origin, nodes=nodes)
 
     @staticmethod
     def _relation_proposals(
-        outgoing_notes: list[NoteLinks],
-        incoming_notes: list[NoteLinks],
-        relation_types: list[str] | None,
+        outgoing_edges: list[_Edge],
+        incoming_edges: list[_Edge],
+        frontier: set[str],
     ) -> list[TraversalNode]:
         proposals = [
             TraversalNode(
-                note=link.target,
+                note=edge.target,
                 depth=0,
                 direction="outgoing",
-                relation=link.type,
-                via=source.note,
+                relation=edge.type,
+                via=edge.source,
             )
-            for source in outgoing_notes
-            for link in source.links
-            if relation_types is None or link.type in relation_types
+            for edge in outgoing_edges
         ]
         proposals.extend(
             TraversalNode(
-                note=source.note,
+                note=edge.source,
                 depth=0,
                 direction="incoming",
-                relation=link.type,
-                via=link.target,
+                relation=edge.type,
+                via=edge.target,
             )
-            for source in incoming_notes
-            for link in source.links
+            for edge in incoming_edges
+            if edge.target in frontier
         )
         return proposals
 
@@ -598,38 +682,41 @@ class Vault(IVault):
     @staticmethod
     def _resolved_nodes(
         candidates: list[TraversalNode],
-        resolved_by_name: dict[str, NoteLinks],
+        resolved_by_path: dict[str, NoteLinks],
         depth: int,
     ) -> list[TraversalNode]:
         return [
             proposal.model_copy(
                 update={
-                    "title": resolved_by_name[proposal.note].title,
-                    "description": resolved_by_name[proposal.note].description,
+                    "title": resolved_by_path[proposal.note].title,
+                    "description": resolved_by_path[proposal.note].description,
                     "depth": depth,
                 }
             )
             for proposal in candidates
-            if proposal.note in resolved_by_name
+            if proposal.note in resolved_by_path
         ]
 
     async def get_file(
         self,
-        wikilink_name: str,
+        reference: str,
         offset: int | None = None,
         limit: int | None = None,
     ) -> str:
         """
-        Get file content by wikilink name.
-        
+        Get note content by reference.
+
         Args:
-            wikilink_name: Full relative wikilink name without extension.
+            reference: Full path ('/Folder/Note', read directly from disk),
+                partial path ('Folder/Note') or bare name ('Note'), all
+                without extension. Partial paths and names are resolved
+                through the index.
             offset: Zero-based line index to start reading from.
             limit: Maximum number of lines to return.
-            
+
         Returns:
             Content of the matched file
-            
+
         Raises:
             NotInitializedError: If vault is not initialized
             FileNotFoundError: If no matching file is found
@@ -638,29 +725,22 @@ class Vault(IVault):
         if not self._initialized:
             raise NotInitializedError("Vault must be initialized before getting files")
 
-        logger.debug(f"Looking for file: {wikilink_name}")
-        source_path = await self._resolve_source_path(wikilink_name)
+        logger.debug(f"Looking for file: {reference}")
+        source_path = await self._resolve_source_path(reference)
         target_file = self.vault_path / source_path
-        if not target_file.exists():
-            raise FileNotFoundError(f"No file found matching: {wikilink_name}")
+        if not target_file.is_file():
+            raise FileNotFoundError(f"No file found matching: {reference}")
         logger.info(f"Found file: {source_path}")
 
         content = target_file.read_text(encoding="utf-8", errors="replace")
         return self._slice_content(content, offset, limit)
 
-    async def _resolve_source_path(self, wikilink_name: str) -> str:
-        if "/" in wikilink_name:
-            return f"{wikilink_name}.md"
-
-        source_paths = await self.vector_store.get_sources_by_name(wikilink_name)
-        if not source_paths:
-            raise FileNotFoundError(f"No file found matching: {wikilink_name}")
-        if len(source_paths) > 1:
-            raise ValueError(
-                f"Ambiguous wikilink name '{wikilink_name}'. Matches: "
-                f"{', '.join(source_paths)}"
-            )
-        return source_paths[0]
+    async def _resolve_source_path(self, reference: str) -> str:
+        if reference.startswith("/"):
+            if is_malformed_reference(reference):
+                raise FileNotFoundError(f"No file found matching: {reference}")
+            return to_source_path(reference)
+        return to_source_path(await self._single_match(reference))
 
     @staticmethod
     def _slice_content(

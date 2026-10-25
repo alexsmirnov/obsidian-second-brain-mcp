@@ -15,7 +15,8 @@ from pydantic import BaseModel, Field
 
 from mcps.config import ServerConfig
 from mcps.rag.index_scheduler import IndexScheduler
-from mcps.rag.interfaces import Chunk, IVault, Link, TraversalResult, dedupe_links
+from mcps.rag.interfaces import Chunk, IVault, Link, TraversalResult
+from mcps.rag.note_paths import is_malformed_reference, resolve_links, to_note_path
 from mcps.rag.vault import create_vault
 
 logger = logging.getLogger("mcps")
@@ -27,20 +28,26 @@ FolderPath = Annotated[
             "Path to the folder within the Obsidian Vault to list contents from. "
             "Use forward slashes for path separation. Examples: '/', 'Projects/', "
             "Daily Notes/2024/', 'Resources/Documentation/'. Use '/' for vault "
-            "root directory"
+            "root directory. Partial paths not supported"
         ),
         min_length=1,
         max_length=500,
     ),
 ]
 
-WikilinkName = Annotated[
+NoteReference = Annotated[
     str,
     Field(
-        description="""Exact indexed note name, case-sensitive —
-"Breaking News Aggregator"
-resolves, "breaking news aggregator" does not. Safest source is the
-`wikilink_name` field of an obsidian_search result. Omit the .md extension.""",
+        description="""Note to resolve, case-sensitive, without the .md extension.
+Three forms: full vault path starting with '/' —
+"/Projects/AI/Breaking News Aggregator" —
+matches exactly that file; partial path — "AI/Breaking News Aggregator" —
+matches any note whose path ends with those folders and name; bare name —
+"Breaking News Aggregator" — matches any note with that file name. If a
+partial path or name matches several notes, the one with the shortest path
+is used, then alphabetical order. Safest source is the
+`note_path` field of an obsidian_search result or the `note` field of a
+traversal node.""",
         min_length=1,
         max_length=500,
     ),
@@ -108,7 +115,9 @@ PathFilter = Annotated[
         description=(
             "Optional folder path prefix to limit search scope. Use when the "
             "user specifies a particular section or folder of their vault. "
-            "Examples: 'Projects/', 'Daily Notes/2024/', 'Research/'"
+            "A leading '/' is accepted, so a folder taken from a `note_path` "
+            "works as is. Examples: 'Projects/', '/Daily Notes/2024/', "
+            "'Research/'"
         ),
         max_length=500,
     ),
@@ -165,20 +174,43 @@ verify spelling against the `Relations` note."""
 ]
 
 class SearchResultItem(BaseModel):
-    """Short result"""
+    """One matching note returned by the obsidian_search tool."""
     content: str
-
-class SearchResultFullItem(SearchResultItem):
-    """Structured search result returned by the obsidian_search tool."""
     title: str | None
     description: str | None
     tags: list[str]
     outgoing_links: list[Link] = Field(default_factory=list)  # Typed wikilinks
     backlinks: list[Link] = Field(default_factory=list)  # Typed incoming links
-    source_path: str
-    wikilink_name: str
+    note_path: str = Field(
+        description=(
+            "Full vault path of the note without extension, starting with '/' "
+            '(e.g. "/Projects/AI/Note"). Pass it unchanged to '
+            "obsidian_read_note or obsidian_traverse_relations; append "
+            '".md" and drop the leading \'/\' to get the file path relative to '
+            "the vault root."
+        )
+    )
     offset: int
     file_size: int
+
+
+class SearchResponse(BaseModel):
+    """Result of the obsidian_search tool."""
+
+    results: list[SearchResultItem] = Field(
+        description="Matching notes, most relevant first."
+    )
+    total_documents: int = Field(
+        description="Number of notes found, before the response size limit."
+    )
+    truncated: bool = Field(
+        default=False,
+        description="True when results hold fewer notes than total_documents.",
+    )
+    warning: str | None = Field(
+        default=None,
+        description="Explains a truncated response; None otherwise.",
+    )
 
 
 UPDATE_INTERVAL = timedelta(minutes=5)
@@ -243,9 +275,11 @@ def register_tools(mcp: FastMCP) -> None:
         get_file_content,
         name="obsidian_read_note",
         description=(
-            "Read the content of an Obsidian note by its wikilink name, with "
-            "optional line-based offset and limit for reading large notes in "
-            "parts."
+            "Read the content of an Obsidian note by its full vault path "
+            "('/Folder/Note'), partial path ('Folder/Note') or bare name "
+            "('Note'), with optional line-based offset and limit for reading "
+            "large notes in parts. Ambiguous partial paths or names resolve to "
+            "the note with the shortest path, then alphabetical order."
         ),
     )
 #    mcp.tool(
@@ -263,18 +297,27 @@ def register_tools(mcp: FastMCP) -> None:
             "to recall something they wrote, asks to find or look up their notes "
             "on a subject, refers to their knowledge base or vault, or asks "
             "'do I have anything on...' / 'what did I write about...'. Returns "
-            "relevant note excerpts ranked by relevance. Results carry typed "
-            "outgoing links and typed backlinks: each is an object with "
-            "'type' (the relation type) and 'target' (the note on the other "
-            "end of the edge — the destination for outgoing links, the "
-            "linking note for backlinks). Does NOT list files or "
+            "relevant note excerpts ranked by relevance. Each result "
+            "identifies its note by `note_path`, the full vault path without "
+            "extension starting with '/' (e.g. \"/Projects/AI/Note\"); pass "
+            "it unchanged to obsidian_read_note or "
+            "obsidian_traverse_relations. Results carry typed outgoing links "
+            "and typed backlinks: each is an object with 'type' (the "
+            "relation type) and 'target' (the full vault path of the note on "
+            "the other end of the edge — the destination for outgoing links, "
+            "the linking note for backlinks). A link whose name matches "
+            "several notes points to the one Obsidian would pick (shortest "
+            "path, then closest to the linking note, then alphabetical); a "
+            "link to a missing note keeps its raw wikilink text. Does NOT list files or "
             "read a specific file by path — use obsidian_list_files or "
             "obsidian_read_note for those. Results from the same file are "
             "combined into one record; isolated excerpts are separated by "
             "gap markers. Links are aggregated per document. Large content "
             "may be replaced by a dropped-content marker to bound output size. "
             "Link types are as authored. Untyped wikilinks are reported as "
-            '"related".'
+            '"related". The response holds `results`, `total_documents`, '
+            "and, when the response size limit cut notes, `truncated` and a "
+            "`warning`."
         ),
     )
     mcp.tool(
@@ -283,7 +326,9 @@ def register_tools(mcp: FastMCP) -> None:
         description="""Walk typed relation links out from an Obsidian note to
 find its structural
 neighborhood — prerequisites, sub-topics, alternatives, tooling, tasks.
-Use when you already know a note name; use obsidian_search when you don't.
+Use when you already know a note (pass its full path, partial path, or
+name); use obsidian_search when you don't. Every returned `origin`,
+`note` and `via` is a full vault path starting with '/'.
 
 Common navigation patterns (relation_types to pass):
 prerequisite / learning-path chain ...... ["requires"]
@@ -324,26 +369,26 @@ async def list_files(folder_path: FolderPath, ctx: Context) -> str:
 
 
 async def get_file_content(
-    wikilink_name: WikilinkName,
+    note: NoteReference,
     ctx: Context,
     offset: ReadOffset = None, # type: ignore
     limit: ReadLimit = None, # type: ignore
 ) -> str:
-    """Gets note content by Obsidian wikilink name."""
-    logger.info(f"Getting content of Obsidian Vault file: {wikilink_name}")
-    invalid_message = _validate_content_read_request(wikilink_name, offset, limit)
+    """Gets note content by full path, partial path or name."""
+    logger.info(f"Getting content of Obsidian Vault file: {note}")
+    invalid_message = _validate_content_read_request(note, offset, limit)
     if invalid_message is not None:
         raise ToolError(invalid_message)
 
     await _wait_for_fresh_index(ctx)
     try:
         return await _vault_from_context(ctx).get_file(
-            wikilink_name,
+            note,
             offset=offset,
             limit=limit,
         )
     except Exception as e:
-        logger.error(f"Failed to get content for {wikilink_name}: {e}")
+        logger.error(f"Failed to get content for {note}: {e}")
         raise ToolError(str(e)) from e
 
 
@@ -423,36 +468,39 @@ def _combine_document_content(chunks: list[Chunk]) -> str:
 def _format_document_results(
     chunks: list[Chunk],
     backlink_map: dict[str, list[Link]],
-) -> list[SearchResultFullItem]:
+    resolved_targets: dict[str, list[str]],
+) -> list[SearchResultItem]:
     chunks_by_path: dict[str, list[Chunk]] = {}
     for chunk in chunks:
         chunks_by_path.setdefault(chunk.source_path, []).append(chunk)
 
-    results: list[SearchResultFullItem] = []
+    results: list[SearchResultItem] = []
     for document_chunks in chunks_by_path.values():
         primary = min(document_chunks, key=lambda chunk: chunk.offset)
-        results.append(SearchResultFullItem(
+        note_path = to_note_path(primary.source_path)
+        results.append(SearchResultItem(
             title=primary.title,
             description=primary.description,
             content=_combine_document_content(document_chunks),
             tags=sorted({tag for chunk in document_chunks for tag in chunk.tags}),
-            outgoing_links=dedupe_links(
-                link
-                for chunk in document_chunks
-                for link in chunk.typed_links
+            outgoing_links=resolve_links(
+                (
+                    link
+                    for chunk in document_chunks
+                    for link in chunk.typed_links
+                ),
+                resolved_targets,
+                from_note=note_path,
             ),
-            backlinks=backlink_map.get(primary.wikilink_name, [])[
-                :MAX_BACKLINKS_PER_NOTE
-            ],
-            source_path=primary.source_path,
-            wikilink_name=primary.wikilink_name,
+            backlinks=backlink_map.get(note_path, [])[:MAX_BACKLINKS_PER_NOTE],
+            note_path=note_path,
             offset=primary.offset,
             file_size=primary.file_size,
         ))
     return results
 
 
-def _search_result_character_count(item: SearchResultFullItem) -> int:
+def _search_result_character_count(item: SearchResultItem) -> int:
     values = [
         item.content,
         item.title or "",
@@ -464,16 +512,15 @@ def _search_result_character_count(item: SearchResultFullItem) -> int:
             for value in (link.type, link.target)
         ),
         *(value for link in item.backlinks for value in (link.type, link.target)),
-        item.source_path,
-        item.wikilink_name,
+        item.note_path,
     ]
     return sum(map(len, values))
 
 
 def _fit_search_results(
-    items: list[SearchResultFullItem],
+    items: list[SearchResultItem],
     limit: int = MAX_SEARCH_RESULT_CHARACTERS,
-) -> tuple[list[SearchResultFullItem], int]:
+) -> tuple[list[SearchResultItem], int]:
     original_count = len(items)
     fitted = list(items)
     current_size = sum(map(_search_result_character_count, fitted))
@@ -502,40 +549,46 @@ async def search(
     ctx: Context,
     tags: Tags = None, # type: ignore
     path: PathFilter = None, # type: ignore
-) -> list[SearchResultItem]:
+) -> SearchResponse:
     """Search for content within the Obsidian Vault using semantic search."""
     await _wait_for_fresh_index(ctx)
     try:
         logger.info(f"Searching Obsidian Vault for: {query}")
-        chunks = await _vault_from_context(ctx).search(
-            query, tags=tags, path=path
+        vault = _vault_from_context(ctx)
+        chunks = await vault.search(
+            query, tags=tags, path=path.removeprefix("/") if path else path
         )
         logger.info(f"Search completed for query: {query}")
-        note_names = list(dict.fromkeys(
-            chunk.wikilink_name for chunk in chunks
+        note_paths = list(dict.fromkeys(
+            to_note_path(chunk.source_path) for chunk in chunks
         ))
-        backlink_map = await _vault_from_context(ctx).get_backlinks(note_names)
-        fitted, document_count = _fit_search_results(
-            _format_document_results(chunks, backlink_map)
+        backlink_map = await vault.get_backlinks(note_paths)
+        resolved_targets = await vault.resolve_references(
+            link.target for chunk in chunks for link in chunk.typed_links
         )
-        result: list[SearchResultItem] = list(fitted)
-        if len(fitted) < document_count:
-            result.append(SearchResultItem(
-                content=(
-                    f"WARNING: search result truncated to {len(fitted)} from "
-                    f"{document_count} documents. Use more concrete query"
-                ),
-            ))
-
-        return result
+        fitted, document_count = _fit_search_results(
+            _format_document_results(chunks, backlink_map, resolved_targets)
+        )
+        truncated = len(fitted) < document_count
+        return SearchResponse(
+            results=fitted,
+            total_documents=document_count,
+            truncated=truncated,
+            warning=(
+                f"Search result truncated to {len(fitted)} from "
+                f"{document_count} documents. Use more concrete query."
+                if truncated
+                else None
+            ),
+        )
 
     except Exception as e:
         logger.error(f"Failed to search vault for query '{query}': {e}")
-        return []
+        return SearchResponse(results=[], total_documents=0)
 
 
 async def traverse_relations(
-    note: WikilinkName,
+    note: NoteReference,
     ctx: Context,
     depth: TraversalDepth = 1,
     relation_types: RelationTypes = None, # type: ignore
@@ -548,6 +601,8 @@ async def traverse_relations(
         )
     except FileNotFoundError as error:
         raise ToolError(f"No indexed note found for: {note}") from error
+    except ValueError as error:
+        raise ToolError(str(error)) from error
 
 
 def _vault_from_context(ctx: Context) -> IVault:
@@ -573,7 +628,7 @@ def _config_from_context(ctx: Context) -> ServerConfig:
 
 
 def _validate_content_read_request(
-    wikilink_name: str,
+    note: str,
     offset: int | None,
     limit: int | None,
 ) -> str | None:
@@ -581,20 +636,13 @@ def _validate_content_read_request(
         return "Invalid offset: must be greater than or equal to 0"
     if limit is not None and limit < 0:
         return "Invalid limit: must be greater than or equal to 0"
-    if _is_invalid_wikilink_name(wikilink_name):
-        return f"Invalid wikilink name: {wikilink_name}"
+    if _is_invalid_note_reference(note):
+        return f"Invalid note reference: {note}"
     return None
 
 
-def _is_invalid_wikilink_name(wikilink_name: str) -> bool:
-    if not wikilink_name.strip():
-        return True
-    if wikilink_name.endswith(".md"):
-        return True
-    if "\\" in wikilink_name:
-        return True
-    path = Path(wikilink_name)
-    return path.is_absolute() or any(part in {"..", ""} for part in path.parts)
+def _is_invalid_note_reference(reference: str) -> bool:
+    return not reference.strip() or is_malformed_reference(reference)
 
 
 async def _update_wikilinks(vault_path: Path, old_path: str, new_path: str) -> None:

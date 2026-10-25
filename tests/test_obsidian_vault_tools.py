@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Iterable
 from contextlib import suppress
 from datetime import timedelta
 from pathlib import Path
@@ -8,7 +9,7 @@ from typing import cast
 from unittest.mock import AsyncMock
 
 import pytest
-from fastmcp import Context
+from fastmcp import Client, Context, FastMCP
 from fastmcp.exceptions import ToolError, ValidationError
 
 from mcps.config import ServerConfig
@@ -20,6 +21,7 @@ from mcps.rag.interfaces import (
     NoteLinks,
     TraversalResult,
 )
+from mcps.rag.note_paths import select_matching
 from mcps.rag.vault import Vault
 from mcps.server import create_server
 from mcps.tools import obsidian_vault
@@ -59,6 +61,8 @@ class FakeVault:
         self.search_results: list[Chunk] = []
         self.backlinks: dict[str, list[Link]] = {}
         self.get_backlinks_calls: list[list[str]] = []
+        self.note_paths: list[str] = []
+        self.search_calls: list[tuple[str, list[str] | None, str | None]] = []
         self.traversal_result = TraversalResult(origin="Doc")
         self.traverse_calls: list[tuple[str, int, list[str] | None]] = []
 
@@ -68,6 +72,14 @@ class FakeVault:
     async def list_files(self, directory: str) -> list[str]:
         assert directory == ""
         return ["A", "Folder/"]
+
+    async def resolve_references(
+        self, references: Iterable[str]
+    ) -> dict[str, list[str]]:
+        return {
+            reference: select_matching(reference, self.note_paths)
+            for reference in references
+        }
 
     async def get_file(
         self,
@@ -92,13 +104,14 @@ class FakeVault:
         path: str | None = None,
     ) -> list[Chunk]:
         self.events.append("search")
+        self.search_calls.append((query, tags, path))
         return self.search_results
 
     async def get_backlinks(
-        self, wikilink_names: list[str]
+        self, note_paths: list[str]
     ) -> dict[str, list[Link]]:
-        self.get_backlinks_calls.append(wikilink_names)
-        return {name: self.backlinks.get(name, []) for name in wikilink_names}
+        self.get_backlinks_calls.append(note_paths)
+        return {path: self.backlinks.get(path, []) for path in note_paths}
 
     async def traverse_relations(
         self,
@@ -179,15 +192,16 @@ async def test_get_file_content_validates_and_calls_vault_get_file():
 
 
 @pytest.mark.asyncio
-async def test_get_file_content_reads_path_qualified_wikilink_directly():
+@pytest.mark.parametrize("reference", ["/Folder/Note", "Folder/Note", "Note"])
+async def test_get_file_content_forwards_every_reference_form_to_vault(reference):
     fake_vault = FakeVault()
-    fake_vault.files = {"Folder/Note": "content"}
+    fake_vault.files = {reference: "content"}
     ctx = make_context(fake_vault)
 
-    result = await obsidian_vault.get_file_content("Folder/Note", ctx)
+    result = await obsidian_vault.get_file_content(reference, ctx)
 
     assert result == "content"
-    assert fake_vault.get_file_calls == [("Folder/Note", None, None)]
+    assert fake_vault.get_file_calls == [(reference, None, None)]
 
 
 @pytest.mark.asyncio
@@ -213,7 +227,7 @@ async def test_get_file_content_rejects_relative_traversal_wikilink():
     fake_vault = FakeVault()
     ctx = make_context(fake_vault)
 
-    with pytest.raises(ToolError, match="Invalid wikilink name"):
+    with pytest.raises(ToolError, match="Invalid note reference"):
         await obsidian_vault.get_file_content("../../etc/passwd", ctx)
 
 
@@ -248,16 +262,30 @@ async def test_get_file_content_rejects_negative_limit():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "reference", ["/", "A//B", "A/B/", "/A/B/", "/../x", "A\\B", " "]
+)
+async def test_get_file_content_rejects_malformed_references(reference):
+    fake_vault = FakeVault()
+    ctx = make_context(fake_vault)
+
+    with pytest.raises(ToolError, match="Invalid note reference"):
+        await obsidian_vault.get_file_content(reference, ctx)
+
+    assert fake_vault.get_file_calls == []
+
+
+@pytest.mark.asyncio
 async def test_get_file_content_rejects_md_extension_for_wikilink_names():
     fake_vault = FakeVault()
     ctx = make_context(fake_vault)
 
-    with pytest.raises(ToolError, match="Invalid wikilink name"):
+    with pytest.raises(ToolError, match="Invalid note reference"):
         await obsidian_vault.get_file_content("Note.md", ctx)
 
 
 @pytest.mark.asyncio
-async def test_search_returns_wikilink_name_offset_and_size_in_results():
+async def test_search_returns_note_path_offset_and_size_in_results():
     fake_vault = FakeVault()
     fake_vault.search_results = [
         Chunk(
@@ -275,11 +303,14 @@ async def test_search_returns_wikilink_name_offset_and_size_in_results():
     ]
     ctx = make_context(fake_vault)
 
-    results = await obsidian_vault.search("query", ctx)
+    response = await obsidian_vault.search("query", ctx)
+    results = response.results
 
-    assert results[0].wikilink_name == "Folder/Note"
+    assert results[0].note_path == "/Folder/Note"
     assert results[0].offset == 12
     assert results[0].file_size == 7
+    assert "wikilink_name" not in obsidian_vault.SearchResultItem.model_fields
+    assert "source_path" not in obsidian_vault.SearchResultItem.model_fields
 
 
 def make_result_chunk(
@@ -314,7 +345,7 @@ def make_result_chunk(
     )
 
 
-def result_text_size(result: obsidian_vault.SearchResultFullItem) -> int:
+def result_text_size(result: obsidian_vault.SearchResultItem) -> int:
     values = [
         result.content,
         result.title or "",
@@ -326,8 +357,7 @@ def result_text_size(result: obsidian_vault.SearchResultFullItem) -> int:
             for value in (link.type, link.target)
         ),
         *(value for link in result.backlinks for value in (link.type, link.target)),
-        result.source_path,
-        result.wikilink_name,
+        result.note_path,
     ]
     return sum(map(len, values))
 
@@ -345,7 +375,8 @@ async def test_search_exposes_typed_outgoing_links():
     ctx = make_context(fake_vault)
 
     # Act
-    result = await obsidian_vault.search("query", ctx)
+    response = await obsidian_vault.search("query", ctx)
+    result = response.results
 
     # Assert
     assert result[0].outgoing_links == [
@@ -360,14 +391,15 @@ async def test_search_exposes_typed_backlinks():
     # the edge, i.e. the note that points at Doc
     fake_vault = FakeVault()
     fake_vault.search_results = [make_result_chunk()]
-    fake_vault.backlinks = {"Doc": [Link(type="refines", target="RAG 2.0")]}
+    fake_vault.backlinks = {"/notes/Doc": [Link(type="refines", target="/RAG 2.0")]}
     ctx = make_context(fake_vault)
 
     # Act
-    result = await obsidian_vault.search("query", ctx)
+    response = await obsidian_vault.search("query", ctx)
+    result = response.results
 
     # Assert
-    assert result[0].backlinks == [Link(type="refines", target="RAG 2.0")]
+    assert result[0].backlinks == [Link(type="refines", target="/RAG 2.0")]
 
 
 @pytest.mark.asyncio
@@ -384,8 +416,9 @@ async def test_search_requests_backlinks_for_all_returned_notes_in_one_call():
     # Act
     await obsidian_vault.search("query", ctx)
 
-    # Assert — one batched call, duplicates collapsed, first-appearance order
-    assert fake_vault.get_backlinks_calls == [["A", "B"]]
+    # Assert — one batched call of note paths, duplicates collapsed,
+    # first-appearance order
+    assert fake_vault.get_backlinks_calls == [["/notes/A", "/notes/B"]]
 
 
 @pytest.mark.asyncio
@@ -394,17 +427,18 @@ async def test_search_caps_backlinks_per_note():
     fake_vault = FakeVault()
     fake_vault.search_results = [make_result_chunk()]
     fake_vault.backlinks = {
-        "Doc": [Link(type="related", target=f"N{i}") for i in range(25)]
+        "/notes/Doc": [Link(type="related", target=f"/N{i}") for i in range(25)]
     }
     ctx = make_context(fake_vault)
 
     # Act
-    result = await obsidian_vault.search("query", ctx)
+    response = await obsidian_vault.search("query", ctx)
+    result = response.results
 
     # Assert — capped at 20, the first 20 in the supplied order
     assert len(result[0].backlinks) == 20
     assert result[0].backlinks == [
-        Link(type="related", target=f"N{i}") for i in range(20)
+        Link(type="related", target=f"/N{i}") for i in range(20)
     ]
 
 
@@ -416,10 +450,96 @@ async def test_search_returns_empty_backlinks_when_note_has_none():
     ctx = make_context(fake_vault)
 
     # Act
-    result = await obsidian_vault.search("query", ctx)
+    response = await obsidian_vault.search("query", ctx)
+    result = response.results
 
     # Assert
     assert result[0].backlinks == []
+
+
+@pytest.mark.asyncio
+async def test_search_outgoing_links_are_resolved_to_one_note_path_each():
+    # Arrange — "Dup" is shared by two notes; "img.png" is not a note
+    fake_vault = FakeVault()
+    fake_vault.note_paths = ["/P/Dup", "/Q/Dup", "/Solo"]
+    fake_vault.search_results = [
+        make_result_chunk(
+            links=["Dup", "img.png", "Solo"],
+            link_types=["uses", "related", "requires"],
+        )
+    ]
+    ctx = make_context(fake_vault)
+
+    # Act
+    response = await obsidian_vault.search("query", ctx)
+    result = response.results
+
+    # Assert
+    assert result[0].outgoing_links == [
+        Link(type="uses", target="/P/Dup"),
+        Link(type="related", target="img.png"),
+        Link(type="requires", target="/Solo"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_search_dedupes_outgoing_links_after_resolution():
+    # Arrange — [[Solo]] and [[/Solo]] name the same note
+    fake_vault = FakeVault()
+    fake_vault.note_paths = ["/Solo"]
+    fake_vault.search_results = [
+        make_result_chunk(
+            links=["Solo", "/Solo"],
+            link_types=["related", "uses"],
+        )
+    ]
+    ctx = make_context(fake_vault)
+
+    # Act
+    response = await obsidian_vault.search("query", ctx)
+    result = response.results
+
+    # Assert
+    assert result[0].outgoing_links == [Link(type="uses", target="/Solo")]
+
+
+@pytest.mark.asyncio
+async def test_search_keeps_same_named_notes_in_different_folders_apart():
+    # Arrange
+    fake_vault = FakeVault()
+    fake_vault.search_results = [
+        make_result_chunk("Dup", source_path="P/Dup.md", content="p"),
+        make_result_chunk("Dup", source_path="Q/Dup.md", content="q"),
+    ]
+    ctx = make_context(fake_vault)
+
+    # Act
+    response = await obsidian_vault.search("query", ctx)
+    result = response.results
+
+    # Assert
+    assert [(item.note_path, item.content) for item in result] == [
+        ("/P/Dup", "p"),
+        ("/Q/Dup", "q"),
+    ]
+    assert fake_vault.get_backlinks_calls == [["/P/Dup", "/Q/Dup"]]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("given", "expected"),
+    [("/Projects/", "Projects/"), ("Projects/", "Projects/"), (None, None)],
+)
+async def test_search_strips_leading_slash_from_path_filter(given, expected):
+    # Arrange
+    fake_vault = FakeVault()
+    ctx = make_context(fake_vault)
+
+    # Act
+    await obsidian_vault.search("query", ctx, path=given)
+
+    # Assert
+    assert fake_vault.search_calls == [("query", None, expected)]
 
 
 @pytest.mark.asyncio
@@ -452,14 +572,15 @@ async def test_search_combines_isolated_sections_into_one_document_result():
             link_types=["requires"],
         ),
     ]
-    fake_vault.backlinks = {"A": [Link(type="related", target="Source")]}
+    fake_vault.backlinks = {"/notes/A": [Link(type="related", target="/Source")]}
     ctx = make_context(fake_vault)
 
     # Act
-    result = await obsidian_vault.search("query", ctx)
+    response = await obsidian_vault.search("query", ctx)
+    result = response.results
 
     # Assert
-    assert [item.wikilink_name for item in result] == ["A", "B"]
+    assert [item.note_path for item in result] == ["/notes/A", "/notes/B"]
     assert result[0].content == "first\nline\n\n<<Gap: 6 lines>>\n\nlater"
     assert result[0].title == "First title"
     assert result[0].description == "First description"
@@ -470,8 +591,8 @@ async def test_search_combines_isolated_sections_into_one_document_result():
         Link(type="uses", target="Other"),
         Link(type="requires", target="Target"),
     ]
-    assert result[0].backlinks == [Link(type="related", target="Source")]
-    assert fake_vault.get_backlinks_calls == [["A", "B"]]
+    assert result[0].backlinks == [Link(type="related", target="/Source")]
+    assert fake_vault.get_backlinks_calls == [["/notes/A", "/notes/B"]]
 
 
 @pytest.mark.asyncio
@@ -485,7 +606,8 @@ async def test_search_joins_sections_without_gap_when_ranges_touch():
     ctx = make_context(fake_vault)
 
     # Act
-    result = await obsidian_vault.search("query", ctx)
+    response = await obsidian_vault.search("query", ctx)
+    result = response.results
 
     # Assert
     assert len(result) == 1
@@ -503,13 +625,18 @@ async def test_search_returns_all_documents_when_response_fits_budget():
     ctx = make_context(fake_vault)
 
     # Act
-    result = await obsidian_vault.search("query", ctx)
+    response = await obsidian_vault.search("query", ctx)
+    result = response.results
 
     # Assert
     assert len(result) == 11
-    assert all(isinstance(item, obsidian_vault.SearchResultFullItem) for item in result)
-    assert [item.wikilink_name for item in result] == [f"N{i}" for i in range(11)]
-    assert fake_vault.get_backlinks_calls == [[f"N{i}" for i in range(11)]]
+    assert all(isinstance(item, obsidian_vault.SearchResultItem) for item in result)
+    assert [item.note_path for item in result] == [
+        f"/notes/N{i}" for i in range(11)
+    ]
+    assert fake_vault.get_backlinks_calls == [
+        [f"/notes/N{i}" for i in range(11)]
+    ]
 
 
 @pytest.mark.asyncio
@@ -523,12 +650,13 @@ async def test_search_drops_largest_content_until_response_fits_budget():
     ctx = make_context(fake_vault)
 
     # Act
-    result = await obsidian_vault.search("query", ctx)
+    response = await obsidian_vault.search("query", ctx)
+    result = response.results
 
     # Assert
     assert len(result) == 2
-    assert all(isinstance(item, obsidian_vault.SearchResultFullItem) for item in result)
-    full_results = cast(list[obsidian_vault.SearchResultFullItem], result)
+    assert all(isinstance(item, obsidian_vault.SearchResultItem) for item in result)
+    full_results = cast(list[obsidian_vault.SearchResultItem], result)
     assert result[0].content == "<<Dropped: content is too big>>"
     assert result[1].content == "b" * 12_000
     assert sum(result_text_size(item) for item in full_results) <= 25_000
@@ -545,7 +673,8 @@ async def test_search_drops_lower_rank_content_first_when_sizes_are_equal():
     ctx = make_context(fake_vault)
 
     # Act
-    result = await obsidian_vault.search("query", ctx)
+    response = await obsidian_vault.search("query", ctx)
+    result = response.results
 
     # Assert
     assert result[0].content == "a" * 12_500
@@ -563,12 +692,14 @@ async def test_search_keeps_short_content_when_marker_would_not_reduce_size():
     ctx = make_context(fake_vault)
 
     # Act
-    result = await obsidian_vault.search("query", ctx)
+    response = await obsidian_vault.search("query", ctx)
+    result = response.results
 
     # Assert
-    assert len(result) == 2
+    assert len(result) == 1
     assert result[0].content == "short"
-    assert result[1].content.startswith("WARNING: search result truncated")
+    assert response.truncated is True
+    assert response.warning is not None
 
 
 @pytest.mark.asyncio
@@ -582,50 +713,74 @@ async def test_search_removes_lowest_rank_documents_when_metadata_exceeds_budget
     ctx = make_context(fake_vault)
 
     # Act
-    result = await obsidian_vault.search("query", ctx)
+    response = await obsidian_vault.search("query", ctx)
+    result = response.results
 
     # Assert
-    assert all(
-        isinstance(item, obsidian_vault.SearchResultFullItem)
-        for item in result[:-1]
+    assert [item.note_path for item in result] == ["/notes/N0", "/notes/N1"]
+    assert sum(result_text_size(item) for item in result) <= 25_000
+    assert response.total_documents == 3
+    assert response.truncated is True
+    assert response.warning == (
+        "Search result truncated to 2 from 3 documents. "
+        "Use more concrete query."
     )
-    full_results = cast(
-        list[obsidian_vault.SearchResultFullItem], result[:-1]
-    )
-    assert [item.wikilink_name for item in full_results] == ["N0", "N1"]
-    assert sum(result_text_size(item) for item in full_results) <= 25_000
-    assert isinstance(result[-1], obsidian_vault.SearchResultItem)
-    assert not isinstance(result[-1], obsidian_vault.SearchResultFullItem)
-    assert result[-1].content == (
-        "WARNING: search result truncated to 2 from 3 documents. "
-        "Use more concrete query"
-    )
+
+
+@pytest.mark.asyncio
+async def test_search_response_is_not_truncated_when_everything_fits():
+    fake_vault = FakeVault()
+    fake_vault.search_results = [make_result_chunk("N0")]
+
+    response = await obsidian_vault.search("query", make_context(fake_vault))
+
+    assert response.total_documents == 1
+    assert response.truncated is False
+    assert response.warning is None
 
 
 GRAPH_LINKS = {
-    "Alpha": [
+    "g/Alpha.md": [
         Link(type="requires", target="Beta"),
         Link(type="related", target="Gamma"),
     ],
-    "Beta": [Link(type="refines", target="Delta")],
-    "Gamma": [Link(type="requires", target="Delta")],
-    "Zulu": [Link(type="requires", target="Alpha")],
-    "Delta": [],
+    "g/Beta.md": [Link(type="refines", target="Delta")],
+    "g/Gamma.md": [Link(type="requires", target="Delta")],
+    "g/Zulu.md": [Link(type="requires", target="Alpha")],
+    "g/Delta.md": [],
+}
+
+DUP_LINKS = {
+    "Hub/Alpha.md": [Link(type="uses", target="Dup")],
+    "P/Dup.md": [],
+    "Q/Dup.md": [],
+    "Z/Zulu.md": [Link(type="details", target="P/Dup")],
 }
 
 
-def make_graph_store() -> AsyncMock:
-    """Build the vector-store boundary fake used by traversal contracts."""
-    async def get_notes_with_links(names: list[str]) -> list[NoteLinks]:
+def make_graph_store(graph: dict[str, list[Link]] | None = None) -> AsyncMock:
+    """Build the vector-store boundary fake used by traversal contracts.
+
+    The graph maps note source paths to their raw outgoing links.
+    """
+    graph = GRAPH_LINKS if graph is None else graph
+
+    def note_title(path: str) -> str:
+        return f"{Path(path).stem} Note"
+
+    async def get_sources_by_name(name: str) -> list[str]:
+        return sorted(path for path in graph if Path(path).stem == name)
+
+    async def get_notes_with_links(paths: list[str]) -> list[NoteLinks]:
         return [
             NoteLinks(
-                note=name,
-                title=f"{name} Note",
-                description=f"About {name.lower()}",
-                links=GRAPH_LINKS[name],
+                note=path,
+                title=note_title(path),
+                description=f"About {Path(path).stem.lower()}",
+                links=graph[path],
             )
-            for name in names
-            if name in GRAPH_LINKS
+            for path in paths
+            if path in graph
         ]
 
     async def get_notes_linking_to(
@@ -633,9 +788,9 @@ def make_graph_store() -> AsyncMock:
     ) -> list[NoteLinks]:
         return [
             NoteLinks(
-                note=note,
-                title=f"{note} Note",
-                description=f"About {note.lower()}",
+                note=path,
+                title=note_title(path),
+                description=f"About {Path(path).stem.lower()}",
                 links=[
                     link
                     for link in links
@@ -643,7 +798,7 @@ def make_graph_store() -> AsyncMock:
                     and (relation_types is None or link.type in relation_types)
                 ],
             )
-            for note, links in GRAPH_LINKS.items()
+            for path, links in graph.items()
             if any(
                 link.target in targets
                 and (relation_types is None or link.type in relation_types)
@@ -652,6 +807,7 @@ def make_graph_store() -> AsyncMock:
         ]
 
     store = AsyncMock()
+    store.get_sources_by_name.side_effect = get_sources_by_name
     store.get_notes_with_links.side_effect = get_notes_with_links
     store.get_notes_linking_to.side_effect = get_notes_linking_to
     return store
@@ -670,17 +826,18 @@ async def test_traverse_relations_depth_one_returns_both_directions() -> None:
     vault = make_traversal_vault()
 
     # Act
-    result = await vault.traverse_relations("Alpha", depth=1)
+    result = await vault.traverse_relations("/g/Alpha", depth=1)
 
     # Assert
+    assert result.origin == "/g/Alpha"
     node_details = {
         (node.note, node.direction, node.relation, node.via)
         for node in result.nodes
     }
     assert node_details == {
-        ("Beta", "outgoing", "requires", "Alpha"),
-        ("Gamma", "outgoing", "related", "Alpha"),
-        ("Zulu", "incoming", "requires", "Alpha"),
+        ("/g/Beta", "outgoing", "requires", "/g/Alpha"),
+        ("/g/Gamma", "outgoing", "related", "/g/Alpha"),
+        ("/g/Zulu", "incoming", "requires", "/g/Alpha"),
     }
     assert {node.depth for node in result.nodes} == {1}
     assert result.truncated is False
@@ -691,15 +848,15 @@ async def test_traverse_relations_depth_two_reaches_second_hop() -> None:
     vault = make_traversal_vault()
 
     # Act
-    result = await vault.traverse_relations("Alpha", depth=2)
+    result = await vault.traverse_relations("/g/Alpha", depth=2)
 
     # Assert
-    delta_nodes = [node for node in result.nodes if node.note == "Delta"]
+    delta_nodes = [node for node in result.nodes if node.note == "/g/Delta"]
     assert len(delta_nodes) == 1
     assert delta_nodes[0].depth == 2
     assert (delta_nodes[0].via, delta_nodes[0].relation) in {
-        ("Beta", "refines"),
-        ("Gamma", "requires"),
+        ("/g/Beta", "refines"),
+        ("/g/Gamma", "requires"),
     }
 
 
@@ -708,13 +865,13 @@ async def test_traverse_relations_keeps_notes_at_shallowest_depth() -> None:
     vault = make_traversal_vault()
 
     # Act
-    result = await vault.traverse_relations("Zulu", depth=3)
+    result = await vault.traverse_relations("/g/Zulu", depth=3)
 
     # Assert
-    alpha_nodes = [node for node in result.nodes if node.note == "Alpha"]
+    alpha_nodes = [node for node in result.nodes if node.note == "/g/Alpha"]
     assert len(alpha_nodes) == 1
     assert alpha_nodes[0].depth == 1
-    assert "Zulu" not in {node.note for node in result.nodes}
+    assert "/g/Zulu" not in {node.note for node in result.nodes}
 
 
 async def test_traverse_relations_filters_requested_relation_types() -> None:
@@ -723,11 +880,11 @@ async def test_traverse_relations_filters_requested_relation_types() -> None:
 
     # Act
     result = await vault.traverse_relations(
-        "Alpha", depth=1, relation_types=["requires"]
+        "/g/Alpha", depth=1, relation_types=["requires"]
     )
 
     # Assert
-    assert {node.note for node in result.nodes} == {"Beta", "Zulu"}
+    assert {node.note for node in result.nodes} == {"/g/Beta", "/g/Zulu"}
 
 
 async def test_traverse_relations_or_combines_relation_types() -> None:
@@ -736,59 +893,53 @@ async def test_traverse_relations_or_combines_relation_types() -> None:
 
     # Act
     result = await vault.traverse_relations(
-        "Alpha", depth=1, relation_types=["related", "refines"]
+        "/g/Alpha", depth=1, relation_types=["related", "refines"]
     )
 
     # Assert
-    assert {node.note for node in result.nodes} == {"Gamma"}
+    assert {node.note for node in result.nodes} == {"/g/Gamma"}
 
 
 async def test_traverse_relations_excludes_dangling_targets() -> None:
     # Arrange
-    original_links = GRAPH_LINKS["Alpha"]
-    GRAPH_LINKS["Alpha"] = [
-        *original_links,
-        Link(type="requires", target="Ghost"),
-    ]
-    vault = make_traversal_vault()
+    graph = {
+        **GRAPH_LINKS,
+        "g/Alpha.md": [
+            *GRAPH_LINKS["g/Alpha.md"],
+            Link(type="requires", target="Ghost"),
+        ],
+    }
+    vault = make_traversal_vault(make_graph_store(graph))
 
     # Act
-    try:
-        result = await vault.traverse_relations("Alpha", depth=1)
-    finally:
-        GRAPH_LINKS["Alpha"] = original_links
+    result = await vault.traverse_relations("/g/Alpha", depth=1)
 
     # Assert
-    assert "Ghost" not in {node.note for node in result.nodes}
+    assert {node.note for node in result.nodes} == {
+        "/g/Beta",
+        "/g/Gamma",
+        "/g/Zulu",
+    }
 
 
 async def test_traverse_relations_uses_aggregated_links_for_frontier_note() -> None:
     # Arrange
-    store = AsyncMock()
-
-    async def get_notes_with_links(names: list[str]) -> list[NoteLinks]:
-        notes = {
-            "Alpha": NoteLinks(
-                note="Alpha",
-                links=[
-                    Link(type="requires", target="Beta"),
-                    Link(type="related", target="Gamma"),
-                ],
-            ),
-            "Beta": NoteLinks(note="Beta", title="Beta Note"),
-            "Gamma": NoteLinks(note="Gamma", title="Gamma Note"),
-        }
-        return [notes[name] for name in names if name in notes]
-
-    store.get_notes_with_links.side_effect = get_notes_with_links
-    store.get_notes_linking_to.return_value = []
+    graph = {
+        "Alpha.md": [
+            Link(type="requires", target="Beta"),
+            Link(type="related", target="Gamma"),
+        ],
+        "Beta.md": [],
+        "Gamma.md": [],
+    }
+    store = make_graph_store(graph)
     vault = make_traversal_vault(store)
 
     # Act
-    result = await vault.traverse_relations("Alpha", depth=1)
+    result = await vault.traverse_relations("/Alpha", depth=1)
 
     # Assert
-    assert {node.note for node in result.nodes} == {"Beta", "Gamma"}
+    assert {node.note for node in result.nodes} == {"/Beta", "/Gamma"}
     assert {node.title for node in result.nodes} == {"Beta Note", "Gamma Note"}
     assert store.get_notes_with_links.await_count == 2
 
@@ -796,29 +947,17 @@ async def test_traverse_relations_uses_aggregated_links_for_frontier_note() -> N
 async def test_traverse_relations_caps_distinct_notes_at_limit() -> None:
     # Arrange
     node_count = 150
-    hub_links = [
-        Link(type="related", target=f"N{index}")
-        for index in range(node_count)
-    ]
     graph = {
-        "Hub": hub_links,
-        **{f"N{index}": [] for index in range(node_count)},
+        "Hub.md": [
+            Link(type="related", target=f"N{index}")
+            for index in range(node_count)
+        ],
+        **{f"N{index}.md": [] for index in range(node_count)},
     }
-    store = AsyncMock()
-
-    async def get_notes_with_links(names: list[str]) -> list[NoteLinks]:
-        return [
-            NoteLinks(note=name, links=graph[name])
-            for name in names
-            if name in graph
-        ]
-
-    store.get_notes_with_links.side_effect = get_notes_with_links
-    store.get_notes_linking_to.return_value = []
-    vault = make_traversal_vault(store)
+    vault = make_traversal_vault(make_graph_store(graph))
 
     # Act
-    result = await vault.traverse_relations("Hub", depth=2)
+    result = await vault.traverse_relations("/Hub", depth=2)
 
     # Assert
     assert len(result.nodes) == 100
@@ -834,17 +973,21 @@ async def test_traverse_relations_batches_queries_per_level() -> None:
     vault = make_traversal_vault(store)
 
     # Act
-    await vault.traverse_relations("Alpha", depth=2)
+    await vault.traverse_relations("/g/Alpha", depth=2)
 
     # Assert
     assert store.get_notes_with_links.await_count == 3
     assert store.get_notes_linking_to.await_count == 2
-    assert store.get_notes_with_links.await_args_list[0].args == (["Alpha"],)
-    assert set(store.get_notes_linking_to.await_args_list[0].args[0]) == {"Alpha"}
+    assert store.get_notes_with_links.await_args_list[0].args == (["g/Alpha.md"],)
+    assert set(store.get_notes_linking_to.await_args_list[0].args[0]) == {
+        "Alpha",
+        "g/Alpha",
+        "/g/Alpha",
+    }
     assert set(store.get_notes_with_links.await_args_list[1].args[0]) == {
-        "Beta",
-        "Gamma",
-        "Zulu",
+        "g/Beta.md",
+        "g/Gamma.md",
+        "g/Zulu.md",
     }
 
 
@@ -855,6 +998,69 @@ async def test_traverse_relations_unknown_origin_raises() -> None:
     # Act / Assert
     with pytest.raises(FileNotFoundError, match="Nonexistent"):
         await vault.traverse_relations("Nonexistent", depth=1)
+
+
+async def test_traverse_relations_accepts_bare_name_and_partial_path() -> None:
+    # Arrange
+    vault = make_traversal_vault()
+
+    # Act
+    by_name = await vault.traverse_relations("Alpha", depth=1)
+    by_partial = await vault.traverse_relations("g/Alpha", depth=1)
+
+    # Assert
+    assert by_name.origin == by_partial.origin == "/g/Alpha"
+    assert by_name.nodes == by_partial.nodes
+
+
+async def test_traverse_relations_ambiguous_origin_is_picked_alphabetically() -> None:
+    # Arrange
+    vault = make_traversal_vault(make_graph_store(DUP_LINKS))
+
+    # Act
+    result = await vault.traverse_relations("Dup", depth=1)
+
+    # Assert
+    assert result.origin == "/P/Dup"
+
+
+async def test_traverse_relations_follows_ambiguous_outgoing_link_to_picked_note() -> None:
+    # Arrange
+    vault = make_traversal_vault(make_graph_store(DUP_LINKS))
+
+    # Act
+    result = await vault.traverse_relations("/Hub/Alpha", depth=1)
+
+    # Assert
+    assert {(n.note, n.direction, n.via) for n in result.nodes} == {
+        ("/P/Dup", "outgoing", "/Hub/Alpha"),
+    }
+
+
+async def test_traverse_relations_incoming_via_is_the_frontier_path() -> None:
+    # Arrange
+    vault = make_traversal_vault(make_graph_store(DUP_LINKS))
+
+    # Act
+    result = await vault.traverse_relations("/P/Dup", depth=1)
+
+    # Assert
+    assert {(n.note, n.relation, n.via) for n in result.nodes} == {
+        ("/Hub/Alpha", "uses", "/P/Dup"),
+        ("/Z/Zulu", "details", "/P/Dup"),
+    }
+    assert {n.direction for n in result.nodes} == {"incoming"}
+
+
+async def test_traverse_relations_ignores_link_resolving_to_other_same_named_note() -> None:
+    # Arrange
+    vault = make_traversal_vault(make_graph_store(DUP_LINKS))
+
+    # Act
+    result = await vault.traverse_relations("/Q/Dup", depth=1)
+
+    # Assert
+    assert result.nodes == []
 
 
 async def test_obsidian_traverse_relations_tool_rejects_out_of_range_depth(
@@ -907,6 +1113,28 @@ async def test_obsidian_traverse_relations_tool_converts_unknown_note() -> None:
         await obsidian_vault.traverse_relations("Nonexistent", ctx)
 
 
+async def test_obsidian_traverse_relations_tool_reports_ambiguous_note() -> None:
+    # Arrange
+    fake_vault = FakeVault()
+    ctx = make_context(fake_vault)
+
+    async def raise_ambiguous(
+        wikilink_name: str,
+        depth: int = 1,
+        relation_types: list[str] | None = None,
+    ) -> TraversalResult:
+        raise ValueError(
+            f"Ambiguous note reference '{wikilink_name}'. "
+            "Matches: /P/Dup, /Q/Dup"
+        )
+
+    fake_vault.traverse_relations = raise_ambiguous  # type: ignore[method-assign]
+
+    # Act / Assert
+    with pytest.raises(ToolError, match=r"/P/Dup, /Q/Dup"):
+        await obsidian_vault.traverse_relations("Dup", ctx)
+
+
 async def test_search_waits_for_index_update_before_querying() -> None:
     fake_vault = FakeVault()
     fake_vault.search_results = [make_result_chunk()]
@@ -940,9 +1168,10 @@ async def test_search_answers_from_current_index_when_update_is_late() -> None:
     fake_vault.search_results = [make_result_chunk()]
     scheduler = FakeIndexScheduler(fake_vault.events, fresh=False)
 
-    results = await obsidian_vault.search(
+    response = await obsidian_vault.search(
         "query", make_context(fake_vault, scheduler)
     )
+    results = response.results
 
     assert len(results) == 1
 
@@ -983,3 +1212,30 @@ async def test_read_note_finds_note_created_after_last_index_update() -> None:
         task.cancel()
         with suppress(asyncio.CancelledError):
             await task
+
+
+async def test_tool_schemas_document_note_path_contract() -> None:
+    # Arrange
+    mcp = FastMCP("test")
+    obsidian_vault.register_tools(mcp)
+
+    # Act
+    async with Client(mcp) as client:
+        tools = {tool.name: tool for tool in await client.list_tools()}
+
+    # Assert
+    search_schema = tools["obsidian_search"].output_schema
+    item_schema = search_schema["properties"]["results"]["items"]
+    assert "anyOf" not in item_schema
+    assert {"content", "note_path"} <= set(item_schema["required"])
+    assert set(search_schema["required"]) >= {"results", "total_documents"}
+    read_schema = tools["obsidian_read_note"].input_schema
+    traverse_schema = tools["obsidian_traverse_relations"].input_schema
+    read_doc = read_schema["properties"]["note"]["description"]
+    traverse_doc = traverse_schema["properties"]["note"]["description"]
+    assert "full vault path starting with '/'" in read_doc
+    assert read_doc == traverse_doc
+    search_output = str(tools["obsidian_search"].output_schema)
+    assert "note_path" in search_output
+    assert "wikilink_name" not in search_output
+    assert "source_path" not in search_output

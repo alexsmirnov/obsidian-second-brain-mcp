@@ -60,7 +60,7 @@ All components implement abstract interfaces enabling flexible dependency inject
 - `metadata`: `title`, `description`, and `source` from frontmatter.
 - `tags`: Frontmatter tags only.
 - `source_path`: Relative to the vault root.
-- `wikilink_name`: File name without `.md`.
+- `wikilink_name`: File name without `.md` and without folders (the stem).
 - `file_size`: File size in characters.
 - `modified_at`: Timestamp used for change detection.
 
@@ -73,14 +73,15 @@ All components implement abstract interfaces enabling flexible dependency inject
 - `typed_links`: Property that reconstructs aligned arrays as `Link` objects.
 - `tags`: Frontmatter and inline `#tags`.
 - `position`: Order in the document.
-- `wikilink_name`: Vault-relative source wikilink without `.md`.
+- `source_path`: Path relative to the vault root, with `.md`.
+- `wikilink_name`: File name without `.md` and without folders (the stem).
 - `offset`: Zero-based line index of the chunk start.
 - `file_size`: Source file size in characters.
 - `embeddings`: Optional vector embedding.
 
 **Link** — A typed relation edge:
 - `type`: Free-form relation type extracted from the note text.
-- `target`: Destination note's wikilink name.
+- `target`: Destination of the link. In the store this is the raw wikilink text as written. Tool results replace it with a note path (see [Note Paths](#note-paths)).
 
 Implementation: [interfaces.py:22-152](../src/mcps/rag/interfaces.py#L22-L152)
 
@@ -139,6 +140,32 @@ A field name must match `[a-zA-Z][a-zA-Z0-9_-]*`. A recognized field types exact
 
 Implementation: [document_processing.py:18-80](../src/mcps/rag/document_processing.py#L18-L80)
 
+### Note Paths #note-paths
+
+A **note path** is the path of a note relative to the vault root, without `.md`, with a leading `/`. The file `Projects/AI/Note.md` has the note path `/Projects/AI/Note`. Search results, backlinks, and traversal results use note paths, so a caller can find the file without searching the vault.
+
+`obsidian_read_note` and `obsidian_traverse_relations` accept a **reference** to a note. Matching is case-sensitive and never includes the `.md` extension:
+
+| Form | Example | Matches |
+|------|---------|---------|
+| Full path | `/AI/Note` | Exactly that file |
+| Partial path | `AI/Note` | Every note whose path ends with those whole folder names and the file name: `/AI/Note`, `/Work/AI/Note`. It does not match `/XAI/Note`. |
+| Bare name | `Note` | Every note with that file name |
+
+If a partial path or bare name matches more than one note, the tool picks one with the Obsidian rules, described below. If it matches none, the tool returns a not-found error. A full path to a file is read straight from disk, so it also works for a file that the index skipped. Partial paths and bare names are resolved through the index.
+
+A reference is rejected when it is blank, ends with `.md` or `/`, contains `\`, `..`, or an empty folder name (`//`).
+
+When several notes match, the rules are applied in this order until one note is left:
+
+1. The shortest path (fewest folders).
+2. The note closest to the note that holds the link: the most shared leading folders. A read or traversal start has no linking note, so this rule is skipped.
+3. Alphabetical order of the path.
+
+Link targets in results are resolved the same way, from the note that holds the link. A link written `[[Dup]]` points to one note only, and duplicates are removed after that step. A backlink or incoming traversal edge is reported only for the note its link resolves to. A link to a note that does not exist keeps its original text in search results.
+
+Implementation: [note_paths.py](../src/mcps/rag/note_paths.py) (`reference_name`, `select_matching`, `resolve_links`), [vault.py](../src/mcps/rag/vault.py) (`Vault.resolve_references`, `get_file`, `get_backlinks`, `traverse_relations`)
+
 ### Hashtag Extraction
 
 Pattern: `#([a-zA-Z][a-zA-Z0-9_-]*)`.
@@ -176,13 +203,13 @@ Implementation: [database.py:156-228](../src/mcps/rag/database.py#L156-L228)
 
 **Tag filtering:** `array_has_all(tags, [...])` requires every requested tag.
 
-**Path filtering:** `source_path LIKE '%substring%'` constrains source paths.
+**Path filtering:** `source_path LIKE 'prefix%'` keeps source paths that start with the given text. The `obsidian_search` tool removes one leading `/` first, so a folder taken from a returned `note_path` works as is.
 
 Implementation: [database.py:204-218](../src/mcps/rag/database.py#L204-L218)
 
 ### Link Lookups
 
-`get_notes_with_links()` aggregates every chunk of each requested note into a deduplicated `NoteLinks` record. `get_notes_linking_to()` finds source notes that link to requested targets, optionally restricted to OR-combined relation types.
+`get_notes_with_links()` takes source paths (`Folder/Note.md`) and aggregates every chunk of each requested note into a deduplicated `NoteLinks` record. `get_notes_linking_to()` takes raw link targets and finds source notes that link to them, optionally restricted to OR-combined relation types. In both, `NoteLinks.note` is the note's source path, so two notes with the same file name stay separate.
 
 The LanceDB `array_has_any` predicate over `links` and `link_types` is a sound-but-inexact pre-filter because parallel arrays cannot be correlated by SQL position. Exact `(type, target)` matching is always re-verified in Python after rows are fetched.
 
@@ -211,6 +238,8 @@ Implementation: [database.py:264-332](../src/mcps/rag/database.py#L264-L332)
 `obsidian_traverse_relations` walks the typed relation graph from a note in both directions. It accepts depths from 1 through 3 and optional free-form `relation_types`, which are OR-combined; omitted types follow every relation.
 
 The walk is breadth-first. Each note appears at most once, at its shallowest depth. It is limited to 100 distinct notes and returns a truncation warning when the cap is reached. Dangling targets that are not indexed notes are silently excluded. Each returned node identifies its relation type, direction, and the note through which it was reached.
+
+The starting note is given as a reference (see [Note Paths](#note-paths)). `origin`, `nodes[].note`, and `nodes[].via` are note paths. A link whose name matches several notes leads to the one note picked by the Obsidian rules. For incoming edges, the walk looks for links written with any name that can resolve to a note on the current level (`Note`, `Folder/Note`, or `/Folder/Note`), and keeps those that resolve to that note from the linking note.
 
 Implementation: [vault.py:480-609](../src/mcps/rag/vault.py#L480-L609), [obsidian_vault.py:274-284](../src/mcps/tools/obsidian_vault.py#L274-L284), [obsidian_vault.py:438-451](../src/mcps/tools/obsidian_vault.py#L438-L451)
 
@@ -299,9 +328,9 @@ Tool result model: [obsidian_vault.py:161-175](../src/mcps/tools/obsidian_vault.
 
 If HyDE generation or search-level reranking fails, search logs the error and returns min-score-filtered vector-store results.
 
-The tool returns one record per source file, ranked by that file's first result window. Isolated windows from the same file are ordered by source offset and separated with `<<Gap: N lines>>`; title, description, tags, outgoing links, and backlinks appear once for the consolidated document.
+The tool returns one record per source file, ranked by that file's first result window. Each record identifies its note by `note_path` (see [Note Paths](#note-paths)); there are no `wikilink_name` or `source_path` fields. Isolated windows from the same file are ordered by source offset and separated with `<<Gap: N lines>>`; title, description, tags, outgoing links, and backlinks appear once for the consolidated document.
 
-Returned string values have a combined 25,000-character budget. If the response exceeds it, document content is replaced by `<<Dropped: content is too big>>`, largest content first. If metadata alone still exceeds the budget, the lowest-ranked document records are removed and a trailing warning reports the retained and original document counts. The warning itself is outside the character budget.
+Returned string values have a combined 25,000-character budget. If the response exceeds it, document content is replaced by `<<Dropped: content is too big>>`, largest content first. If metadata alone still exceeds the budget, the lowest-ranked document records are removed. The tool returns an object with `results` (the notes), `total_documents` (the count before trimming), `truncated`, and a `warning` that reports the retained and original document counts. `truncated` is `false` and `warning` is empty when nothing was removed. The size fields are outside the character budget.
 
 ## Configuration #config
 

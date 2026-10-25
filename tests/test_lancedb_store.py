@@ -647,7 +647,7 @@ def link_graph_chunks():
             links=links,
             link_types=link_types,
             tags=[],
-            source_path=f"/g/{note.lower()}.md",
+            source_path=f"g/{note.lower()}.md",
             wikilink_name=note,
             modified_at=base_time,
             position=position,
@@ -762,12 +762,12 @@ async def test_get_notes_with_links_aggregates_all_chunks_of_a_note(
     # requires->Beta between them
 
     # Act
-    result = await lancedb_store_with_links.get_notes_with_links(["Alpha"])
+    result = await lancedb_store_with_links.get_notes_with_links(["g/alpha.md"])
 
     # Assert
     assert len(result) == 1
     alpha = result[0]
-    assert alpha.note == "Alpha"
+    assert alpha.note == "g/alpha.md"
     assert alpha.title == "Alpha Note"
     assert alpha.description == "About alpha"
     assert alpha.links == [
@@ -781,7 +781,7 @@ async def test_get_notes_with_links_returns_nothing_for_unknown_note(
     lancedb_store_with_links,
 ):
     # Act
-    result = await lancedb_store_with_links.get_notes_with_links(["Nonexistent"])
+    result = await lancedb_store_with_links.get_notes_with_links(["g/nonexistent.md"])
 
     # Assert
     assert result == []
@@ -810,10 +810,10 @@ async def test_get_notes_linking_to_returns_sources_with_only_matching_edges(
 
     # Assert
     by_note = {entry.note: entry for entry in result}
-    assert set(by_note) == {"Alpha", "Beta", "Decoy"}
-    assert by_note["Alpha"].links == [Link(type="related", target="Gamma")]
-    assert by_note["Beta"].links == [Link(type="refines", target="Gamma")]
-    assert by_note["Decoy"].links == [Link(type="requires", target="Gamma")]
+    assert set(by_note) == {"g/alpha.md", "g/beta.md", "g/decoy.md"}
+    assert by_note["g/alpha.md"].links == [Link(type="related", target="Gamma")]
+    assert by_note["g/beta.md"].links == [Link(type="refines", target="Gamma")]
+    assert by_note["g/decoy.md"].links == [Link(type="requires", target="Gamma")]
 
 
 @pytest.mark.asyncio
@@ -832,7 +832,7 @@ async def test_get_notes_linking_to_filters_by_relation_type_without_trusting_sq
     )
 
     # Assert
-    assert [entry.note for entry in result] == ["Alpha"]
+    assert [entry.note for entry in result] == ["g/alpha.md"]
     assert result[0].links == [Link(type="requires", target="Beta")]
 
 
@@ -848,9 +848,9 @@ async def test_get_notes_linking_to_or_combines_relation_types(
 
     # Assert
     by_note = {entry.note: entry for entry in result}
-    assert set(by_note) == {"Alpha", "Beta"}
-    assert by_note["Alpha"].links == [Link(type="related", target="Gamma")]
-    assert by_note["Beta"].links == [Link(type="refines", target="Gamma")]
+    assert set(by_note) == {"g/alpha.md", "g/beta.md"}
+    assert by_note["g/alpha.md"].links == [Link(type="related", target="Gamma")]
+    assert by_note["g/beta.md"].links == [Link(type="refines", target="Gamma")]
 
 
 @pytest.mark.asyncio
@@ -889,8 +889,74 @@ async def test_get_notes_linking_to_escapes_quotes_in_target_names(
 
     # Assert
     assert len(result) == 1
-    assert result[0].note == "Quoter"
+    assert result[0].note == chunk.source_path
     assert result[0].links == [Link(type="requires", target="O'Malley")]
+
+
+@pytest.fixture
+def same_name_chunks():
+    """Two notes sharing the stem Dup in different folders, plus a target."""
+    base_time = datetime.now().timestamp()
+
+    def dup_chunk(chunk_id, source_path, title, links, link_types):
+        return Chunk(
+            id=chunk_id,
+            content=f"{title} body",
+            source=None,
+            description=None,
+            title=title,
+            links=links,
+            link_types=link_types,
+            tags=[],
+            source_path=source_path,
+            wikilink_name=source_path.rsplit("/", 1)[-1].removesuffix(".md"),
+            modified_at=base_time,
+            position=0,
+            offset=0,
+            file_size=10,
+        )
+
+    return [
+        dup_chunk("p_dup", "P/Dup.md", "P dup", ["Target"], ["uses"]),
+        dup_chunk("q_dup", "Q/Dup.md", "Q dup", ["Other"], ["related"]),
+        dup_chunk("target", "Target.md", "Target", [], []),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_get_notes_with_links_keeps_same_named_notes_apart(
+    lancedb_store,
+    same_name_chunks,
+):
+    # Arrange
+    await lancedb_store.initialize()
+    await lancedb_store.store(same_name_chunks)
+
+    # Act
+    result = await lancedb_store.get_notes_with_links(["P/Dup.md"])
+
+    # Assert
+    assert len(result) == 1
+    assert result[0].note == "P/Dup.md"
+    assert result[0].title == "P dup"
+    assert result[0].links == [Link(type="uses", target="Target")]
+
+
+@pytest.mark.asyncio
+async def test_get_notes_linking_to_names_sources_by_source_path(
+    lancedb_store,
+    same_name_chunks,
+):
+    # Arrange
+    await lancedb_store.initialize()
+    await lancedb_store.store(same_name_chunks)
+
+    # Act
+    result = await lancedb_store.get_notes_linking_to(["Target"])
+
+    # Assert
+    assert [entry.note for entry in result] == ["P/Dup.md"]
+    assert result[0].links == [Link(type="uses", target="Target")]
 
 
 @pytest.mark.asyncio

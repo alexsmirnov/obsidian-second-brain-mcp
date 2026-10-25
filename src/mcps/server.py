@@ -53,9 +53,13 @@ _SERVER_INSTRUCTIONS = (
 
   Choosing a tool:
   - obsidian_search — you don't know which note you need. Start here.
-  - obsidian_traverse_relations — you have a note name and want its typed
-    neighborhood (prerequisites, components, alternatives, tooling).
-  - obsidian_read_note — you know the note and need its full text."""
+  - obsidian_traverse_relations — you have a note path or name and want its
+    typed neighborhood (prerequisites, components, alternatives, tooling).
+  - obsidian_read_note — you know the note and need its full text.
+  Notes are identified by full vault paths without extension, starting with
+  '/' (e.g. "/Projects/AI/Note"); reuse paths returned by these tools instead
+  of searching the file system. A bare name like `Tags` works while it is
+  unique in the vault."""
 )
 
 _WEB_RESEARCH_DESCRIPTION = (

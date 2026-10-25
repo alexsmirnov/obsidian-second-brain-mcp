@@ -66,7 +66,7 @@ def dedupe_links(links: Iterable[Link]) -> list[Link]:
 class NoteLinks(BaseModel):
     """Typed outgoing links of one note, aggregated across all its chunks."""
 
-    note: str
+    note: str  # source path of the note, e.g. "Folder/Note.md"
     title: str | None = None
     description: str | None = None
     links: list[Link] = Field(default_factory=list)
@@ -75,19 +75,30 @@ class NoteLinks(BaseModel):
 class TraversalNode(BaseModel):
     """A note reached while traversing typed relations."""
 
-    note: str
+    note: str = Field(
+        description=(
+            "Full vault path of the reached note, starting with '/', "
+            "without extension."
+        )
+    )
     title: str | None = None
     description: str | None = None
     depth: int
     direction: str
     relation: str
-    via: str
+    via: str = Field(
+        description=(
+            "Full vault path of the already-visited note this edge connects to."
+        )
+    )
 
 
 class TraversalResult(BaseModel):
     """The bounded typed-relation graph traversal result."""
 
-    origin: str
+    origin: str = Field(
+        description="Full vault path the requested reference resolved to."
+    )
     nodes: list[TraversalNode] = Field(default_factory=list)
     truncated: bool = False
     warning: str | None = None
@@ -119,7 +130,7 @@ class Chunk(BaseModel):
     link_types: list[str] = Field(default_factory=list)  # Aligned with links
     tags: list[str] = Field(default_factory=list)
     source_path: str  # file path relative to vault root
-    wikilink_name: str  # source path without .md, as used in Obsidian wikilinks
+    wikilink_name: str  # file name without .md (the stem, no folders)
     modified_at: float
     position: int
     offset: int  # zero-based line index of the chunk start within the document
@@ -313,18 +324,18 @@ class IVectorStore(ABC):
 
     @abstractmethod
     async def get_sources_by_name(self, wikilink_name: str) -> list[str]:
-        """Return source paths matching a wikilink note name."""
+        """Return source paths of notes whose file name (stem) matches."""
         pass
 
     @abstractmethod
     async def get_notes_with_links(
-        self, wikilink_names: list[str]
+        self, source_paths: list[str]
     ) -> list[NoteLinks]:
-        """Return outgoing typed links for the requested notes.
+        """Return outgoing typed links for the notes at the given source paths.
 
         Aggregates the links of all chunk rows of each note, deduplicated.
-        Notes absent from the index are silently omitted. An empty input
-        returns an empty list.
+        Each entry's `note` is the note's source path. Notes absent from the
+        index are silently omitted. An empty input returns an empty list.
         """
         pass
 
@@ -334,10 +345,12 @@ class IVectorStore(ABC):
     ) -> list[NoteLinks]:
         """Return notes holding at least one link to a requested target.
 
-        Each returned entry carries only the edges pointing at a requested
-        target, optionally restricted to the given relation types
-        (OR-combined). An empty input returns an empty list. Matching is
-        exact on the (type, target) pair, never on the SQL pre-filter alone.
+        Targets are raw wikilink strings as authored. Each entry's `note` is
+        the linking note's source path. Each returned entry carries only the
+        edges pointing at a requested target, optionally restricted to the
+        given relation types (OR-combined). An empty input returns an empty
+        list. Matching is exact on the (type, target) pair, never on the SQL
+        pre-filter alone.
         """
         pass
 
@@ -395,13 +408,30 @@ class IVault(ABC):
         pass
 
     @abstractmethod
+    async def resolve_references(
+        self, references: Iterable[str]
+    ) -> dict[str, list[str]]:
+        """Map each reference to the sorted indexed note paths it matches.
+
+        References are resolved like in `get_file`; one that matches nothing
+        maps to an empty list.
+        """
+        pass
+
+    @abstractmethod
     async def get_file(
         self,
-        file_name: str,
+        reference: str,
         offset: int | None = None,
         limit: int | None = None,
     ) -> str:
-        """Get content by full relative wikilink name without .md extension.
+        """Get note content by reference, without the .md extension.
+
+        A reference is a full path ('/Folder/Note'), a partial path
+        ('Folder/Note') matching any note whose path ends with those
+        segments, or a bare name ('Note'). Raises FileNotFoundError when
+        nothing matches. When several notes match, the one with the shortest
+        path wins, then alphabetical order.
 
         offset is a zero-based line index; limit is a maximum number of lines.
         """
@@ -422,27 +452,32 @@ class IVault(ABC):
 
     @abstractmethod
     async def get_backlinks(
-        self, wikilink_names: list[str]
+        self, note_paths: list[str]
     ) -> dict[str, list[Link]]:
-        """Return incoming links for the requested notes, keyed by note name.
+        """Return incoming links for the requested notes, keyed by note path.
 
         Each returned Link has `type` set to the incoming edge's type and
-        `target` set to the source note's wikilink_name. Notes with no
-        incoming links map to an empty list; every requested name is present
-        as a key. An empty input returns an empty dict.
+        `target` set to the source note's path ('/Folder/Note'). A link
+        written with a name shared by several notes counts only for the note
+        Obsidian resolves it to from the linking note: shortest path, then
+        closest to the linking note, then alphabetical order. Notes with no incoming links map to an empty list;
+        every requested path is present as a key. An empty input returns an
+        empty dict.
         """
         pass
 
     @abstractmethod
     async def traverse_relations(
         self,
-        wikilink_name: str,
+        reference: str,
         depth: int = 1,
         relation_types: list[str] | None = None,
     ) -> TraversalResult:
         """Walk typed relations in both directions from a note.
 
+        The reference is resolved like in `get_file`, with the same rules.
         The walk is breadth-first, includes at most ``depth`` hops, and
-        follows only the requested relation types when provided.
+        follows only the requested relation types when provided. Every note
+        in the result is identified by its path ('/Folder/Note').
         """
         pass

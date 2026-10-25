@@ -1,4 +1,5 @@
 import asyncio
+from collections.abc import Iterable
 from contextlib import asynccontextmanager
 from datetime import timedelta
 from unittest.mock import patch
@@ -36,6 +37,11 @@ class FakeVault(IVault):
         path: str | None = None,
     ) -> list:
         return []
+
+    async def resolve_references(
+        self, references: Iterable[str]
+    ) -> dict[str, list[str]]:
+        return {reference: [] for reference in references}
 
     async def get_file(
         self,

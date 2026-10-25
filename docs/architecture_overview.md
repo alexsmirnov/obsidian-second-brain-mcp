@@ -160,7 +160,7 @@ Jobs are handled by `ResearchJobs` in [src/mcps/research/jobs.py](../src/mcps/re
 
 **ObsidianTools** [src/mcps/tools/obsidian_vault.py:208-244](../src/mcps/tools/obsidian_vault.py#L208-L244) - Registered only when `config.vault_dir` is set:
 - `obsidian_list_files` - List files and subfolders in a vault folder
-- `obsidian_read_note` - Retrieve note content by wikilink name with optional line-based offset/limit
+- `obsidian_read_note` - Retrieve note content by full path, partial path, or name with optional line-based offset/limit
 - `obsidian_rename_move` - Rename/move notes and rewrite outgoing wikilinks
 - `obsidian_search` - Semantic search in vault with tag/path filtering
 

@@ -36,7 +36,7 @@ from .interfaces import (
 logger = logging.getLogger("mcps.database")
 
 _LINK_QUERY_COLUMNS = [
-    "wikilink_name",
+    "source_path",
     "title",
     "description",
     "position",
@@ -489,7 +489,7 @@ class LanceDBStore(IVectorStore):
             raise
 
     async def get_sources_by_name(self, wikilink_name: str) -> list[str]:
-        """Return distinct source paths matching an exact wikilink note name."""
+        """Return distinct source paths of notes with an exact file name stem."""
         if not self._initialized:
             raise NotInitializedError(
                 "LanceDBStore is not initialized. Call await store.initialize() first."
@@ -509,10 +509,10 @@ class LanceDBStore(IVectorStore):
 
     @staticmethod
     def _group_rows_by_note(rows: list[dict]) -> dict[str, list[dict]]:
-        """Group chunk rows by note, each group sorted by position."""
+        """Group chunk rows by note source path, each group sorted by position."""
         groups: dict[str, list[dict]] = {}
         for row in rows:
-            groups.setdefault(row["wikilink_name"], []).append(row)
+            groups.setdefault(row["source_path"], []).append(row)
         return {
             note: sorted(group, key=lambda r: r["position"])
             for note, group in groups.items()
@@ -536,21 +536,21 @@ class LanceDBStore(IVectorStore):
         return next((row[column] for row in rows if row[column] is not None), None)
 
     async def get_notes_with_links(
-        self, wikilink_names: list[str]
+        self, source_paths: list[str]
     ) -> list[NoteLinks]:
-        """Return outgoing typed links for the requested notes."""
+        """Return outgoing typed links for the notes at the given source paths."""
         if not self._initialized:
             raise NotInitializedError(
                 "LanceDBStore is not initialized. Call await store.initialize() first."
             )
-        if not wikilink_names:
+        if not source_paths:
             return []
-        name_list = ",".join(
-            f"'{self._escape_sql_string(n)}'" for n in wikilink_names
+        path_list = ",".join(
+            f"'{self._escape_sql_string(p)}'" for p in source_paths
         )
         rows = (
             await self.table.query()
-            .where(f"wikilink_name IN ({name_list})")
+            .where(f"source_path IN ({path_list})")
             .select(_LINK_QUERY_COLUMNS)
             .to_list()
         )
