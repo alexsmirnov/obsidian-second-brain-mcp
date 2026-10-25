@@ -94,63 +94,57 @@ async def test_run_repeats_update_after_interval(vault, start_scheduler) -> None
     await _wait_for_call(vault, 3)
 
 
-async def test_wait_for_next_update_runs_update_and_returns_true(
+async def test_refresh_starts_update_when_idle_and_returns_true(
     vault, start_scheduler
 ) -> None:
     scheduler, _ = start_scheduler(vault)
     await _wait_for_call(vault, 1)
     await _yield_to_loop()
 
-    fresh = await scheduler.wait_for_next_update(SECOND)
+    fresh = await scheduler.refresh(SECOND)
 
     assert fresh is True
     assert vault.calls == 2
 
 
-async def test_wait_for_next_update_ignores_update_started_before_request(
+async def test_refresh_joins_running_update_without_starting_another(
     vault, start_scheduler
 ) -> None:
-    first_gate = asyncio.Event()
-    vault.gate = first_gate
+    gate = asyncio.Event()
+    vault.gate = gate
     scheduler, _ = start_scheduler(vault)
     await _wait_for_call(vault, 1)
-    waiter = asyncio.create_task(scheduler.wait_for_next_update(SECOND))
-    await _yield_to_loop()
-
-    second_gate = asyncio.Event()
-    vault.gate = second_gate
-    first_gate.set()
-    await _wait_for_call(vault, 2)
+    waiter = asyncio.create_task(scheduler.refresh(SECOND))
     await _yield_to_loop()
 
     assert not waiter.done()
-    assert vault.calls == 2
+    gate.set()
 
-    second_gate.set()
     assert await waiter is True
+    await _yield_to_loop()
+    assert vault.calls == 1
 
 
 async def test_concurrent_requests_share_one_update(vault, start_scheduler) -> None:
-    first_gate = asyncio.Event()
-    vault.gate = first_gate
     scheduler, _ = start_scheduler(vault)
     await _wait_for_call(vault, 1)
+    await _yield_to_loop()
+    gate = asyncio.Event()
+    vault.gate = gate
     waiters = [
-        asyncio.create_task(scheduler.wait_for_next_update(SECOND)),
-        asyncio.create_task(scheduler.wait_for_next_update(SECOND)),
+        asyncio.create_task(scheduler.refresh(SECOND)),
+        asyncio.create_task(scheduler.refresh(SECOND)),
     ]
     await _yield_to_loop()
 
-    vault.gate = None
-    first_gate.set()
+    gate.set()
     results = await asyncio.gather(*waiters)
 
     assert results == [True, True]
-    await _yield_to_loop()
     assert vault.calls == 2
 
 
-async def test_wait_for_next_update_times_out_without_cancelling_update(
+async def test_refresh_times_out_without_cancelling_update(
     vault, start_scheduler
 ) -> None:
     scheduler, _ = start_scheduler(vault)
@@ -159,16 +153,17 @@ async def test_wait_for_next_update_times_out_without_cancelling_update(
     gate = asyncio.Event()
     vault.gate = gate
 
-    fresh = await scheduler.wait_for_next_update(timedelta(milliseconds=10))
+    fresh = await scheduler.refresh(timedelta(milliseconds=10))
 
     assert fresh is False
     assert vault.cancelled is False
 
     gate.set()
-    assert await scheduler.wait_for_next_update(SECOND) is True
+    assert await scheduler.refresh(SECOND) is True
+    assert vault.calls == 2
 
 
-async def test_failed_update_releases_waiters_and_loop_continues(
+async def test_failed_update_returns_false_and_loop_continues(
     vault, start_scheduler
 ) -> None:
     vault.fail_on = {2}
@@ -176,32 +171,36 @@ async def test_failed_update_releases_waiters_and_loop_continues(
     await _wait_for_call(vault, 1)
     await _yield_to_loop()
 
-    failed_run = await scheduler.wait_for_next_update(SECOND)
-    next_run = await scheduler.wait_for_next_update(SECOND)
+    failed_run = await scheduler.refresh(SECOND)
+    next_run = await scheduler.refresh(SECOND)
 
-    assert (failed_run, next_run) == (True, True)
+    assert (failed_run, next_run) == (False, True)
     assert vault.calls == 3
     assert not task.done()
 
 
-async def test_wait_for_next_update_returns_false_when_not_running(vault) -> None:
+async def test_refresh_updates_index_when_scheduler_is_not_running(vault) -> None:
     scheduler = IndexScheduler(_as_vault(vault), HOUR)
 
-    async with asyncio.timeout(0.1):
-        fresh = await scheduler.wait_for_next_update(timedelta(seconds=10))
+    fresh = await scheduler.refresh(SECOND)
 
-    assert fresh is False
+    assert fresh is True
+    assert vault.calls == 1
 
 
-async def test_run_exits_on_cancel(vault, start_scheduler) -> None:
+async def test_run_cancel_stops_update_in_progress_and_releases_waiters(
+    vault, start_scheduler
+) -> None:
+    vault.gate = asyncio.Event()
     scheduler, task = start_scheduler(vault)
     await _wait_for_call(vault, 1)
+    waiter = asyncio.create_task(scheduler.refresh(SECOND))
     await _yield_to_loop()
 
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
 
+    assert vault.cancelled is True
     async with asyncio.timeout(0.1):
-        fresh = await scheduler.wait_for_next_update(timedelta(seconds=10))
-    assert fresh is False
+        assert await waiter is False

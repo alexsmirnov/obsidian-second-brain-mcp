@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from contextlib import suppress
 from datetime import timedelta
 
 from mcps.rag.interfaces import IVault
@@ -10,58 +11,51 @@ logger = logging.getLogger("mcps")
 class IndexScheduler:
     """Runs vault index updates periodically and on demand.
 
-    A single loop owns every update, so concurrent requests share one run and
-    a caller that stops waiting never cancels an update in progress.
+    At most one update runs at a time. A caller that arrives while an update is
+    running joins it, otherwise it starts a new one. A caller that stops waiting
+    never cancels the update in progress.
     """
 
     def __init__(self, vault: IVault, interval: timedelta) -> None:
         self._vault = vault
         self._interval = interval
-        self._started = 0
-        self._completed = 0
-        self._running = False
-        self._requested = asyncio.Event()
-        self._finished = asyncio.Condition()
+        self._update: asyncio.Task[bool] | None = None
 
     async def run(self) -> None:
-        self._running = True
+        """Update the index every interval until cancelled."""
         try:
             while True:
-                self._started += 1
-                self._requested.clear()
-                await self._update_index()
-                async with self._finished:
-                    self._completed = self._started
-                    self._finished.notify_all()
-                await self._wait_for_request_or_interval()
+                await self.refresh(self._interval)
+                await asyncio.sleep(self._interval.total_seconds())
         finally:
-            self._running = False
+            await self._cancel_update()
 
-    async def wait_for_next_update(self, timeout: timedelta) -> bool:
-        """True when an update that started after this call has finished
-        (successfully or not)."""
-        if not self._running:
-            logger.warning("Index scheduler is not running, skipping index refresh")
-            return False
-        target = self._started + 1
-        self._requested.set()
-        try:
-            async with asyncio.timeout(timeout.total_seconds()):
-                async with self._finished:
-                    await self._finished.wait_for(lambda: self._completed >= target)
-        except TimeoutError:
-            return False
-        return True
+    async def refresh(self, timeout: timedelta) -> bool:
+        """Wait until the index update in progress, or a new one, has finished.
 
-    async def _update_index(self) -> None:
+        Works whether or not run() is active. Returns True when the update
+        succeeded, False when it failed, was cancelled or did not finish in time.
+        """
+        update = self._current_update()
+        done, _ = await asyncio.wait({update}, timeout=timeout.total_seconds())
+        return bool(done) and not update.cancelled() and update.result()
+
+    def _current_update(self) -> asyncio.Task[bool]:
+        if self._update is None or self._update.done():
+            self._update = asyncio.create_task(self._update_index())
+        return self._update
+
+    async def _update_index(self) -> bool:
         try:
             await self._vault.update_index()
         except Exception:
             logger.exception("Vault index update failed")
+            return False
+        return True
 
-    async def _wait_for_request_or_interval(self) -> None:
-        try:
-            async with asyncio.timeout(self._interval.total_seconds()):
-                await self._requested.wait()
-        except TimeoutError:
-            pass
+    async def _cancel_update(self) -> None:
+        if self._update is None:
+            return
+        self._update.cancel()
+        with suppress(asyncio.CancelledError):
+            await self._update

@@ -85,7 +85,7 @@ async def test_obsidian_lifespan_starts_and_cancels_periodic_task(
             scheduler = ctx["obsidian_index_scheduler"]
             assert isinstance(scheduler, IndexScheduler)
 
-    async with asyncio.timeout(0.1):
-        fresh = await scheduler.wait_for_next_update(timedelta(seconds=10))
-    assert fresh is False
-    assert fake_vault.update_index_calls >= 1
+    calls_at_shutdown = fake_vault.update_index_calls
+    await asyncio.sleep(0.05)
+    assert fake_vault.update_index_calls == calls_at_shutdown
+    assert calls_at_shutdown >= 1

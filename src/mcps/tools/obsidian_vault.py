@@ -356,7 +356,6 @@ async def rename_move_note(
     try:
         logger.info(f"Renaming/moving Obsidian note from {old_path} to {new_path}")
         config = _config_from_context(ctx)
-        vault = _vault_from_context(ctx)
 
         if config.vault_dir is None:
             error_msg = "Vault directory is not configured"
@@ -395,7 +394,7 @@ async def rename_move_note(
         await _update_wikilinks(vault_path, old_path, new_path)
 
         logger.info("Updating vault index after file move")
-        await vault.update_index()
+        await _wait_for_fresh_index(ctx)
 
         success_msg = (
             f"Successfully moved '{old_path}' to '{new_path}' "
@@ -562,7 +561,7 @@ def _index_scheduler_from_context(ctx: Context) -> IndexScheduler:
 async def _wait_for_fresh_index(ctx: Context) -> None:
     """Bring the index up to date with the vault files before reading it."""
     scheduler = _index_scheduler_from_context(ctx)
-    if not await scheduler.wait_for_next_update(INDEX_REFRESH_TIMEOUT):
+    if not await scheduler.refresh(INDEX_REFRESH_TIMEOUT):
         logger.warning(
             "Index refresh did not finish in %s, answering from the current index",
             INDEX_REFRESH_TIMEOUT,

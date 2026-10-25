@@ -43,7 +43,7 @@ class FakeIndexScheduler:
         self.fresh = fresh
         self.timeouts: list[timedelta] = []
 
-    async def wait_for_next_update(self, timeout: timedelta) -> bool:
+    async def refresh(self, timeout: timedelta) -> bool:
         self.events.append("wait")
         self.timeouts.append(timeout)
         return self.fresh
