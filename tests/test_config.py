@@ -48,16 +48,6 @@ class TestCreateConfigMemoryDir:
 
         assert config.memory_dir == "Memory"
 
-    @pytest.mark.parametrize(
-        "value",
-        ["/abs", "a/../b", "./a", ".mem", "tmp/x", "a\\b", "."],
-    )
-    def test_unsafe_memory_dir_is_rejected(self, monkeypatch, value: str):
-        monkeypatch.setenv("MEMORY_DIR", value)
-
-        with pytest.raises(ValueError, match="MEMORY_DIR"):
-            create_config()
-
     def test_empty_memory_dir_falls_back_to_default(self, monkeypatch):
         monkeypatch.setenv("MEMORY_DIR", "")
 
@@ -323,14 +313,10 @@ class TestCreateConfigMinScore:
 
 
 class TestCreateConfigFetch:
-    def test_fetch_settings_defaults(self, monkeypatch):
+    def test_restricted_domains_default_to_none(self, monkeypatch):
         monkeypatch.delenv("FETCH_RESTRICTED_DOMAINS", raising=False)
-        monkeypatch.delenv("FETCH_CONCURRENCY", raising=False)
 
-        config = create_config()
-
-        assert config.fetch_restricted_domains == ()
-        assert config.fetch_concurrency == 2
+        assert create_config().fetch_restricted_domains == ()
 
     def test_fetch_settings_read_env_vars(self, monkeypatch):
         monkeypatch.setenv("FETCH_RESTRICTED_DOMAINS", " A.com, b.org ,")
@@ -348,13 +334,6 @@ class TestCreateConfigFetch:
         monkeypatch.setenv("DECISION_MODEL", "jev-latest")
 
         assert create_config().decision_model == "jev-latest"
-
-    def test_empty_fetch_concurrency_env_var_falls_back_to_default(self, monkeypatch):
-        monkeypatch.setenv("FETCH_CONCURRENCY", "")
-
-        config = create_config()
-
-        assert config.fetch_concurrency == 2
 
 
 

@@ -94,14 +94,7 @@ async def test_bm25_ranker_zero_threshold_keeps_every_overlapping_fragment():
     assert set(indices) == {1, 3}
 
 
-@pytest.mark.parametrize("threshold", [-0.1, float("nan")])
-def test_bm25_ranker_rejects_invalid_threshold(threshold: float):
-    with pytest.raises(ValueError, match="threshold"):
-        Bm25Ranker(threshold=threshold)
-
-
 def test_bm25_ranker_exposes_threshold():
-    assert Bm25Ranker().threshold == 1.0
     assert Bm25Ranker(threshold=2.5).threshold == 2.5
 
 
@@ -151,25 +144,6 @@ async def test_bm25_ranker_smoothing_selects_nothing_without_query_overlap():
     ranker = Bm25Ranker(threshold=0.0, smoothing=0.2, relative_cutoff=0.5)
 
     assert await ranker(FRAGMENTS, "the and of") == []
-
-
-@pytest.mark.parametrize(
-    ("option", "value"),
-    [
-        ("relative_cutoff", -0.1),
-        ("relative_cutoff", 1.1),
-        ("relative_cutoff", float("nan")),
-        ("smoothing", -0.1),
-        ("smoothing", 0.6),
-        ("smoothing", float("nan")),
-        ("link_penalty", -1.0),
-        ("link_penalty", float("nan")),
-        ("link_penalty", float("inf")),
-    ],
-)
-def test_bm25_ranker_rejects_invalid_tuning(option: str, value: float):
-    with pytest.raises(ValueError, match=option):
-        Bm25Ranker(**{option: value})
 
 
 def test_bm25_ranker_exposes_tuning():

@@ -81,6 +81,8 @@ def crawl_result(
         status_code=status_code,
         cleaned_html=cleaned_html,
         html=html,
+        redirected_url=None,
+        markdown=None,
         response_headers=response_headers,
         error_message="" if success else "boom",
     )

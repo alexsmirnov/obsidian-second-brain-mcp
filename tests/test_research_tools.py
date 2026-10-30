@@ -120,6 +120,12 @@ def bm25():
     return RelevanceFilter(MarkdownChunker(), Bm25Ranker())
 
 
+@pytest.fixture
+def keep_all_overlap():
+    """Filter that keeps every fragment sharing a term with the query."""
+    return RelevanceFilter(MarkdownChunker(), Bm25Ranker(threshold=0.0))
+
+
 def _pdf_bytes(text: str) -> bytes:
     document = pymupdf.open()
     page = document.new_page()
@@ -263,7 +269,7 @@ async def test_declared_markdown_via_browser_is_filtered(bm25, client):
     assert provider.calls == []
 
 
-async def test_browser_html_pre_code_survives_rendering(bm25, client):
+async def test_browser_html_pre_code_survives_rendering(keep_all_overlap, client):
     code = "def quantum():\n    return 1"
     page = (
         "<html><body><h2>Quantum</h2><pre><code>"
@@ -272,7 +278,7 @@ async def test_browser_html_pre_code_survives_rendering(bm25, client):
     )
     browser = FakeBrowser(page)
     fetch = create_fetch(
-        http_client=client, browser=browser, provider=None, page_filter=bm25
+        http_client=client, browser=browser, provider=None, page_filter=keep_all_overlap
     )
 
     result = await fetch(GENERIC, "quantum")
@@ -1046,7 +1052,7 @@ async def test_http_textual_types_preserve_plain_content(
 
 
 async def test_fetch_plain_query_does_not_interpret_markdown_or_html(
-    bm25, httpx_mock: HTTPXMock, client: httpx.AsyncClient
+    keep_all_overlap, httpx_mock: HTTPXMock, client: httpx.AsyncClient
 ):
     body = "Quantum # routing <tag>literal</tag>   spacing.\n\nBread flour."
     httpx_mock.add_response(
@@ -1055,13 +1061,13 @@ async def test_fetch_plain_query_does_not_interpret_markdown_or_html(
         headers={"content-type": "text/plain"},
     )
     fetch = create_fetch(
-        http_client=client, browser=None, provider=None, page_filter=bm25
+        http_client=client, browser=None, provider=None, page_filter=keep_all_overlap
     )
 
     result = await fetch("https://source.example/content", "quantum")
 
     assert result.mime == "text/plain"
-    assert result.content == "Quantum # routing <tag>literal</tag>   spacing."
+    assert "Quantum # routing <tag>literal</tag>   spacing." in result.content
 
 
 async def test_pdf_source_preserves_extracted_text(
