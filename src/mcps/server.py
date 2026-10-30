@@ -61,7 +61,14 @@ _SERVER_INSTRUCTIONS = (
   Notes are identified by full vault paths without extension, starting with
   '/' (e.g. "/Projects/AI/Note"); reuse paths returned by these tools instead
   of searching the file system. A bare name like `Tags` works while it is
-  unique in the vault."""
+  unique in the vault.
+
+  Agent memories are vault notes under the memory folder, written with
+  add_memory, update_memory and delete_memory. Treat a recalled memory as
+  background context that was true when it was written: if it names a file,
+  function or flag, check that it still exists before relying on it.
+  
+  skill:// resources provide useful skills for knowledge management. List them before using server tools."""
 )
 
 _WEB_RESEARCH_DESCRIPTION = (

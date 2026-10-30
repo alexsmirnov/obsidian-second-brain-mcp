@@ -42,7 +42,7 @@ Path to Obsidian vault root directory.
 **Used by**: [src/mcps/config.py:97-101](../src/mcps/config.py#L97-L101)
 
 #### `MEMORY_DIR` (optional) #env
-Vault folder where `add_memory` writes agent memories and where `delete_memory` is allowed to delete.
+Vault folder where `add_memory` writes agent memories and where `update_memory` and `delete_memory` are allowed to change them.
 **Format**: Relative folder path inside the vault, with `/` separators
 **Example**: `Notes/Memory`
 **Default**: `Memory`

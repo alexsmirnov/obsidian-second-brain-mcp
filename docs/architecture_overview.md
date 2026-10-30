@@ -165,7 +165,8 @@ Jobs are handled by `ResearchJobs` in [src/mcps/research/jobs.py](../src/mcps/re
 - `obsidian_search` - Semantic search in vault with tag/path filtering
 
 **MemoryTools** [src/mcps/tools/vault_memory.py](../src/mcps/tools/vault_memory.py) - Registered together with ObsidianTools. They store agent memories as notes in the vault folder named by `memory_dir`. The existing search and read tools retrieve them.
-- `add_memory` - Create a note under `General/<topic>/` or `Projects/<project>/`. It fails if the note exists.
+- `add_memory` - Create a note under `General/<topic>/` or `Projects/<project>/`. It fails if the note exists, and it returns paths of similar memories.
+- `update_memory` - Replace the text of one existing memory note. It is marked as destructive.
 - `delete_memory` - Permanently delete one note in the memory folder. It is marked as destructive.
 
 **ExposedSkillsProvider** [src/mcps/tools/vault_skills.py](../src/mcps/tools/vault_skills.py) - Added when `config.vault_dir` is set. It serves each `Claude/skills/<name>/SKILL.md` in the vault whose frontmatter has `exposed: true` as the MCP resource `skill://<name>/SKILL.md`. It scans the folder again on every request.
