@@ -243,6 +243,24 @@ The starting note is given as a reference (see [Note Paths](#note-paths)). `orig
 
 Implementation: [vault.py:480-609](../src/mcps/rag/vault.py#L480-L609), [obsidian_vault.py:274-284](../src/mcps/tools/obsidian_vault.py#L274-L284), [obsidian_vault.py:438-451](../src/mcps/tools/obsidian_vault.py#L438-L451)
 
+### Agent Memory #search
+
+Agents save memories with `add_memory` and remove them with `delete_memory`. A memory is a normal vault note, so `obsidian_search`, `obsidian_read_note`, and `obsidian_traverse_relations` find it without any change. The memory tools do not touch the index. Each read tool call waits up to 20 seconds for an index refresh. If a refresh was already running when the memory changed, the change can appear one call later.
+
+The folder layout carries the scope of a memory. General memories live in `<memory_dir>/General/<topic>/`, or in `<memory_dir>/General/` when no topic is given. Project memories live in `<memory_dir>/Projects/<project>/`. A search with the `path` filter `Memory/Projects/<project>/` returns one project only. File names are the lowercase title with each run of non-word characters replaced by `-`, cut to 80 characters. Letters of any script are kept.
+
+Each note has the frontmatter fields `title`, `description`, `tags`, `scope`, `created`, and `source: agent`. Project notes also have `project`. Notes with a topic also have `topic`. The body starts with the title as a heading and one context line, such as `Project my-app, topic python.` The context line keeps the scope visible in chunks cut from the middle of a note.
+
+Both tools write only below the vault root and refuse a path that contains a symlink. The symlink check runs before the file operation, so someone who can already change the vault folders can still swap a folder for a symlink in between. `add_memory` creates the file with exclusive mode, so it never overwrites an existing note. `delete_memory` accepts only a full vault path with a leading `/`, and removes folders that the deletion left empty. To change a memory, delete it and add it again.
+
+Implementation: [vault_memory.py](../src/mcps/tools/vault_memory.py)
+
+### Exposed Vault Skills
+
+The server exposes vault skills as MCP resources. A skill folder `<vault>/Claude/skills/<name>/` is exposed when its `SKILL.md` frontmatter has `exposed: true`. The indexer skips the `Claude/` folder, so skills never appear in search results. Clients read a skill at `skill://<name>/SKILL.md`. The provider reads the folder on every request, so a change of the flag applies without a restart. A flag that is not YAML true, such as the string `"yes"`, or frontmatter that does not parse keeps the skill hidden.
+
+Implementation: [vault_skills.py](../src/mcps/tools/vault_skills.py)
+
 ### Schema Migration
 
 `links` and `link_types` replace the former untyped link column incompatibly. There is no automatic migration. When upgrading an existing deployment, delete `.vault_db` inside the vault root once; the next `update_index()` cycle rebuilds the table with the new schema. This is a required one-time manual operation.

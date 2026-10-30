@@ -33,6 +33,39 @@ class TestCreateConfigVaultPrecedence:
         assert config.vault_dir is None
 
 
+class TestCreateConfigMemoryDir:
+    def test_env_var_sets_memory_dir(self, monkeypatch):
+        monkeypatch.setenv("MEMORY_DIR", "Notes/Mem")
+
+        config = create_config()
+
+        assert config.memory_dir == "Notes/Mem"
+
+    def test_memory_dir_defaults_to_memory(self, monkeypatch):
+        monkeypatch.delenv("MEMORY_DIR", raising=False)
+
+        config = create_config()
+
+        assert config.memory_dir == "Memory"
+
+    @pytest.mark.parametrize(
+        "value",
+        ["/abs", "a/../b", "./a", ".mem", "tmp/x", "a\\b", "."],
+    )
+    def test_unsafe_memory_dir_is_rejected(self, monkeypatch, value: str):
+        monkeypatch.setenv("MEMORY_DIR", value)
+
+        with pytest.raises(ValueError, match="MEMORY_DIR"):
+            create_config()
+
+    def test_empty_memory_dir_falls_back_to_default(self, monkeypatch):
+        monkeypatch.setenv("MEMORY_DIR", "")
+
+        config = create_config()
+
+        assert config.memory_dir == "Memory"
+
+
 class TestCreateConfigRouter:
 
     def test_router_api_base_uses_host_url_outside_container(self, monkeypatch):

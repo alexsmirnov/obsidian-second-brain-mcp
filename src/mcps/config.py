@@ -1,6 +1,7 @@
 # mcps/config.py
 import logging
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -22,6 +23,8 @@ class ServerConfig:
     router_api_key: str = ""
     # Obsidian Vault configuration
     vault_dir: Path | None = None
+    # Vault-relative folder where agent memories are stored.
+    memory_dir: str = "Memory"
     table_name: str = "documents"
     skip_patterns: list[str] = field(default_factory=list)
     batch_size: int = 8
@@ -81,7 +84,6 @@ def _parse_restricted_domains(raw: str) -> tuple[str, ...]:
     """Parse a comma-separated domain list into lowercase, trimmed entries."""
     return tuple(domain.strip().lower() for domain in raw.split(",") if domain.strip())
 
-
 def create_config(
     prompts_dir: Path = Path("./prompts"),
     cache_dir: Path = Path("./cache"),
@@ -139,6 +141,7 @@ def create_config(
             if vault_dir is not None
             else (Path(env_vault) if (env_vault := os.getenv("VAULT")) else None)
         ),
+        memory_dir=os.environ.get("MEMORY_DIR") or "Memory",
         skip_patterns=default_skip_patterns,
         min_chunk_size=int(os.environ.get("MIN_CHUNK_SIZE") or 500),
         max_chunk_size=int(os.environ.get("MAX_CHUNK_SIZE") or 1000),

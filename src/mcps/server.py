@@ -17,12 +17,14 @@ from starlette.responses import PlainTextResponse
 # import mcps.resources.project_resource as project_resource
 # import mcps.resources.url_resource as url_resource
 import mcps.tools.obsidian_vault as obsidian_vault
+import mcps.tools.vault_memory as vault_memory
 from mcps.config import ServerConfig, create_config
 from mcps.logs import setup_logging
 from mcps.rag.vault import create_vault
 from mcps.research.agent import ProgressReporter
 from mcps.research.jobs import JobNotFoundError, ResearchJobResponse, ResearchJobs
 from mcps.research.lifespan import build_research_lifespan
+from mcps.tools.vault_skills import ExposedSkillsProvider
 
 logger = logging.getLogger("mcps")
 
@@ -142,6 +144,10 @@ class DevAutomationServer:
             instructions=_SERVER_INSTRUCTIONS,
             lifespan=server_lifespan,
         )
+        if config.vault_dir:
+            self.mcp.add_provider(
+                ExposedSkillsProvider(config.vault_dir / "Claude" / "skills")
+            )
 
     def register(self):
         # @self.mcp.resource("url://{encoded_url}")
@@ -188,6 +194,7 @@ class DevAutomationServer:
 
         if self.config.vault_dir:
             obsidian_vault.register_tools(self.mcp)
+            vault_memory.register_tools(self.mcp)
 
         # prompts_module.setup_prompts(self.mcp, self.config)
 
