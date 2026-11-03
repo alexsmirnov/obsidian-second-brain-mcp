@@ -536,8 +536,7 @@ def register_tools(mcp: FastMCP) -> None:
         description=(
             "Save one durable fact, decision or lesson as a new markdown note "
             "in the vault's memory folder, so later sessions can find it with "
-            "obsidian_search. Search first and use update_memory when a memory "
-            "on the subject exists. Do not save what the code or git history "
+            "obsidian_search.  Do not save what the code or git history "
             "already records. Write absolute dates, not relative ones. Link "
             "related memories with [[note]]. Always give a description. "
             "Project knowledge goes under the project, cross-project knowledge "
@@ -545,18 +544,18 @@ def register_tools(mcp: FastMCP) -> None:
         ),
         annotations=ToolAnnotations(read_only_hint=False, destructive_hint=False),
     )
-    mcp.tool(
-        update_memory,
-        name="update_memory",
-        description=(
-            "Replace the text of an existing memory note by its vault path, "
-            "keeping its title, location, tags and creation date. Use it when "
-            "a fact changed instead of adding a duplicate."
-        ),
-        annotations=ToolAnnotations(
-            read_only_hint=False, destructive_hint=True, idempotent_hint=True
-        ),
-    )
+    # mcp.tool(
+    #     update_memory,
+    #     name="update_memory",
+    #     description=(
+    #         "Replace the text of an existing memory note by its vault path, "
+    #         "keeping its title, location, tags and creation date. Use it when "
+    #         "a fact changed instead of adding a duplicate."
+    #     ),
+    #     annotations=ToolAnnotations(
+    #         read_only_hint=False, destructive_hint=True, idempotent_hint=True
+    #     ),
+    # )
     mcp.tool(
         delete_memory,
         name="delete_memory",
