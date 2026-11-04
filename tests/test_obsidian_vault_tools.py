@@ -81,6 +81,9 @@ class FakeVault:
             for reference in references
         }
 
+    async def resolve_source_path(self, reference: str) -> str:
+        raise FileNotFoundError(reference)
+
     async def get_file(
         self,
         file_name: str,

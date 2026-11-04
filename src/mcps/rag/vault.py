@@ -726,7 +726,7 @@ class Vault(IVault):
             raise NotInitializedError("Vault must be initialized before getting files")
 
         logger.debug(f"Looking for file: {reference}")
-        source_path = await self._resolve_source_path(reference)
+        source_path = await self.resolve_source_path(reference)
         target_file = self.vault_path / source_path
         if not target_file.is_file():
             raise FileNotFoundError(f"No file found matching: {reference}")
@@ -735,7 +735,7 @@ class Vault(IVault):
         content = target_file.read_text(encoding="utf-8", errors="replace")
         return self._slice_content(content, offset, limit)
 
-    async def _resolve_source_path(self, reference: str) -> str:
+    async def resolve_source_path(self, reference: str) -> str:
         if reference.startswith("/"):
             if is_malformed_reference(reference):
                 raise FileNotFoundError(f"No file found matching: {reference}")

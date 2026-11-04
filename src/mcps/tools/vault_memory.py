@@ -5,44 +5,59 @@ tools retrieve them. The indexer picks up new and deleted files on its own.
 """
 
 import asyncio
-import logging
-import os
-import re
-import tempfile
-from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Annotated, Any, Literal, get_args
+from typing import Annotated, Any
 
 import frontmatter
-import yaml
 from fastmcp import Context, FastMCP
 from fastmcp.exceptions import ToolError
 from mcp.types import ToolAnnotations
 from pydantic import BaseModel, Field
 
 from mcps.config import ServerConfig
-from mcps.rag.note_paths import is_malformed_reference, to_note_path
+from mcps.rag.note_paths import is_malformed_reference
+from mcps.tools.obsidian_vault import (
+    NoteReference,
+    vault_from_context,
+    wait_for_fresh_index,
+)
 
-logger = logging.getLogger("mcps")
-
-MAX_SLUG_LENGTH = 80
+DEFAULT_PROJECT = "general"
+MAX_NAME_LENGTH = 120
 MAX_DESCRIPTION_LENGTH = 200
+MAX_PROJECT_LENGTH = 100
 MAX_CONTENT_LENGTH = 4_000
-MAX_REASON_LENGTH = 500
-DERIVED_TITLE_WORDS = 8
-MAX_SIMILAR_MEMORIES = 3
-SIMILAR_SEARCH_TIMEOUT_SECONDS = 5
-MAX_SEARCH_QUERY_LENGTH = 500
-KINDS_REQUIRING_WHY = frozenset({"feedback", "project"})
 
-_NON_WORD_RUNS = re.compile(r"[\W_]+")
-_LEADING_MARKERS = re.compile(r"^\s*(?:(?:#{1,6}|[-*>])\s+|```\w*\s*)+")
-_FIRST_SENTENCE = re.compile(r"^.*?[.!?](?=\s|$)")
-
-MemoryScope = Literal["general", "project"]
-MemoryKind = Literal["user", "feedback", "project", "reference"]
-
+NameArg = Annotated[
+    str,
+    Field(
+        min_length=1,
+        max_length=MAX_NAME_LENGTH,
+        description=(
+            "Note name; it becomes the file name, so it cannot contain '/'. "
+            "Make it short and specific."
+        ),
+    ),
+]
+DescriptionArg = Annotated[
+    str,
+    Field(
+        min_length=1,
+        max_length=MAX_DESCRIPTION_LENGTH,
+        description="One-line summary used to decide relevance in search.",
+    ),
+]
+ProjectArg = Annotated[
+    str,
+    Field(
+        max_length=MAX_PROJECT_LENGTH,
+        description=(
+            "Project or repository name; it becomes the memory subfolder. "
+            "Use 'general' for knowledge that holds across projects."
+        ),
+    ),
+]
 ContentArg = Annotated[
     str,
     Field(
@@ -56,149 +71,36 @@ ContentArg = Annotated[
         ),
     ),
 ]
-KindArg = Annotated[
-    MemoryKind,
-    Field(
-        description=(
-            "'user': who the user is and how they work. 'feedback': guidance "
-            "on how to work, with a reason. 'project': ongoing work, goals or "
-            "constraints not visible in the code (not the same as scope). "
-            "'reference': pointer to an external resource."
-        )
-    ),
-]
-DescriptionArg = Annotated[
-    str | None,
-    Field(
-        max_length=MAX_DESCRIPTION_LENGTH,
-        description=(
-            "One-line summary used to decide relevance in search. Always "
-            "provide it; defaults to the first sentence of the content."
-        ),
-    ),
-]
-WhyArg = Annotated[
-    str | None,
-    Field(
-        max_length=MAX_REASON_LENGTH,
-        description="Why this matters. Required for kinds 'feedback' and 'project'.",
-    ),
-]
-HowToApplyArg = Annotated[
-    str | None,
-    Field(
-        max_length=MAX_REASON_LENGTH,
-        description="When and how to apply this memory.",
-    ),
-]
-ScopeArg = Annotated[
-    MemoryScope,
-    Field(
-        description=(
-            "'project' for knowledge tied to one codebase (requires project); "
-            "'general' for knowledge that holds across projects."
-        )
-    ),
-]
-ProjectArg = Annotated[
-    str | None,
-    Field(
-        max_length=100,
-        description="Project or repository name. Required when scope is 'project'.",
-    ),
-]
-TopicArg = Annotated[
-    str | None,
-    Field(
-        max_length=100,
-        description=(
-            "Subject such as 'python'. For general memories it also becomes a "
-            "subfolder."
-        ),
-    ),
-]
-TitleArg = Annotated[
-    str | None,
-    Field(
-        max_length=120,
-        description="Note title; defaults to the first words of the content.",
-    ),
-]
-TagsArg = Annotated[
-    list[str] | None,
-    Field(
-        max_length=10,
-        description="Tags from the vault's Tags note, stored as given.",
-    ),
-]
-NotePathArg = Annotated[
-    str,
-    Field(
-        min_length=1,
-        max_length=500,
-        description=(
-            "Full vault path of the memory, as returned by add_memory or "
-            "obsidian_search, for example '/Memory/General/python/uv-lock'."
-        ),
-    ),
-]
 
 
 class AddMemoryResult(BaseModel):
     note_path: str = Field(
         description="Vault path of the new note; pass it to obsidian_read_note."
     )
-    similar: list[str] = Field(
-        default_factory=list,
-        description=(
-            "Vault paths of existing memories on the same subject. Read them "
-            "and use update_memory or delete_memory if the new note duplicates one."
-        ),
-    )
-
-
-class UpdateMemoryResult(BaseModel):
-    note_path: str = Field(description="Vault path of the updated note.")
 
 
 class DeleteMemoryResult(BaseModel):
     deleted: str = Field(description="Vault path of the deleted note.")
 
 
-def slugify(text: str) -> str:
-    """Lowercase file-name form of text; Unicode letters are kept."""
-    slug = _NON_WORD_RUNS.sub("-", text.casefold()).strip("-")
-    return slug[:MAX_SLUG_LENGTH].strip("-")
+_WIKILINK_BREAKERS = frozenset("#|[]^")
 
 
 def _collapse_whitespace(text: str) -> str:
     return " ".join(text.split())
 
 
-def _derive_title(content: str) -> str:
-    return " ".join(content.split()[:DERIVED_TITLE_WORDS])
-
-
-def _describe(content: str) -> str:
-    text = _collapse_whitespace(_LEADING_MARKERS.sub("", content))
-    sentence = _FIRST_SENTENCE.match(text)
-    return (sentence.group() if sentence else text)[:MAX_DESCRIPTION_LENGTH]
-
-
-def _context_line(scope: MemoryScope, project: str | None, topic: str | None) -> str:
-    subject = f"Project {project}" if scope == "project" else "General"
-    return f"{subject}, topic {topic}." if topic else f"{subject}."
-
-
-def _clean_name(value: str | None, label: str) -> tuple[str, str] | None:
-    """Return (display name, slug) for an optional name; None when blank."""
-    if value is None or not value.strip():
-        return None
-    display = _collapse_whitespace(value)
-    slug = slugify(display)
-    if not slug:
-        raise ToolError(f"{label} has no letters or digits: {value!r}")
-    return display, slug
+def _path_segment(value: str, label: str) -> str:
+    """Return value as a single safe file or folder name."""
+    segment = _collapse_whitespace(value)
+    if (
+        not segment
+        or "/" in segment
+        or _WIKILINK_BREAKERS.intersection(segment)
+        or is_malformed_reference(segment)
+    ):
+        raise ToolError(f"{label} is not a usable file name: {value!r}")
+    return segment
 
 
 def _vault_and_memory_dir(ctx: Context) -> tuple[Path, str]:
@@ -208,125 +110,46 @@ def _vault_and_memory_dir(ctx: Context) -> tuple[Path, str]:
     return config.vault_dir, config.memory_dir
 
 
-def _ensure_inside_vault_without_symlinks(vault: Path, target: Path) -> None:
-    current = vault
-    for part in target.relative_to(vault).parts:
-        current = current / part
-        if current.is_symlink():
-            raise ToolError(f"Refusing to follow symlink: {current.name}")
-    if not target.resolve().is_relative_to(vault.resolve()):
-        raise ToolError("Path escapes the vault")
+def _ensure_in_memory_folder(memory_root: Path, target: Path) -> None:
+    """Refuse a target that, after following symlinks, leaves the memory folder."""
+    if not target.resolve().is_relative_to(memory_root.resolve()):
+        raise ToolError(f"Not a note under the memory folder: {target.name}")
 
 
 def _note_path_of(vault: Path, target: Path) -> str:
     return "/" + target.relative_to(vault).with_suffix("").as_posix()
 
 
-@dataclass(frozen=True)
-class MemoryDraft:
-    """Everything that makes up the text of one memory note."""
-
-    title: str
-    content: str
-    kind: MemoryKind
-    scope: MemoryScope
-    project: str | None
-    topic: str | None
-    description: str | None
-    why: str | None
-    how_to_apply: str | None
-
-
-def _require_why(kind: MemoryKind, why: str | None) -> None:
-    if kind in KINDS_REQUIRING_WHY and not (why and why.strip()):
-        raise ToolError(f"kind '{kind}' requires why")
-
-
-def _render_body(draft: MemoryDraft) -> str:
-    body = (
-        f"# {draft.title}\n\n"
-        f"{_context_line(draft.scope, draft.project, draft.topic)}\n\n"
-        f"{draft.content.strip()}"
-    )
-    if draft.why:
-        body += f"\n\n**Why:** {_collapse_whitespace(draft.why)}"
-    if draft.how_to_apply:
-        separator = "\n" if draft.why else "\n\n"
-        how_to_apply = _collapse_whitespace(draft.how_to_apply)
-        body += f"{separator}**How to apply:** {how_to_apply}"
-    return body
-
-
-def _description_of(draft: MemoryDraft) -> str:
-    explicit = _collapse_whitespace(draft.description or "")
-    return explicit or _describe(draft.content) or draft.title
-
-
-def _render(draft: MemoryDraft, tags: list[str]) -> str:
+def _render(description: str, project: str, content: str) -> str:
     metadata: dict[str, Any] = {
-        "title": draft.title,
-        "description": _description_of(draft),
-        "tags": tags,
-        "scope": draft.scope,
-        "type": draft.kind,
+        "description": _collapse_whitespace(description),
+        "project": project,
+        "created": datetime.now(UTC).isoformat(timespec="seconds"),
+        "source": "agent",
+        "tags": ["generated","memory"]
     }
-    if draft.project:
-        metadata["project"] = draft.project
-    if draft.topic:
-        metadata["topic"] = draft.topic
-    metadata["created"] = datetime.now(UTC).isoformat(timespec="seconds")
-    metadata["source"] = "agent"
-    post = frontmatter.Post(_render_body(draft), **metadata)
+    post = frontmatter.Post(content.strip(), **metadata)
     return frontmatter.dumps(post) + "\n"
 
 
 def _write_memory(
     vault: Path,
     memory_dir: str,
+    name: str,
+    description: str,
+    project: str,
     content: str,
-    kind: MemoryKind,
-    scope: MemoryScope,
-    project: str | None,
-    topic: str | None,
-    title: str | None,
-    tags: list[str] | None,
-    description: str | None,
-    why: str | None,
-    how_to_apply: str | None,
 ) -> str:
-    _require_why(kind, why)
-    project_name = _clean_name(project, "project")
-    topic_name = _clean_name(topic, "topic")
-    if scope == "project" and project_name is None:
-        raise ToolError("scope 'project' requires a project name")
-    title_name = _clean_name(title, "title") or _clean_name(
-        _derive_title(content), "title"
-    )
-    if title_name is None:
-        raise ToolError("title is empty and the content gives no usable title")
+    if not content.strip():
+        raise ToolError("content is empty")
+    file_name = _path_segment(name, "name")
+    folder_name = _path_segment(project, "project")
+    memory_root = vault / memory_dir
+    folder = memory_root / folder_name
+    target = folder / f"{file_name}.md"
+    _ensure_in_memory_folder(memory_root, target)
 
-    folder = vault / memory_dir
-    if scope == "project" and project_name:
-        folder = folder / "Projects" / project_name[1]
-    else:
-        folder = folder / "General"
-        if topic_name:
-            folder = folder / topic_name[1]
-    target = folder / f"{title_name[1]}.md"
-    _ensure_inside_vault_without_symlinks(vault, target)
-
-    draft = MemoryDraft(
-        title=title_name[0],
-        content=content,
-        kind=kind,
-        scope=scope,
-        project=project_name[0] if project_name and scope == "project" else None,
-        topic=topic_name[0] if topic_name else None,
-        description=description,
-        why=why,
-        how_to_apply=how_to_apply,
-    )
-    note = _render(draft, list(tags or []))
+    note = _render(description, folder_name, content)
     try:
         folder.mkdir(parents=True, exist_ok=True)
     except OSError as error:
@@ -341,98 +164,19 @@ def _write_memory(
     except FileExistsError:
         raise ToolError(
             f"A memory already exists at {_note_path_of(vault, target)}. Read it, "
-            "delete it first, or choose another title."
+            "delete it first, or choose another name."
         ) from None
     except OSError as error:
         raise ToolError(f"Could not write memory: {error.strerror or error}") from None
     return _note_path_of(vault, target)
 
 
-def _memory_target(vault: Path, memory_dir: str, note_path: str) -> Path:
-    if not note_path.startswith("/"):
-        raise ToolError("note_path must have a leading '/'")
-    if is_malformed_reference(note_path):
-        raise ToolError(f"note_path is malformed: {note_path}")
-    parts = note_path.removeprefix("/").split("/")
-    root_parts = memory_dir.split("/")
-    if parts[: len(root_parts)] != root_parts or len(parts) == len(root_parts):
-        raise ToolError(f"note_path must be a note under '/{memory_dir}/'")
-    target = vault / f"{note_path.removeprefix('/')}.md"
-    _ensure_inside_vault_without_symlinks(vault, target)
-    if not target.is_file():
-        raise ToolError(f"Memory note not found: {note_path}")
-    return target
-
-
-def _optional_text(value: object) -> str | None:
-    return str(value) if value else None
-
-
-def _replace_memory(
-    vault: Path,
-    memory_dir: str,
-    note_path: str,
-    content: str,
-    description: str | None,
-    why: str | None,
-    how_to_apply: str | None,
-) -> str:
-    target = _memory_target(vault, memory_dir, note_path)
-    try:
-        post = frontmatter.load(target)
-    except (OSError, ValueError, yaml.YAMLError) as error:
-        raise ToolError(f"Could not read memory: {error}") from None
-    metadata = post.metadata
-    if metadata.get("source") != "agent":
-        raise ToolError(
-            "Only memories written by the agent can be updated; the note may "
-            "have been edited by hand. Delete it and add a new memory instead."
-        )
-    kind: MemoryKind = next(
-        (known for known in get_args(MemoryKind) if known == metadata.get("type")),
-        "reference",
-    )
-    _require_why(kind, why)
-    draft = MemoryDraft(
-        title=str(metadata.get("title") or target.stem),
-        content=content,
-        kind=kind,
-        scope="project" if metadata.get("scope") == "project" else "general",
-        project=_optional_text(metadata.get("project")),
-        topic=_optional_text(metadata.get("topic")),
-        description=description,
-        why=why,
-        how_to_apply=how_to_apply,
-    )
-    post.content = _render_body(draft)
-    post["description"] = _description_of(draft)
-    post["updated"] = datetime.now(UTC).isoformat(timespec="seconds")
-    _replace_file(target, frontmatter.dumps(post) + "\n")
-    return note_path
-
-
-def _replace_file(target: Path, text: str) -> None:
-    """Swap target for text in one step, keeping its permissions."""
-    staging: Path | None = None
-    try:
-        mode = target.stat().st_mode & 0o777
-        descriptor, name = tempfile.mkstemp(
-            dir=target.parent, prefix=".", suffix=".tmp"
-        )
-        staging = Path(name)
-        with os.fdopen(descriptor, "w", encoding="utf-8") as file:
-            os.fchmod(file.fileno(), mode)
-            file.write(text)
-        os.replace(staging, target)
-    except OSError as error:
-        if staging is not None:
-            staging.unlink(missing_ok=True)
-        raise ToolError(f"Could not update memory: {error.strerror or error}") from None
-
-
-def _remove_memory(vault: Path, memory_dir: str, note_path: str) -> str:
-    target = _memory_target(vault, memory_dir, note_path)
+def _remove_memory(vault: Path, memory_dir: str, source_path: str) -> str:
     memory_root = vault / memory_dir
+    target = vault / source_path
+    _ensure_in_memory_folder(memory_root, target)
+    if not target.is_file():
+        raise ToolError(f"No file found matching: {_note_path_of(vault, target)}")
     try:
         target.unlink()
     except OSError as error:
@@ -444,88 +188,31 @@ def _remove_memory(vault: Path, memory_dir: str, note_path: str) -> str:
             parent.rmdir()
         except OSError:
             break
-    return note_path
-
-
-async def _find_similar(
-    ctx: Context, memory_dir: str, query: str, exclude: str
-) -> list[str]:
-    """Best effort: paths of other memories close to query; empty on any failure."""
-    search_vault = ctx.lifespan_context.get("obsidian_vault")
-    if search_vault is None:
-        return []
-    try:
-        async with asyncio.timeout(SIMILAR_SEARCH_TIMEOUT_SECONDS):
-            chunks = await search_vault.search(
-                _collapse_whitespace(query)[:MAX_SEARCH_QUERY_LENGTH],
-                path=f"{memory_dir}/",
-            )
-        found = dict.fromkeys(to_note_path(chunk.source_path) for chunk in chunks)
-    except Exception as error:
-        logger.warning("Similar memory search failed: %s", error)
-        return []
-    found.pop(exclude, None)
-    return list(found)[:MAX_SIMILAR_MEMORIES]
+    return _note_path_of(vault, target)
 
 
 async def add_memory(
+    name: NameArg,
+    description: DescriptionArg,
     content: ContentArg,
-    kind: KindArg,
-    scope: ScopeArg,
     ctx: Context,
-    description: DescriptionArg = None,
-    why: WhyArg = None,
-    how_to_apply: HowToApplyArg = None,
-    project: ProjectArg = None,
-    topic: TopicArg = None,
-    title: TitleArg = None,
-    tags: TagsArg = None,
+    project: ProjectArg = DEFAULT_PROJECT,
 ) -> AddMemoryResult:
     vault, memory_dir = _vault_and_memory_dir(ctx)
     note_path = await asyncio.to_thread(
-        _write_memory,
-        vault,
-        memory_dir,
-        content,
-        kind,
-        scope,
-        project,
-        topic,
-        title,
-        tags,
-        description,
-        why,
-        how_to_apply,
+        _write_memory, vault, memory_dir, name, description, project, content
     )
-    similar = await _find_similar(ctx, memory_dir, description or content, note_path)
-    return AddMemoryResult(note_path=note_path, similar=similar)
+    return AddMemoryResult(note_path=note_path)
 
 
-async def update_memory(
-    note_path: NotePathArg,
-    content: ContentArg,
-    ctx: Context,
-    description: DescriptionArg = None,
-    why: WhyArg = None,
-    how_to_apply: HowToApplyArg = None,
-) -> UpdateMemoryResult:
+async def delete_memory(note: NoteReference, ctx: Context) -> DeleteMemoryResult:
     vault, memory_dir = _vault_and_memory_dir(ctx)
-    updated = await asyncio.to_thread(
-        _replace_memory,
-        vault,
-        memory_dir,
-        note_path,
-        content,
-        description,
-        why,
-        how_to_apply,
-    )
-    return UpdateMemoryResult(note_path=updated)
-
-
-async def delete_memory(note_path: NotePathArg, ctx: Context) -> DeleteMemoryResult:
-    vault, memory_dir = _vault_and_memory_dir(ctx)
-    deleted = await asyncio.to_thread(_remove_memory, vault, memory_dir, note_path)
+    await wait_for_fresh_index(ctx)
+    try:
+        source_path = await vault_from_context(ctx).resolve_source_path(note)
+    except FileNotFoundError as error:
+        raise ToolError(str(error)) from None
+    deleted = await asyncio.to_thread(_remove_memory, vault, memory_dir, source_path)
     return DeleteMemoryResult(deleted=deleted)
 
 
@@ -536,33 +223,21 @@ def register_tools(mcp: FastMCP) -> None:
         description=(
             "Save one durable fact, decision or lesson as a new markdown note "
             "in the vault's memory folder, so later sessions can find it with "
-            "obsidian_search.  Do not save what the code or git history "
+            "obsidian_search. Do not save what the code or git history "
             "already records. Write absolute dates, not relative ones. Link "
-            "related memories with [[note]]. Always give a description. "
-            "Project knowledge goes under the project, cross-project knowledge "
-            "under general. Fails if a note with the same title exists."
+            "related memories with [[note]]. Project knowledge goes under the "
+            "project name, cross-project knowledge under 'general'. Fails if a "
+            "note with the same name exists in the project."
         ),
         annotations=ToolAnnotations(read_only_hint=False, destructive_hint=False),
     )
-    # mcp.tool(
-    #     update_memory,
-    #     name="update_memory",
-    #     description=(
-    #         "Replace the text of an existing memory note by its vault path, "
-    #         "keeping its title, location, tags and creation date. Use it when "
-    #         "a fact changed instead of adding a duplicate."
-    #     ),
-    #     annotations=ToolAnnotations(
-    #         read_only_hint=False, destructive_hint=True, idempotent_hint=True
-    #     ),
-    # )
     mcp.tool(
         delete_memory,
         name="delete_memory",
         description=(
-            "Permanently delete one memory note by its vault path, for example "
-            "a stale or wrong fact. Only notes in the memory folder can be "
-            "deleted."
+            "Permanently delete one memory note, for example a stale or wrong "
+            "fact. Accepts the same note references as obsidian_read_note. "
+            "Only notes in the memory folder can be deleted."
         ),
         annotations=ToolAnnotations(
             read_only_hint=False, destructive_hint=True, idempotent_hint=False

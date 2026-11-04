@@ -354,7 +354,7 @@ async def list_files(folder_path: FolderPath, ctx: Context) -> str:
     try:
         logger.info(f"Listing files in Obsidian Vault folder: {folder_path}")
         normalized_path = folder_path.strip("/")
-        files = await _vault_from_context(ctx).list_files(normalized_path)
+        files = await vault_from_context(ctx).list_files(normalized_path)
 
         if not files:
             return f"No files found in folder: {folder_path}"
@@ -380,9 +380,9 @@ async def get_file_content(
     if invalid_message is not None:
         raise ToolError(invalid_message)
 
-    await _wait_for_fresh_index(ctx)
+    await wait_for_fresh_index(ctx)
     try:
-        return await _vault_from_context(ctx).get_file(
+        return await vault_from_context(ctx).get_file(
             note,
             offset=offset,
             limit=limit,
@@ -439,7 +439,7 @@ async def rename_move_note(
         await _update_wikilinks(vault_path, old_path, new_path)
 
         logger.info("Updating vault index after file move")
-        await _wait_for_fresh_index(ctx)
+        await wait_for_fresh_index(ctx)
 
         success_msg = (
             f"Successfully moved '{old_path}' to '{new_path}' "
@@ -551,10 +551,10 @@ async def search(
     path: PathFilter = None, # type: ignore
 ) -> SearchResponse:
     """Search for content within the Obsidian Vault using semantic search."""
-    await _wait_for_fresh_index(ctx)
+    await wait_for_fresh_index(ctx)
     try:
         logger.info(f"Searching Obsidian Vault for: {query}")
-        vault = _vault_from_context(ctx)
+        vault = vault_from_context(ctx)
         chunks = await vault.search(
             query, tags=tags, path=path.removeprefix("/") if path else path
         )
@@ -594,9 +594,9 @@ async def traverse_relations(
     relation_types: RelationTypes = None, # type: ignore
 ) -> TraversalResult:
     """Walk typed note relations forward and backward from one note."""
-    await _wait_for_fresh_index(ctx)
+    await wait_for_fresh_index(ctx)
     try:
-        return await _vault_from_context(ctx).traverse_relations(
+        return await vault_from_context(ctx).traverse_relations(
             note, depth, relation_types
         )
     except FileNotFoundError as error:
@@ -605,7 +605,7 @@ async def traverse_relations(
         raise ToolError(str(error)) from error
 
 
-def _vault_from_context(ctx: Context) -> IVault:
+def vault_from_context(ctx: Context) -> IVault:
     return ctx.lifespan_context["obsidian_vault"]
 
 
@@ -613,7 +613,7 @@ def _index_scheduler_from_context(ctx: Context) -> IndexScheduler:
     return ctx.lifespan_context["obsidian_index_scheduler"]
 
 
-async def _wait_for_fresh_index(ctx: Context) -> None:
+async def wait_for_fresh_index(ctx: Context) -> None:
     """Bring the index up to date with the vault files before reading it."""
     scheduler = _index_scheduler_from_context(ctx)
     if not await scheduler.refresh(INDEX_REFRESH_TIMEOUT):

@@ -438,6 +438,16 @@ class IVault(ABC):
         pass
 
     @abstractmethod
+    async def resolve_source_path(self, reference: str) -> str:
+        """Resolve a note reference to its source path (``Folder/Note.md``).
+
+        The reference forms and the choice among several matches are the same
+        as in `get_file`. Raises FileNotFoundError when nothing matches. A full
+        path is converted without checking that the file exists.
+        """
+        pass
+
+    @abstractmethod
     async def list_files(self, directory: str) -> list[str]:
         """List all files in a directory.
 

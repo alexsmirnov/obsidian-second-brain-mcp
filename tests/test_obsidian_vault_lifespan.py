@@ -51,6 +51,9 @@ class FakeVault(IVault):
     ) -> str:
         return ""
 
+    async def resolve_source_path(self, reference: str) -> str:
+        raise FileNotFoundError(reference)
+
     async def list_files(self, directory: str) -> list[str]:
         return []
 

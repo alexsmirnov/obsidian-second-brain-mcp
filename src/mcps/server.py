@@ -64,7 +64,7 @@ _SERVER_INSTRUCTIONS = (
   unique in the vault.
 
   Agent memories are vault notes under the memory folder, written with
-  add_memory, update_memory and delete_memory. Treat a recalled memory as
+  add_memory and delete_memory. Treat a recalled memory as
   background context that was true when it was written: if it names a file,
   function or flag, check that it still exists before relying on it.
   
