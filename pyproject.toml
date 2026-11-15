@@ -21,11 +21,11 @@ dependencies = [
     "langchain-aws>=1.4.0",
     "lxml>=5.0.0",
     "arxiv-to-prompt>=0.13.3",
-    "pymupdf>=1.25.0",
     "langchain-google-genai>=4.2.5",
     "pandas>=3.0.3",
     "crawl4ai>=0.7",
-    "langchain-typesafe>=0.0.1a3",
+    "langchain-typesafe>=0.1.0",
+    "pymupdf-lite>=2.1",
 ]
 [tool.uv]
 package = true
