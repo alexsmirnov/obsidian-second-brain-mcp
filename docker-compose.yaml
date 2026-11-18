@@ -7,7 +7,7 @@
 name: vault-mcp
 services:
   browser:
-    image: h4ckf0r0day/obscura:0.2.6
+    image: h4ckf0r0day/obscura:0.2.7
     command: ["serve", "--stealth", "--allow-private-network","--quiet"]
     environment:
       - RUST_MIN_STACK=16777216
