@@ -7,7 +7,7 @@ import json
 import logging
 import re
 import time
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from operator import add
@@ -26,7 +26,7 @@ from mcps.research.tools import SearchResult
 if TYPE_CHECKING:
     from langgraph.graph.state import CompiledStateGraph
 
-    from mcps.research.agent import ResearchResponse
+    from mcps.research.agent import ProgressReporter, ResearchResponse
     from mcps.research.config import ResearchConfig
 
 __all__ = [
@@ -34,7 +34,6 @@ __all__ = [
     "FetchQuery",
     "ResearchAgent",
     "StructuredOutputError",
-    "create_deep_research_graph",
 ]
 
 logger = logging.getLogger(__name__)
@@ -54,8 +53,10 @@ BAD: what are the problems with DiD
 BAD: site:arxiv.org DiD
 """
 
+_DATE_CONTEXT = f"""Current date context: Today is {datetime.now().strftime("%A, %B %d, %Y")}. Use this to evaluate time-sensitivity, version obsolescence, and real-time data validity."""
+
 _GENERATE_QUERY_PROMPT = f"""You are a web search query generator for a research agent.
-Current date context: Today is {datetime.now().strftime("%A, %B %d, %Y")}. Use this to evaluate time-sensitivity, version obsolescence, and real-time data validity.
+{_DATE_CONTEXT}
 
 Produce a research plan:
 - split the question into 1-3 distinct subquestions, using fewer queries for simple questions. If you think you know an answer, the subquestion is how to confirm it.
@@ -84,7 +85,7 @@ Your output is evidence for an upstream agent that will draft the answer: collec
 - Do not extend research for peripheral details or unavailable private measurements. Disclose them as unresolved instead.
 - Follow-up queries may name hypothesized entities. Follow only exact HTTP(S) URLs observed in the question, search results, or fetched pages; never invent a URL.
 
-Current date context: Today is {datetime.now().strftime("%A, %B %d, %Y")}. Use this to evaluate time-sensitivity, version obsolescence, and real-time data validity.
+{_DATE_CONTEXT}
 
 If more work is needed, produce the next round plan:
 - `search_queries`: up to 3 distinct follow-up queries, each 2-5 keywords (hard maximum 6 words). Target one unresolved gap per query.
@@ -94,9 +95,6 @@ If more work is needed, produce the next round plan:
 
 {FETCH_QUERY_INSTRUCTIONS}
 """
-
-
-_FETCH_QUERY_FIELD = "keywords that select relevant passages inside fetched pages"
 
 _FINALIZE_PROMPT = """Write the final answer to the user's question using ONLY the fetched pages in the conversation above.
 
@@ -114,20 +112,8 @@ Then give supporting detail, citing the full source URL inline after each statem
 End with a `Not found:` list of every part of the question the pages do not answer.
 """
 
-_MAX_ERROR_CHARS = 1000
 _URL_PATTERN = re.compile(r"https?://[^\s<>\[\]\"'`]+")
-_URL_TRAILING_PUNCTUATION = ".,;:!?"
 _PARSE_ERRORS: tuple[type[Exception], ...] = (ValidationError, OutputParserException)
-
-
-def _repair_prompt(error: Exception) -> str:
-    """Ask the model to answer again after its reply failed to parse."""
-    return (
-        "Your previous reply could not be parsed into the required structured output.\n"
-        f"Error: {str(error)[:_MAX_ERROR_CHARS]}\n"
-        "Reply again with only a JSON object that matches the required schema. "
-        "Do not add any text outside the JSON object."
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -181,7 +167,7 @@ class FinalAnswer(BaseModel):
 class FetchQuery(BaseModel):
     """Structured output of the fetch-query fragment (also the base of `ResearchPlan`)."""
 
-    fetch_query: str = Field(default="", description=_FETCH_QUERY_FIELD)
+    fetch_query: str = Field(default="", description="keywords that select relevant passages inside fetched pages")
 
 
 class ResearchPlan(FetchQuery):
@@ -276,9 +262,9 @@ def _is_http_url(url: str) -> bool:
 def _normalize_url(url: str) -> str:
     """Lowercase scheme/host, drop the fragment and the trailing path slash."""
     stripped = url.strip()
-    parsed = urlparse(stripped)
     if not _is_http_url(stripped):
         return stripped
+    parsed = urlparse(stripped)
     path = parsed.path.rstrip("/")
     return urlunparse((parsed.scheme.lower(), parsed.netloc.lower(), path, parsed.params, parsed.query, ""))
 
@@ -288,15 +274,11 @@ def _query_key(query: str) -> str:
     return " ".join(query.casefold().split())
 
 
-def _dedupe(
-    items: list[str],
-    seen_keys: set[str],
-    key: Callable[[str], str],
-    limit: int,
-) -> list[str]:
-    """Strip, skip blanks and ``seen_keys``, and keep at most ``limit`` items."""
+def _dedupe(items: list[str], key: Callable[[str], str], limit: int) -> list[str]:
+    """Strip, skip blanks and duplicate keys, and keep at most ``limit`` items."""
     if limit <= 0:
         return []
+    seen_keys: set[str] = set()
     result: list[str] = []
     for item in items:
         stripped = item.strip()
@@ -317,16 +299,17 @@ def _valid_links(links: list[str]) -> list[str]:
     return [stripped for link in links if (stripped := link.strip()) and _is_http_url(stripped)]
 
 
-def _visit_status(url: str, visited: dict[str, bool]) -> str:
-    """Render one search result's outcome for the reflection search view."""
-    if url not in visited:
-        return "not selected"
-    return "VISITED" if visited[url] else "FAILED"
+def _http_urls(urls: Iterable[str]) -> list[str]:
+    """HTTP(S) URLs with a host, deduplicated in order."""
+    return list(dict.fromkeys(url for url in urls if _is_http_url(url)))
 
 
 def _render_search_view(searches: list[SearchRun], visits: list[PageVisit]) -> str:
     """Render the round's search results grouped by query, tagged with visit outcomes."""
-    visited = {_normalize_url(visit["url"]): visit["ok"] for visit in visits}
+    status = {
+        _normalize_url(visit["url"]): "VISITED" if visit["ok"] else "FAILED"
+        for visit in visits
+    }
     lines: list[str] = []
     seen: set[str] = set()
     for run in searches:
@@ -339,7 +322,7 @@ def _render_search_view(searches: list[SearchRun], visits: list[PageVisit]) -> s
             url = _normalize_url(result.url)
             seen.add(url)
             lines.append(
-                f"[{_visit_status(url, visited)}] "
+                f"[{status.get(url, 'not selected')}] "
                 f"{result.url} | {result.title} | {result.snippet[:200]}"
             )
     followed = {
@@ -349,7 +332,7 @@ def _render_search_view(searches: list[SearchRun], visits: list[PageVisit]) -> s
     }
     if followed:
         lines.append("Followed links:")
-        lines.extend(f"[{_visit_status(url, visited)}] {original}" for url, original in followed.items())
+        lines.extend(f"[{status[url]}] {original}" for url, original in followed.items())
     return "\n".join(lines)
 
 
@@ -374,15 +357,6 @@ def _collect_candidates(searches: list[SearchRun], exclude: set[str]) -> list[Se
             exclude.add(url)
             candidates.append(SearchResult(url=url, title=result.title, snippet=result.snippet))
     return candidates
-
-
-def _search_titles(searches: list[SearchRun]) -> dict[str, str]:
-    """Map normalized result URLs to their titles."""
-    titles: dict[str, str] = {}
-    for run in searches:
-        for result in run["results"]:
-            titles.setdefault(_normalize_url(result.url), result.title)
-    return titles
 
 
 async def _report(config: RunnableConfig, message: str) -> None:
@@ -415,7 +389,13 @@ def _repair_messages(messages: list[BaseMessage], error: Exception) -> list[Base
     """Original messages, the failed reply when known, and a request to answer again."""
     reply = _failed_reply(error)
     failed = [AIMessage(reply)] if reply is not None else []
-    return [*messages, *failed, HumanMessage(_repair_prompt(error))]
+    repair_request = HumanMessage(
+        "Your previous reply could not be parsed into the required structured output.\n"
+        f"Error: {str(error)[:1000]}\n"
+        "Reply again with only a JSON object that matches the required schema. "
+        "Do not add any text outside the JSON object."
+    )
+    return [*messages, *failed, repair_request]
 
 
 async def _reprompt_on_parse_error[T](
@@ -448,7 +428,7 @@ async def _reprompt_on_parse_error[T](
     raise StructuredOutputError(label)
 
 
-async def _invoke_structured_history[T: BaseModel](
+async def _invoke_structured[T: BaseModel](
     model: Any,
     schema: type[T],
     messages: list[BaseMessage],
@@ -456,31 +436,12 @@ async def _invoke_structured_history[T: BaseModel](
     attempts: int,
     label: str,
 ) -> T:
-    """Invoke a model with structured output over an existing message list."""
+    """Invoke a model with structured output, re-prompting on parse errors."""
     chain = model.with_structured_output(schema)
     result = await _reprompt_on_parse_error(
         chain.ainvoke, messages, attempts=attempts, label=label
     )
     return cast(T, result)
-
-
-async def _invoke_structured[T: BaseModel](
-    model: Any,
-    schema: type[T],
-    system: str,
-    human: str,
-    *,
-    attempts: int,
-    label: str,
-) -> T:
-    """Invoke a model with structured output for a system + human message pair."""
-    return await _invoke_structured_history(
-        model,
-        schema,
-        [SystemMessage(system), HumanMessage(human)],
-        attempts=attempts,
-        label=label,
-    )
 
 
 def _parsed_reflection(result: dict[str, Any]) -> tuple[Reflection, BaseMessage]:
@@ -500,17 +461,12 @@ def _parsed_reflection(result: dict[str, Any]) -> tuple[Reflection, BaseMessage]
     raise OutputParserException(message, llm_output=str(raw.text)) from error
 
 
-def _finalize_after_parse_failure(round_message: HumanMessage, loop_count: int) -> dict[str, Any]:
-    """State update that keeps the round's pages in history and ends research."""
+def _round_reset() -> dict[str, Overwrite]:
+    """State update that clears the round buffers after reflection rendered them."""
     return {
-        "messages": [round_message],
         "searches": Overwrite(value=[]),
         "visits": Overwrite(value=[]),
         "pages": Overwrite(value=[]),
-        "research_loop_count": loop_count,
-        "is_sufficient": True,
-        "search_queries": [],
-        "pending_links": [],
     }
 
 
@@ -518,7 +474,7 @@ def _trim_url(match: str) -> str:
     """Drop trailing punctuation and closing parentheses that the URL does not open."""
     url = match
     while True:
-        trimmed = url.rstrip(_URL_TRAILING_PUNCTUATION)
+        trimmed = url.rstrip(".,;:!?")
         if trimmed.endswith(")") and trimmed.count("(") < trimmed.count(")"):
             trimmed = trimmed[:-1]
         if trimmed == url:
@@ -528,25 +484,12 @@ def _trim_url(match: str) -> str:
 
 def _cited_urls(text: str) -> list[str]:
     """HTTP(S) URLs cited in ``text``, deduplicated in order."""
-    urls = (_trim_url(match) for match in _URL_PATTERN.findall(text))
-    return list(dict.fromkeys(url for url in urls if _is_http_url(url)))
+    return _http_urls(_trim_url(match) for match in _URL_PATTERN.findall(text))
 
 
 # ---------------------------------------------------------------------------
-# Graph factory
+# Graph
 # ---------------------------------------------------------------------------
-
-
-def create_deep_research_graph(config: ResearchConfig) -> CompiledStateGraph:
-    """Build and compile the deep research StateGraph.
-
-    Args:
-        config: Research configuration providing models and tools.
-
-    Returns:
-        A compiled LangGraph runnable ready to invoke.
-    """
-    return ResearchAgent(config).graph
 
 
 class ResearchAgent:
@@ -609,32 +552,25 @@ class ResearchAgent:
             result = await _invoke_structured(
                 self.config.fast,
                 ResearchPlan,
-                _GENERATE_QUERY_PROMPT,
-                state["question"],
+                [SystemMessage(_GENERATE_QUERY_PROMPT), HumanMessage(state["question"])],
                 attempts=self.limits.max_parse_attempts,
                 label="generate_query",
             )
         except StructuredOutputError:
             logger.warning("Query generation failed, searching the question itself")
             result = ResearchPlan()
-        queries = _dedupe(
-            result.search_queries,
-            set(),
-            _query_key,
-            self.limits.max_initial_queries,
-        )
+        queries = _dedupe(result.search_queries, _query_key, self.limits.max_initial_queries)
         links = _valid_links(result.links)
         if not queries and not links:
             queries = [state["question"]]
         fetch_query = result.fetch_query.strip() or state["question"]
         logger.info("Initial plan: %d queries, %d links", len(queries), len(links))
-        if logger.isEnabledFor(logging.DEBUG):
-            logger.debug(
-                "[generate_query] queries=%s links=%s fetch_query=%r",
-                queries,
-                links,
-                fetch_query,
-            )
+        logger.debug(
+            "[generate_query] queries=%s links=%s fetch_query=%r",
+            queries,
+            links,
+            fetch_query,
+        )
         return {
             "messages": [SystemMessage(_REFLECTION_PROMPT)],
             "original_question": state["question"],
@@ -667,25 +603,20 @@ class ResearchAgent:
     ) -> Command[Literal["web_fetch", "reflection"]]:
         """Choose this round's pages and fan out one web_fetch branch per page."""
         await _report(config, "Selecting pages...")
+        searches = state.get("searches", [])
         links = _dedupe(
             _valid_links(state.get("pending_links", [])),
-            set(),
             _normalize_url,
             self.limits.max_pages_per_round,
         )
-        candidates = _collect_candidates(
-            state.get("searches", []),
-            {_normalize_url(link) for link in links},
-        )
+        candidates = _collect_candidates(searches, {_normalize_url(link) for link in links})
         budget = self.limits.max_pages_per_round - len(links)
         chosen: list[str] = []
         if candidates and budget > 0:
             chosen = await self._triage(state, candidates, budget)
         logger.info("Selected %d links and %d triaged pages", len(links), len(chosen))
         urls = links + chosen
-        fetch_query = (
-            (state.get("fetch_query") or "").strip() or state["original_question"]
-        )
+        fetch_query = (state.get("fetch_query") or "").strip() or state["original_question"]
         logger.debug(
             "[select_urls] candidates=%d budget=%d links=%s triaged=%s fetch_query=%r",
             len(candidates),
@@ -697,7 +628,7 @@ class ResearchAgent:
         if not urls:
             logger.warning("No pages selected for this round")
             return Command(goto="reflection")
-        titles = _search_titles(state.get("searches", []))
+        titles = {result.url: result.title for result in _collect_candidates(searches, set())}
         return Command(
             goto=[
                 Send(
@@ -735,8 +666,7 @@ class ResearchAgent:
             selected = await _invoke_structured(
                 self.config.fast,
                 SelectedPages,
-                _SELECT_URLS_PROMPT,
-                prompt,
+                [SystemMessage(_SELECT_URLS_PROMPT), HumanMessage(prompt)],
                 attempts=self.limits.max_parse_attempts,
                 label="triage",
             )
@@ -748,7 +678,7 @@ class ResearchAgent:
             for index in selected.indices
             if 0 <= index < len(candidates)
         ]
-        chosen = _dedupe(valid_urls, set(), str, budget)
+        chosen = _dedupe(valid_urls, str, budget)
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug(
                 "[triage] indices=%s chosen=%s not selected=%s",
@@ -774,11 +704,12 @@ class ResearchAgent:
             fetched.mime,
             len(fetched.content),
         )
-        if not fetched.ok or not fetched.content.strip():
-            return {"visits": [visit], "pages": []}
-        # logger.debug("[web_fetch] %s content:\n%s", url, fetched.content)
-        page = Page(url=url, title=state.get("title", ""), content=fetched.content)
-        return {"visits": [visit], "pages": [page]}
+        pages = (
+            [Page(url=url, title=state.get("title", ""), content=fetched.content)]
+            if fetched.ok and fetched.content.strip()
+            else []
+        )
+        return {"visits": [visit], "pages": pages}
 
     async def reflection(self, state: OverallState, config: RunnableConfig) -> dict[str, Any]:
         """Add this round to the conversation, then plan the next round."""
@@ -808,19 +739,16 @@ class ResearchAgent:
             )
         except StructuredOutputError:
             logger.warning("Reflection round %d returned unparsable output, finalizing", loop_count)
-            return _finalize_after_parse_failure(round_message, loop_count)
-        queries = _dedupe(
-            parsed.search_queries,
-            set(),
-            _query_key,
-            self.limits.max_follow_ups,
-        )
-        links = _dedupe(
-            _valid_links(parsed.links),
-            set(),
-            _normalize_url,
-            self.limits.max_follow_ups,
-        )
+            return {
+                "messages": [round_message],
+                **_round_reset(),
+                "research_loop_count": loop_count,
+                "is_sufficient": True,
+                "search_queries": [],
+                "pending_links": [],
+            }
+        queries = _dedupe(parsed.search_queries, _query_key, self.limits.max_follow_ups)
+        links = _dedupe(_valid_links(parsed.links), _normalize_url, self.limits.max_follow_ups)
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug("[reflection] round %d raw: %s", loop_count, parsed.model_dump_json())
         logger.info(
@@ -833,9 +761,7 @@ class ResearchAgent:
         )
         return {
             "messages": [round_message, raw],
-            "searches": Overwrite(value=[]),
-            "visits": Overwrite(value=[]),
-            "pages": Overwrite(value=[]),
+            **_round_reset(),
             "research_loop_count": loop_count,
             "is_sufficient": parsed.is_sufficient,
             "knowledge_gap": parsed.knowledge_gap,
@@ -868,7 +794,7 @@ class ResearchAgent:
         """Answer from the whole conversation, whether research ended sufficient or at a limit."""
         await _report(config, "Synthesizing final answer...")
         try:
-            response = await _invoke_structured_history(
+            response = await _invoke_structured(
                 self.config.small,
                 FinalAnswer,
                 [*state["messages"], HumanMessage(_FINALIZE_PROMPT)],
@@ -880,7 +806,7 @@ class ResearchAgent:
             return await self._plain_answer(state["messages"])
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug("[finalize] raw: %s", response.model_dump_json())
-        sources = list(dict.fromkeys(url for url in response.sources if _is_http_url(url)))
+        sources = _http_urls(response.sources)
         logger.info("Final answer generated: %s. Explanation: %s", response.answer, response.explanation[:1000])
         return {
             "answer": response.answer,
@@ -901,7 +827,7 @@ class ResearchAgent:
         }
 
     async def __call__(
-        self, input: str, progress: Any | None = None
+        self, input: str, progress: ProgressReporter | None = None
     ) -> ResearchResponse:
         """Invoke the compiled graph; forward optional progress reporter to all nodes."""
         config: RunnableConfig | None = (

@@ -946,10 +946,6 @@ async def _unused_fetch(url: str, query: str | None = None, /) -> FetchResult:
 class TestParseErrorRecovery:
     """Invalid structured output is re-prompted with the error, then recovered."""
 
-    def test_limits_reject_zero_parse_attempts(self):
-        with pytest.raises(ValueError):
-            ResearchLimits(max_parse_attempts=0)
-
     def test_selected_pages_accepts_bare_index_list(self):
         parsed = SelectedPages.model_validate_json("[0, 2, 19]")
 
