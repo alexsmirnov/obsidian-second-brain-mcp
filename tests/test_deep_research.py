@@ -5,6 +5,7 @@ All tests mock LLM and HTTP calls — no real network access.
 
 from __future__ import annotations
 
+import json
 import logging
 import shutil
 import time
@@ -16,8 +17,11 @@ from unittest.mock import patch
 import httpx
 import pytest
 from fastmcp import Client
+from langchain_core.exceptions import OutputParserException
 from langchain_core.messages import AIMessage, HumanMessage
+from langchain_openai import ChatOpenAI
 from langgraph.types import Command, Send
+from pydantic import BaseModel, SecretStr
 
 from mcps.config import ServerConfig, create_config
 from mcps.research.agent import create_researcher
@@ -29,6 +33,7 @@ from mcps.research.deep_research import (
     ResearchAgent,
     ResearchLimits,
     ResearchPlan,
+    SearchRun,
     SelectedPages,
 )
 from mcps.research.tools import SearchResult
@@ -87,9 +92,15 @@ def _as_handler(value: Any) -> Callable[[list[Any]], Any]:
 class _StructuredModel:
     """Fake chat model serving structured-output handlers and recording calls."""
 
-    def __init__(self, handlers: dict[Any, Any]) -> None:
+    def __init__(self, handlers: dict[Any, Any], plain: str = "") -> None:
         self.handlers = {schema: _as_handler(h) for schema, h in handlers.items()}
         self.calls: list[tuple[Any, list[Any]]] = []
+        self.plain = plain
+
+    async def ainvoke(self, messages: list[Any]) -> AIMessage:
+        """Plain-text call without structured output."""
+        self.calls.append(("plain", messages))
+        return AIMessage(self.plain)
 
     def with_structured_output(
         self, schema: Any, *, include_raw: bool = False, **_kwargs: Any
@@ -887,6 +898,295 @@ class TestReflectionParseFailure:
         assert out["pending_links"] == []
         assert [type(m) for m in out["messages"]] == [HumanMessage]
         assert agent.evaluate_research({**_state(), **out}) == "finalize_answer"
+
+
+_PROSE_REPLY = "The material is future-dated relative to the stated current date."
+
+
+def _invalid_json[T: BaseModel](schema: type[T]) -> T:
+    """Raise the same pydantic error the OpenAI SDK raises on a prose reply."""
+    return schema.model_validate_json(_PROSE_REPLY)
+
+
+def _fail_then(
+    fail: Callable[[], Any], value: Any, failures: int
+) -> Callable[[list[Any]], Any]:
+    """Handler that calls ``fail`` ``failures`` times, then returns ``value``."""
+    remaining = [failures]
+
+    def handler(_messages: list[Any]) -> Any:
+        if remaining[0] > 0:
+            remaining[0] -= 1
+            return fail()
+        return value
+
+    return handler
+
+
+def _always(fail: Callable[[], Any]) -> Callable[[list[Any]], Any]:
+    return lambda _messages: fail()
+
+
+def _schema_calls(model: _StructuredModel, schema: Any) -> list[list[Any]]:
+    return [messages for called, messages in model.calls if called == schema]
+
+
+def _contents(messages: list[Any]) -> str:
+    return "\n".join(str(message.content) for message in messages)
+
+
+async def _unused_search(query: str) -> list[SearchResult]:
+    raise AssertionError(f"unexpected search {query}")
+
+
+async def _unused_fetch(url: str, query: str | None = None, /) -> FetchResult:
+    raise AssertionError(f"unexpected fetch {url}")
+
+
+class TestParseErrorRecovery:
+    """Invalid structured output is re-prompted with the error, then recovered."""
+
+    def test_limits_reject_zero_parse_attempts(self):
+        with pytest.raises(ValueError):
+            ResearchLimits(max_parse_attempts=0)
+
+    def test_selected_pages_accepts_bare_index_list(self):
+        parsed = SelectedPages.model_validate_json("[0, 2, 19]")
+
+        assert parsed == SelectedPages(indices=[0, 2, 19])
+        assert SelectedPages.model_validate_json('{"indices": [1]}').indices == [1]
+
+    async def test_reflection_reprompts_with_parse_error(self):
+        agent, _, small, _ = _make_agent()
+        small.handlers[Reflection] = _fail_then(
+            lambda: _invalid_json(Reflection),
+            Reflection(
+                is_sufficient=False, search_queries=["next q"], knowledge_gap="g"
+            ),
+            failures=1,
+        )
+
+        out = await agent.reflection(_state(searches=[], visits=[], pages=[]), {})
+
+        assert out["search_queries"] == ["next q"]
+        assert out["is_sufficient"] is False
+        first, second = _schema_calls(small, Reflection)
+        assert second[: len(first)] == first
+        assert second[-2] == AIMessage(_PROSE_REPLY)
+        assert isinstance(second[-1], HumanMessage)
+        assert "Invalid JSON" in str(second[-1].content)
+        assert "Reply again with only a JSON object" in str(second[-1].content)
+        assert [type(m) for m in out["messages"]] == [HumanMessage, AIMessage]
+
+    async def test_triage_reprompt_includes_parse_error(self):
+        agent, fast, _, _ = _make_agent()
+        fast.handlers[SelectedPages] = _fail_then(
+            lambda: SelectedPages.model_validate_json('{"indices": ["x"]}'),
+            SelectedPages(indices=[0]),
+            failures=1,
+        )
+        state = _state(
+            searches=[SearchRun(query="q", results=_SEARCH_RESULTS)],
+            pending_links=[],
+            fetch_query="k",
+        )
+
+        out = await agent.select_urls(state, {})
+
+        assert _sent_urls(out) == ["https://a.example"]
+        first, second = _schema_calls(fast, SelectedPages)
+        assert second[:-1] == first
+        assert "indices.0" in str(second[-1].content)
+
+    async def test_reflection_reprompt_uses_raw_reply_of_parsing_error(self):
+        agent, _, small, _ = _make_agent()
+        calls: list[list[Any]] = []
+        replies = iter(
+            [
+                {
+                    "raw": AIMessage("not json"),
+                    "parsed": None,
+                    "parsing_error": OutputParserException("bad output"),
+                },
+                {
+                    "raw": AIMessage("{}"),
+                    "parsed": Reflection(is_sufficient=True),
+                    "parsing_error": None,
+                },
+            ]
+        )
+
+        def structured(_schema: Any, **_kwargs: Any) -> Any:
+            async def ainvoke(messages: list[Any]) -> Any:
+                calls.append(messages)
+                return next(replies)
+
+            return SimpleNamespace(ainvoke=ainvoke)
+
+        small.with_structured_output = structured  # type: ignore[method-assign]
+
+        out = await agent.reflection(_state(searches=[], visits=[], pages=[]), {})
+
+        assert out["is_sufficient"] is True
+        assert calls[1][-2] == AIMessage("not json")
+        assert "bad output" in str(calls[1][-1].content)
+
+    async def test_reflection_finalizes_after_exhausting_attempts(self):
+        agent, _, small, _ = _make_agent(limits=ResearchLimits(max_parse_attempts=2))
+        small.handlers[Reflection] = _always(lambda: _invalid_json(Reflection))
+
+        out = await agent.reflection(_state(searches=[], visits=[], pages=[]), {})
+
+        assert out["is_sufficient"] is True
+        assert out["search_queries"] == []
+        assert out["pending_links"] == []
+        assert [type(m) for m in out["messages"]] == [HumanMessage]
+        assert len(_schema_calls(small, Reflection)) == 2
+
+    async def test_reflection_raises_non_parse_error_without_retry(self):
+        agent, _, small, _ = _make_agent()
+
+        def down() -> Any:
+            raise RuntimeError("down")
+
+        small.handlers[Reflection] = _always(down)
+
+        with pytest.raises(RuntimeError, match="down"):
+            await agent.reflection(_state(searches=[], visits=[], pages=[]), {})
+
+        assert len(_schema_calls(small, Reflection)) == 1
+
+    async def test_reflection_raises_refusal_in_parsing_error(self):
+        agent, _, small, _ = _make_agent()
+        calls: list[list[Any]] = []
+
+        def refused(_schema: Any, **_kwargs: Any) -> Any:
+            async def ainvoke(messages: list[Any]) -> Any:
+                calls.append(messages)
+                return {
+                    "raw": AIMessage("no"),
+                    "parsed": None,
+                    "parsing_error": ValueError("refused"),
+                }
+
+            return SimpleNamespace(ainvoke=ainvoke)
+
+        small.with_structured_output = refused  # type: ignore[method-assign]
+
+        with pytest.raises(ValueError, match="refused"):
+            await agent.reflection(_state(searches=[], visits=[], pages=[]), {})
+
+        assert len(calls) == 1
+
+    async def test_finalize_falls_back_to_plain_text(self):
+        agent, _, small, _ = _make_agent()
+        small.handlers[FinalAnswer] = _always(lambda: _invalid_json(FinalAnswer))
+        small.plain = (
+            "Answer is 42 (https://a.example/x). See [doc](https://b.example/y), "
+            "https://w.example/wiki/Foo_(bar), and https://a.example/x."
+        )
+
+        out = await agent.finalize_answer(_final_state(), {})
+
+        assert out == {
+            "answer": small.plain,
+            "explanation": "",
+            "sources_gathered": [
+                "https://a.example/x",
+                "https://b.example/y",
+                "https://w.example/wiki/Foo_(bar)",
+            ],
+        }
+        assert len(_schema_calls(small, FinalAnswer)) == 3
+        plain_messages = _schema_calls(small, "plain")[-1]
+        assert isinstance(plain_messages[-1], HumanMessage)
+        assert "plain text" in str(plain_messages[-1].content)
+
+    async def test_generate_query_uses_question_after_invalid_json(self):
+        agent, fast, _, _ = _make_agent()
+        fast.handlers[ResearchPlan] = _always(lambda: _invalid_json(ResearchPlan))
+
+        out = await agent.generate_query({"question": "what is x"}, {})
+
+        assert out["search_queries"] == ["what is x"]
+        assert out["fetch_query"] == "what is x"
+        assert len(_schema_calls(fast, ResearchPlan)) == 3
+
+    async def test_graph_keeps_gathered_pages_when_second_reflection_fails(self):
+        url_one, url_two = "https://one.example/p", "https://two.example/p"
+        results = {"q": [_sr(url_one)], "next q": [_sr(url_two)]}
+
+        def answer(messages: list[Any]) -> FinalAnswer:
+            text = _contents(messages)
+            if "PAGE-ONE" in text and "PAGE-TWO" in text:
+                return FinalAnswer(answer="both", sources=[url_one, url_two])
+            return FinalAnswer(answer="missing")
+
+        agent, _, small, _ = _make_agent(
+            {url_one: _fetched("PAGE-ONE"), url_two: _fetched("PAGE-TWO")},
+            plan=ResearchPlan(search_queries=["q"], fetch_query="k"),
+            select=SelectedPages(indices=[0]),
+            search_by_query=lambda query: results[query],
+            answer=answer,
+        )
+        reflections = iter([Reflection(is_sufficient=False, search_queries=["next q"])])
+        small.handlers[Reflection] = lambda _messages: next(
+            reflections, None
+        ) or _invalid_json(Reflection)
+
+        result = await agent(_QUESTION)
+
+        assert result["answer"] == "both"
+        assert result["sources"] == [url_one, url_two]
+        assert len(_schema_calls(small, Reflection)) == 1 + 3
+
+    async def test_real_openai_prose_reply_is_recovered(self):
+        bodies: list[dict[str, Any]] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            bodies.append(json.loads(request.content))
+            return httpx.Response(
+                200,
+                json={
+                    "id": "c1",
+                    "object": "chat.completion",
+                    "created": 0,
+                    "model": "m",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "finish_reason": "stop",
+                            "message": {"role": "assistant", "content": _PROSE_REPLY},
+                        }
+                    ],
+                },
+            )
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+            small = ChatOpenAI(
+                model="m",
+                base_url="http://router.test/v1",
+                api_key=SecretStr("k"),
+                http_async_client=http,
+                max_retries=0,
+            )
+            agent = ResearchAgent(
+                ResearchConfig(
+                    fast=cast(Any, _StructuredModel({})),
+                    small=small,
+                    search=_unused_search,
+                    fetch=_unused_fetch,
+                )
+            )
+
+            out = await agent.reflection(_state(searches=[], visits=[], pages=[]), {})
+
+        assert out["is_sufficient"] is True
+        assert len(bodies) == 3
+        repair = bodies[1]["messages"]
+        assert repair[-2] == {"role": "assistant", "content": _PROSE_REPLY}
+        assert repair[-1]["role"] == "user"
+        assert "Invalid JSON" in repair[-1]["content"]
 
 
 class TestEvaluateResearch:

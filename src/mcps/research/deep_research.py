@@ -3,20 +3,23 @@
 from __future__ import annotations
 
 # ruff: noqa: E501
+import json
 import logging
+import re
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from operator import add
 from typing import TYPE_CHECKING, Annotated, Any, Literal, TypedDict, cast
 from urllib.parse import urlparse, urlunparse
 
-from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
+from langchain_core.exceptions import OutputParserException
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, START, MessagesState, StateGraph
 from langgraph.types import Command, Overwrite, Send
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError, model_validator
 
 from mcps.research.tools import SearchResult
 
@@ -30,6 +33,7 @@ __all__ = [
     "FETCH_QUERY_INSTRUCTIONS",
     "FetchQuery",
     "ResearchAgent",
+    "StructuredOutputError",
     "create_deep_research_graph",
 ]
 
@@ -104,6 +108,27 @@ _FINALIZE_PROMPT = """Write the final answer to the user's question using ONLY t
 - If no fetched page supports an answer, say so in `answer` and list the questions under `Not found:`.
 """
 
+_PLAIN_FINALIZE_PROMPT = """Write the final answer to the user's question using ONLY the fetched pages in the conversation above.
+Reply in plain text, not JSON. Start with 1-3 sentences that directly answer the question.
+Then give supporting detail, citing the full source URL inline after each statement it supports.
+End with a `Not found:` list of every part of the question the pages do not answer.
+"""
+
+_MAX_ERROR_CHARS = 1000
+_URL_PATTERN = re.compile(r"https?://[^\s<>\[\]\"'`]+")
+_URL_TRAILING_PUNCTUATION = ".,;:!?"
+_PARSE_ERRORS: tuple[type[Exception], ...] = (ValidationError, OutputParserException)
+
+
+def _repair_prompt(error: Exception) -> str:
+    """Ask the model to answer again after its reply failed to parse."""
+    return (
+        "Your previous reply could not be parsed into the required structured output.\n"
+        f"Error: {str(error)[:_MAX_ERROR_CHARS]}\n"
+        "Reply again with only a JSON object that matches the required schema. "
+        "Do not add any text outside the JSON object."
+    )
+
 
 # ---------------------------------------------------------------------------
 # Pydantic models (structured LLM output)
@@ -118,7 +143,7 @@ class ResearchLimits:
     max_pages_per_round: int = 10
     max_initial_queries: int = 3
     max_follow_ups: int = 5  # independent limit for search_queries and for links
-
+    max_parse_attempts: int = 3  # first call + re-prompts on invalid structured output
 
 _DEFAULT_LIMITS = ResearchLimits()
 
@@ -170,6 +195,12 @@ class SelectedPages(BaseModel):
     """Triage output: 0-based candidate indices in priority order."""
 
     indices: list[int] = Field(default_factory=list, description="0-based candidate indices, priority order")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _wrap_bare_list(cls, data: Any) -> Any:
+        """Accept a bare JSON array of indices, which some models return."""
+        return {"indices": data} if isinstance(data, list) else data
 
 
 class Reflection(ResearchPlan):
@@ -361,14 +392,76 @@ async def _report(config: RunnableConfig, message: str) -> None:
         await reporter(message, 0.0, None)
 
 
+class StructuredOutputError(Exception):
+    """A structured LLM call kept returning unparsable output after all re-prompts."""
+
+
+def _failed_reply(error: Exception) -> str | None:
+    """The model reply that failed to parse, when the error carries it."""
+    if isinstance(error, ValidationError):
+        # Only a top-level error (empty ``loc``) carries the whole reply as input;
+        # a field error carries just that field's value.
+        details = error.errors()
+        if not details or details[0]["loc"]:
+            return None
+        reply = details[0]["input"]
+        return reply if isinstance(reply, str) else json.dumps(reply, default=str)
+    if isinstance(error, OutputParserException):
+        return error.llm_output
+    return None
+
+
+def _repair_messages(messages: list[BaseMessage], error: Exception) -> list[BaseMessage]:
+    """Original messages, the failed reply when known, and a request to answer again."""
+    reply = _failed_reply(error)
+    failed = [AIMessage(reply)] if reply is not None else []
+    return [*messages, *failed, HumanMessage(_repair_prompt(error))]
+
+
+async def _reprompt_on_parse_error[T](
+    call: Callable[[list[BaseMessage]], Awaitable[T]],
+    messages: list[BaseMessage],
+    *,
+    attempts: int,
+    label: str,
+) -> T:
+    """Run ``call``; after a parse error, re-prompt with the failed reply and the error.
+
+    Raises:
+        StructuredOutputError: every attempt failed to parse.
+    """
+    prompt = messages
+    for attempt in range(1, attempts + 1):
+        try:
+            return await call(prompt)
+        except _PARSE_ERRORS as error:
+            logger.warning(
+                "%s returned invalid structured output (attempt %d/%d): %s",
+                label,
+                attempt,
+                attempts,
+                error,
+            )
+            if attempt == attempts:
+                raise StructuredOutputError(label) from error
+            prompt = _repair_messages(messages, error)
+    raise StructuredOutputError(label)
+
+
 async def _invoke_structured_history[T: BaseModel](
     model: Any,
     schema: type[T],
     messages: list[BaseMessage],
+    *,
+    attempts: int,
+    label: str,
 ) -> T:
     """Invoke a model with structured output over an existing message list."""
     chain = model.with_structured_output(schema)
-    return cast(T, await chain.ainvoke(messages))
+    result = await _reprompt_on_parse_error(
+        chain.ainvoke, messages, attempts=attempts, label=label
+    )
+    return cast(T, result)
 
 
 async def _invoke_structured[T: BaseModel](
@@ -376,11 +469,67 @@ async def _invoke_structured[T: BaseModel](
     schema: type[T],
     system: str,
     human: str,
+    *,
+    attempts: int,
+    label: str,
 ) -> T:
     """Invoke a model with structured output for a system + human message pair."""
     return await _invoke_structured_history(
-        model, schema, [SystemMessage(system), HumanMessage(human)]
+        model,
+        schema,
+        [SystemMessage(system), HumanMessage(human)],
+        attempts=attempts,
+        label=label,
     )
+
+
+def _parsed_reflection(result: dict[str, Any]) -> tuple[Reflection, BaseMessage]:
+    """Parsed reflection and raw reply; raise when ``include_raw`` parsing failed.
+
+    A parse error (or none at all) is raised as a parse error so it is re-prompted;
+    any other parsing error, such as a model refusal, is raised as is.
+    """
+    raw = cast(BaseMessage, result["raw"])
+    parsed = cast(Reflection | None, result["parsed"])
+    if parsed is not None:
+        return parsed, raw
+    error = result.get("parsing_error")
+    if error is not None and not isinstance(error, _PARSE_ERRORS):
+        raise cast(Exception, error)
+    message = str(error) if error is not None else "empty reflection output"
+    raise OutputParserException(message, llm_output=str(raw.text)) from error
+
+
+def _finalize_after_parse_failure(round_message: HumanMessage, loop_count: int) -> dict[str, Any]:
+    """State update that keeps the round's pages in history and ends research."""
+    return {
+        "messages": [round_message],
+        "searches": Overwrite(value=[]),
+        "visits": Overwrite(value=[]),
+        "pages": Overwrite(value=[]),
+        "research_loop_count": loop_count,
+        "is_sufficient": True,
+        "search_queries": [],
+        "pending_links": [],
+    }
+
+
+def _trim_url(match: str) -> str:
+    """Drop trailing punctuation and closing parentheses that the URL does not open."""
+    url = match
+    while True:
+        trimmed = url.rstrip(_URL_TRAILING_PUNCTUATION)
+        if trimmed.endswith(")") and trimmed.count("(") < trimmed.count(")"):
+            trimmed = trimmed[:-1]
+        if trimmed == url:
+            return url
+        url = trimmed
+
+
+def _cited_urls(text: str) -> list[str]:
+    """HTTP(S) URLs cited in ``text``, deduplicated in order."""
+    urls = (_trim_url(match) for match in _URL_PATTERN.findall(text))
+    return list(dict.fromkeys(url for url in urls if _is_http_url(url)))
 
 
 # ---------------------------------------------------------------------------
@@ -456,12 +605,18 @@ class ResearchAgent:
         """Produce the initial round plan and start the elapsed-time clock."""
         started_at = self.clock()
         await _report(config, "Generating search queries...")
-        result = await _invoke_structured(
-            self.config.fast,
-            ResearchPlan,
-            _GENERATE_QUERY_PROMPT,
-            state["question"],
-        )
+        try:
+            result = await _invoke_structured(
+                self.config.fast,
+                ResearchPlan,
+                _GENERATE_QUERY_PROMPT,
+                state["question"],
+                attempts=self.limits.max_parse_attempts,
+                label="generate_query",
+            )
+        except StructuredOutputError:
+            logger.warning("Query generation failed, searching the question itself")
+            result = ResearchPlan()
         queries = _dedupe(
             result.search_queries,
             set(),
@@ -582,6 +737,8 @@ class ResearchAgent:
                 SelectedPages,
                 _SELECT_URLS_PROMPT,
                 prompt,
+                attempts=self.limits.max_parse_attempts,
+                label="triage",
             )
         except Exception as error:  # triage must never fail a round
             logger.warning("URL triage failed, using links only: %s", error)
@@ -638,23 +795,20 @@ class ResearchAgent:
         chain = self.config.small.with_structured_output(
             Reflection, include_raw=True, method="json_schema"
         )
-        result = cast(
-            dict[str, Any],
-            await chain.ainvoke([*state["messages"], round_message]),
-        )
-        parsed = cast(Reflection | None, result["parsed"])
-        if parsed is None:
+
+        async def reflect(messages: list[BaseMessage]) -> tuple[Reflection, BaseMessage]:
+            return _parsed_reflection(cast(dict[str, Any], await chain.ainvoke(messages)))
+
+        try:
+            parsed, raw = await _reprompt_on_parse_error(
+                reflect,
+                [*state["messages"], round_message],
+                attempts=self.limits.max_parse_attempts,
+                label=f"reflection round {loop_count}",
+            )
+        except StructuredOutputError:
             logger.warning("Reflection round %d returned unparsable output, finalizing", loop_count)
-            return {
-                "messages": [round_message],
-                "searches": Overwrite(value=[]),
-                "visits": Overwrite(value=[]),
-                "pages": Overwrite(value=[]),
-                "research_loop_count": loop_count,
-                "is_sufficient": True,
-                "search_queries": [],
-                "pending_links": [],
-            }
+            return _finalize_after_parse_failure(round_message, loop_count)
         queries = _dedupe(
             parsed.search_queries,
             set(),
@@ -678,7 +832,7 @@ class ResearchAgent:
             parsed.knowledge_gap[:1200],
         )
         return {
-            "messages": [round_message, result["raw"]],
+            "messages": [round_message, raw],
             "searches": Overwrite(value=[]),
             "visits": Overwrite(value=[]),
             "pages": Overwrite(value=[]),
@@ -713,11 +867,17 @@ class ResearchAgent:
     async def finalize_answer(self, state: OverallState, config: RunnableConfig) -> dict[str, Any]:
         """Answer from the whole conversation, whether research ended sufficient or at a limit."""
         await _report(config, "Synthesizing final answer...")
-        response = await _invoke_structured_history(
-            self.config.small,
-            FinalAnswer,
-            [*state["messages"], HumanMessage(_FINALIZE_PROMPT)],
-        )
+        try:
+            response = await _invoke_structured_history(
+                self.config.small,
+                FinalAnswer,
+                [*state["messages"], HumanMessage(_FINALIZE_PROMPT)],
+                attempts=self.limits.max_parse_attempts,
+                label="finalize_answer",
+            )
+        except StructuredOutputError:
+            logger.warning("Structured final answer failed, asking for plain text")
+            return await self._plain_answer(state["messages"])
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug("[finalize] raw: %s", response.model_dump_json())
         sources = list(dict.fromkeys(url for url in response.sources if _is_http_url(url)))
@@ -726,6 +886,18 @@ class ResearchAgent:
             "answer": response.answer,
             "explanation": response.explanation,
             "sources_gathered": sources,
+        }
+
+    async def _plain_answer(self, messages: Sequence[BaseMessage]) -> dict[str, Any]:
+        """Final answer as plain text, with the URLs it cites as sources."""
+        response = await self.config.small.ainvoke(
+            [*messages, HumanMessage(_PLAIN_FINALIZE_PROMPT)]
+        )
+        answer = str(response.text).strip()
+        return {
+            "answer": answer,
+            "explanation": "",
+            "sources_gathered": _cited_urls(answer),
         }
 
     async def __call__(
