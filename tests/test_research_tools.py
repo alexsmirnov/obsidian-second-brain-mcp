@@ -4,26 +4,34 @@ from __future__ import annotations
 
 import asyncio
 import html
+import logging
+import re
 from collections.abc import AsyncIterator
+from pathlib import Path
+from typing import Any
 
 import httpx
 import pymupdf
 import pytest
 from pytest_httpx import HTTPXMock
 
+from mcps.config import ServerConfig
+from mcps.research.config import create_search_tool
 from mcps.research.tools import (
-    create_duckduckgo_search,
     create_fetch,
     create_google_search,
+    create_yahoo_search,
 )
 from mcps.research.tools.arxiv import ArxivFetch
 from mcps.research.tools.bm25_ranker import Bm25Ranker
 from mcps.research.tools.default import HttpFetch
 from mcps.research.tools.filtering import RelevanceFilter
 from mcps.research.tools.github import GitHubBlobFetch, GitHubRepoFetch
+from mcps.research.tools.google import GOOGLE_CSE_URL
 from mcps.research.tools.markdown_chunker import MarkdownChunker
 from mcps.research.tools.models import FetchResult, FetchStatus
 from mcps.research.tools.wikipedia import WikipediaFetch
+from mcps.research.tools.yahoo import YAHOO_HEADERS
 
 _ERROR_SCRIPTS = {
     "ERROR: http code 403": (FetchStatus.HTTP_ERROR, 403),
@@ -179,35 +187,283 @@ async def test_google_search_without_credentials_returns_empty(
     assert await search("query") == []
 
 
-async def test_duckduckgo_search_parses_results_and_skips_ads(
+YAHOO_URL = re.compile(
+    r"https://search\.yahoo\.com/search;_ylt=[^;]+;_ylu=[^?]+\?.*"
+)
+YAHOO_FIXTURE = Path(__file__).parent / "fixtures" / "yahoo_search.html"
+YAHOO_TOKENS = re.compile(r";_ylt=([^;]+);_ylu=(.+)$")
+
+
+class RecordingSleep:
+    """Async sleep stub recording requested delays instead of waiting."""
+
+    def __init__(self) -> None:
+        self.delays: list[float] = []
+
+    async def __call__(self, delay: float) -> None:
+        self.delays.append(delay)
+
+
+def _yahoo_item(href: str, title: str, text: str) -> str:
+    return (
+        "<div class='dd algo relsrch'>"
+        f"<div class='compTitle Title'><a href='{href}'><h3>{title}</h3></a></div>"
+        f"<div class='compText Text'><p>{text}</p></div></div>"
+    )
+
+
+def _yahoo_page(*items: str) -> str:
+    return "<html><body>" + "".join(items) + "</body></html>"
+
+
+def _yahoo_redirect(target: str) -> str:
+    return f"https://r.search.yahoo.com/_ylt=x/RU={target}/RK=2/RS=y-"
+
+
+ONE_RESULT_PAGE = _yahoo_page(_yahoo_item("https://a.example", "A", "a"))
+
+
+async def test_yahoo_search_parses_captured_serp(
+    httpx_mock: HTTPXMock, client: httpx.AsyncClient
+):
+    httpx_mock.add_response(html=YAHOO_FIXTURE.read_text())
+    search = create_yahoo_search(http_client=client)
+
+    results = await search("python asyncio documentation")
+
+    assert len(results) >= 5
+    assert results[0].url == "https://docs.python.org/3/library/asyncio.html"
+    assert all(r.url.startswith("http") and r.title for r in results)
+    assert not any(
+        "r.search.yahoo.com" in r.url or "bing.com/aclick" in r.url for r in results
+    )
+
+
+async def test_yahoo_search_unwraps_redirects_and_drops_ads(
     httpx_mock: HTTPXMock, client: httpx.AsyncClient
 ):
     httpx_mock.add_response(
-        html=(
-            "<html><body>"
-            "<div class='result body'><h2>Title One</h2>"
-            "<a href='https://one.example'>Snippet one</a></div>"
-            "<div class='result body'><h2>Ad</h2>"
-            "<a href='https://duckduckgo.com/y.js?ad=1'>ad</a></div>"
-            "</body></html>"
+        html=_yahoo_page(
+            _yahoo_item(
+                _yahoo_redirect("https%3a%2f%2fdocs.python.org%2f3%2f"),
+                " asyncio \n docs ",
+                "a  b",
+            ),
+            _yahoo_item("https://www.bing.com/aclick?ld=1", "Ad", "ad"),
+            _yahoo_item(
+                _yahoo_redirect("https%3a%2f%2fwww.bing.com%2faclick%3fld%3d2"),
+                "Hidden ad",
+                "ad",
+            ),
+            "<div class='relsrch'><div class='Title'><h3>No link</h3></div></div>",
         )
     )
-    search = create_duckduckgo_search(http_client=client)
+    search = create_yahoo_search(http_client=client)
 
-    results = await search("query")
+    results = await search("q")
 
     assert [(r.url, r.title, r.snippet) for r in results] == [
-        ("https://one.example", "Title One", "Snippet one")
+        ("https://docs.python.org/3/", "asyncio docs", "a b")
     ]
 
 
-async def test_duckduckgo_search_http_error_returns_empty(
+async def test_yahoo_search_keeps_direct_href_containing_redirect_marker(
+    httpx_mock: HTTPXMock, client: httpx.AsyncClient
+):
+    direct = "https://example.com/RU=abc/RK=1"
+    httpx_mock.add_response(html=_yahoo_page(_yahoo_item(direct, "T", "s")))
+    search = create_yahoo_search(http_client=client)
+
+    results = await search("q")
+
+    assert [r.url for r in results] == [direct]
+
+
+async def test_yahoo_search_drops_item_with_malformed_url_and_keeps_the_rest(
+    httpx_mock: HTTPXMock, client: httpx.AsyncClient
+):
+    httpx_mock.add_response(
+        html=_yahoo_page(
+            _yahoo_item("http://[bad", "Broken", "x"),
+            _yahoo_item("https://a.example", "A", "a"),
+        )
+    )
+    search = create_yahoo_search(http_client=client)
+
+    results = await search("q")
+
+    assert [r.url for r in results] == ["https://a.example"]
+
+
+async def test_yahoo_search_follows_redirects_on_injected_client(
+    httpx_mock: HTTPXMock,
+):
+    httpx_mock.add_response(
+        status_code=307, headers={"location": "https://search.yahoo.com/search?p=q"}
+    )
+    httpx_mock.add_response(html=ONE_RESULT_PAGE)
+    async with httpx.AsyncClient(follow_redirects=False) as no_redirects:
+        search = create_yahoo_search(http_client=no_redirects)
+
+        results = await search("q")
+
+    assert [r.url for r in results] == ["https://a.example"]
+
+
+async def test_yahoo_search_sends_query_timelimit_and_browser_headers(
+    httpx_mock: HTTPXMock, client: httpx.AsyncClient
+):
+    httpx_mock.add_response(html=ONE_RESULT_PAGE)
+    search = create_yahoo_search(http_client=client, timelimit="w")
+
+    await search("q")
+
+    (request,) = httpx_mock.get_requests()
+    assert request.url.params["p"] == "q"
+    assert request.url.params["btf"] == "w"
+    assert request.headers["user-agent"] == YAHOO_HEADERS["user-agent"]
+
+
+async def test_yahoo_search_retries_server_error_with_fresh_url_tokens(
     httpx_mock: HTTPXMock, client: httpx.AsyncClient
 ):
     httpx_mock.add_response(status_code=500)
-    search = create_duckduckgo_search(http_client=client)
+    httpx_mock.add_response(html=ONE_RESULT_PAGE)
+    sleep = RecordingSleep()
+    search = create_yahoo_search(http_client=client, sleep=sleep)
 
-    assert await search("query") == []
+    results = await search("q")
+
+    first, second = httpx_mock.get_requests()
+    assert [r.url for r in results] == ["https://a.example"]
+    assert sleep.delays == [1.0]
+    first_tokens = YAHOO_TOKENS.search(first.url.path)
+    second_tokens = YAHOO_TOKENS.search(second.url.path)
+    assert first_tokens and second_tokens
+    assert first_tokens.group(1) != second_tokens.group(1)
+    assert first_tokens.group(2) != second_tokens.group(2)
+
+
+async def test_yahoo_search_retries_transport_error(
+    httpx_mock: HTTPXMock, client: httpx.AsyncClient
+):
+    httpx_mock.add_exception(httpx.ConnectError("boom"))
+    httpx_mock.add_response(html=ONE_RESULT_PAGE)
+    sleep = RecordingSleep()
+    search = create_yahoo_search(http_client=client, sleep=sleep)
+
+    results = await search("q")
+
+    assert len(results) == 1
+    assert sleep.delays == [1.0]
+
+
+async def test_yahoo_search_gives_up_after_retries_and_logs_warning(
+    httpx_mock: HTTPXMock, client: httpx.AsyncClient, caplog: pytest.LogCaptureFixture
+):
+    for _ in range(3):
+        httpx_mock.add_response(status_code=500)
+    sleep = RecordingSleep()
+    search = create_yahoo_search(http_client=client, sleep=sleep)
+
+    with caplog.at_level(logging.WARNING, logger="mcps.research.tools.yahoo"):
+        results = await search("needle query")
+
+    assert results == []
+    assert len(httpx_mock.get_requests()) == 3
+    assert sleep.delays == [1.0, 2.0]
+    assert "needle query" in caplog.text
+    assert "500" in caplog.text
+
+
+async def test_yahoo_search_honours_configured_attempts_and_backoff(
+    httpx_mock: HTTPXMock, client: httpx.AsyncClient
+):
+    httpx_mock.add_response(status_code=429)
+    httpx_mock.add_response(status_code=429)
+    sleep = RecordingSleep()
+    search = create_yahoo_search(
+        http_client=client, max_attempts=2, backoff_seconds=0.5, sleep=sleep
+    )
+
+    assert await search("q") == []
+    assert len(httpx_mock.get_requests()) == 2
+    assert sleep.delays == [0.5]
+
+
+async def test_yahoo_search_does_not_retry_client_error(
+    httpx_mock: HTTPXMock, client: httpx.AsyncClient
+):
+    httpx_mock.add_response(status_code=404)
+    sleep = RecordingSleep()
+    search = create_yahoo_search(http_client=client, sleep=sleep)
+
+    assert await search("q") == []
+    assert len(httpx_mock.get_requests()) == 1
+    assert sleep.delays == []
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "<html><body>no results</body></html>",
+        "",
+        "<!-- only a comment -->",
+        '<?xml version="1.0" encoding="utf-8"?><html></html>',
+    ],
+    ids=["no-results-page", "empty-body", "comment-only", "xml-declaration"],
+)
+async def test_yahoo_search_returns_empty_without_retry_when_nothing_parses(
+    httpx_mock: HTTPXMock, client: httpx.AsyncClient, body: str
+):
+    httpx_mock.add_response(text=body)
+    sleep = RecordingSleep()
+    search = create_yahoo_search(http_client=client, sleep=sleep)
+
+    assert await search("q") == []
+    assert len(httpx_mock.get_requests()) == 1
+    assert sleep.delays == []
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [{"max_attempts": 0}, {"backoff_seconds": -1.0}],
+    ids=["zero-attempts", "negative-backoff"],
+)
+def test_yahoo_search_rejects_invalid_retry_settings(kwargs: dict[str, Any]):
+    with pytest.raises(ValueError):
+        create_yahoo_search(**kwargs)
+
+
+async def test_search_tool_falls_back_to_yahoo_without_google_credentials(
+    httpx_mock: HTTPXMock, client: httpx.AsyncClient
+):
+    httpx_mock.add_response(
+        url=YAHOO_URL,
+        html=_yahoo_page(_yahoo_item("https://a.example", "A", "a")),
+    )
+    search = create_search_tool(config=ServerConfig(), http_client=client)
+
+    results = await search("q")
+
+    assert [r.url for r in results] == ["https://a.example"]
+    assert {r.url.host for r in httpx_mock.get_requests()} == {"search.yahoo.com"}
+
+
+async def test_search_tool_uses_google_when_credentials_present(
+    httpx_mock: HTTPXMock, client: httpx.AsyncClient
+):
+    httpx_mock.add_response(
+        url=re.compile(re.escape(GOOGLE_CSE_URL) + r".*"),
+        json={"items": [{"link": "https://g.example", "title": "G", "snippet": "g"}]},
+    )
+    config = ServerConfig(google_api_key="key", google_search_id="cx")
+    search = create_search_tool(config=config, http_client=client)
+
+    results = await search("q")
+
+    assert [r.url for r in results] == ["https://g.example"]
+    assert {r.url.host for r in httpx_mock.get_requests()} == {"www.googleapis.com"}
 
 
 # ---------------------------------------------------------------------------

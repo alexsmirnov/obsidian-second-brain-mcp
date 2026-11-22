@@ -61,7 +61,7 @@ YAML frontmatter parser for Obsidian markdown files.
 ### lxml
 HTML/XML parsing for web research content extraction.
 **Version**: `>=5.0.0`
-**Used by**: [src/mcps/research/tools/duckduckgo.py](../src/mcps/research/tools/duckduckgo.py)
+**Used by**: [src/mcps/research/tools/yahoo.py](../src/mcps/research/tools/yahoo.py)
 
 ### arxiv-to-prompt
 Formats arXiv papers for context-window use.

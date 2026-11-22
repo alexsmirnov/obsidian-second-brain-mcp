@@ -203,7 +203,7 @@ LLM-judge model for the DRACO web research evaluation. Read directly from the en
 **Used by**: [tests/evaluation/judge.py](../tests/evaluation/judge.py)
 
 #### `google_api_key` #config
-Google Custom Search API key. Required only when using Google instead of DuckDuckGo for web research.
+Google Custom Search API key. Required only when using Google instead of the free Yahoo fallback for web research.
 **Type**: str
 **Default**: `""`
 **Environment**: `GOOGLE_API_KEY`

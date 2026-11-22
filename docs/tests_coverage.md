@@ -92,7 +92,7 @@ Contract tests for the LangGraph deep research agent with mocked models and HTTP
 Contract tests for `FetchResult` (`ok`, `is_retryable`) and the combinators `Filtered`, `Fallback`, `UrlSelector`, `FilterSelector`, `FilterChain`, `Blocked`, `Truncate`, using recording stubs. `Truncate` cases cover syntax-safe Markdown fences/tables/reference definitions, orphan-heading avoidance, and plain-text word boundaries.
 
 ### [tests/test_research_tools.py](../tests/test_research_tools.py)
-Contract tests for search parsing (Google, DuckDuckGo), the composed `create_fetch` (routing, restricted domains, escalation, truncation, concurrency), per-source status mapping and native mime/text preservation (HTML, Markdown, other textual types, raw PDF text), and exceptions becoming `UNSUPPORTED` results (HTTP mocked with pytest-httpx). Large HTML and PDF fixtures make sure that start/middle/end evidence survives composed local filtering, and that distant unselected windows are dropped.
+Contract tests for search parsing (Google, Yahoo: captured-page parsing, redirect unwrapping, retry with backoff, Google-or-Yahoo tool selection), the composed `create_fetch` (routing, restricted domains, escalation, truncation, concurrency), per-source status mapping and native mime/text preservation (HTML, Markdown, other textual types, raw PDF text), and exceptions becoming `UNSUPPORTED` results (HTTP mocked with pytest-httpx). Large HTML and PDF fixtures make sure that start/middle/end evidence survives composed local filtering, and that distant unselected windows are dropped.
 
 ### [tests/test_research_fallback_fetchers.py](../tests/test_research_fallback_fetchers.py)
 Contract tests for the browser (fake crawl4ai crawler), Scrape.do and Bright Data fallbacks: request shape, target vs. provider status mapping, provider selection from `ServerConfig`, crawler connection lifetime (single open/close, startup failure yielding no crawler), the session pool (tab reuse, concurrency cap, tab reset after each fetch, session kill, crawler drop), connection-loss recovery (shared recovery, retries, late failures), and exit ordering.
@@ -195,6 +195,7 @@ Comprehensive evaluation test for vault search functionality measuring precision
 **pytest Configuration** [pyproject.toml:54-63](../pyproject.toml#L54-L63):
 - Log CLI enabled at INFO level
 - Import mode: importlib with durations
+- Tests marked `integration` (live network) are deselected by default (`-m "not integration"` in `addopts`); select them with `pytest -m integration`
 - Test paths: `tests` directory
 - Python path: `src` directory
 - Asyncio mode: auto
@@ -263,4 +264,7 @@ pytest -v
 
 # Run with coverage report
 pytest --cov=src/mcps
+
+# Run live network tests (skipped by default), e.g. the real Yahoo search
+pytest -m integration
 ```

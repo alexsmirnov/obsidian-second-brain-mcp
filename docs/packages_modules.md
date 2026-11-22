@@ -124,7 +124,7 @@ FastMCP lifespan handler that creates the shared HTTP client, enters `build_rese
 **Used by**: server
 
 ### [src/mcps/research/tools/](../src/mcps/research/tools/__init__.py) #package
-Async web search and content fetching. The fetch tool is a chain of small classes behind the `Fetch` and `Filter` protocols, assembled in `fetch.py`. `__init__` re-exports `Fetch`, `FetchResult`, `FetchStatus`, `Filter`, `Search`, `SearchResult`, `create_google_search`, `create_duckduckgo_search`, `create_fetch`.
+Async web search and content fetching. The fetch tool is a chain of small classes behind the `Fetch` and `Filter` protocols, assembled in `fetch.py`. `__init__` re-exports `Fetch`, `FetchResult`, `FetchStatus`, `Filter`, `Search`, `SearchResult`, `create_google_search`, `create_yahoo_search`, `create_fetch`.
 **Uses**: httpx, lxml, pydantic, markdown, pymupdf, crawl4ai
 **Used by**: research.deep_research, research.config
 
@@ -152,7 +152,7 @@ Async web search and content fetching. The fetch tool is a chain of small classe
 | `result.py`, `combinators.py` | Contracts and combinators above |
 | `models.py` | `SearchResult` |
 | `common.py` | `MIME_HTML`/`MIME_MARKDOWN`/`MIME_PLAIN` constants, `normalize_mime`/`textual_mime` classifiers, the `failure` result builder, `extract_hostname`, and `valid_router_url` |
-| `google.py`, `duckduckgo.py` | `Search` factories |
+| `google.py`, `yahoo.py` | `Search` factories |
 | `default.py` | `HttpFetch`: the single owner of page GETs (shared or owned client, browser-like Chrome headers) and of content-type extraction; HTML stays `text/html`, Markdown stays `text/markdown`, every other supported textual type and raw PDF text is `text/plain` |
 | `arxiv.py`, `github.py`, `wikipedia.py` | `ArxivFetch` (HTML, then PDF, then abstract), `GitHubBlobFetch`, `GitHubRepoFetch` (README), `WikipediaFetch` (raw wikitext via `action=raw` for `wikipedia.org` and its subdomains): thin wrappers over an injected `Fetch`; results are retargeted at the requested URL |
 | `browser.py` | `BrowserFetch` renders pages in the tabs of a pool of named sessions (`SessionPool`). After each fetch, the tab goes to `about:blank`. If that fails, the session is closed. If closing fails, the crawler is dropped. `CrawlerConnection` owns the crawler. When the connection is lost, it starts a new crawler, and all fetches that failed on the lost one share that recovery. Each of those fetches is then retried. `create_browser_fetch` opens the crawler on `BROWSER_CDP_URL` and closes it on exit. It yields `None` when the URL is unset or unreachable, or when crawl4ai lacks an internal the fetcher needs. All tabs share cookies and storage. |

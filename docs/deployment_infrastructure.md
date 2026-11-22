@@ -132,7 +132,7 @@ External API services required for full functionality:
 - OpenAI-compatible model router for chat/embedding access (used by RAG and web research)
 
 **Optional**:
-- Google Custom Search API key and search engine ID (web research alternative to DuckDuckGo)
+- Google Custom Search API key and search engine ID (web research alternative to the free Yahoo fallback)
 
 API keys configured via environment variables (see [config_environment.md](config_environment.md)).
 

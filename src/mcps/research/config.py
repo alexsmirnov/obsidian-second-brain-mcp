@@ -26,8 +26,8 @@ from mcps.research.tools import (
     Fetch,
     Search,
     SearchResult,
-    create_duckduckgo_search,
     create_google_search,
+    create_yahoo_search,
 )
 from mcps.research.tools.fetch import build_fetch_tool
 
@@ -90,14 +90,14 @@ def create_search_tool(
     config: ServerConfig,
     http_client: httpx.AsyncClient | None = None,
 ) -> Search:
-    """Return the Google search when configured, else DuckDuckGo."""
+    """Return the Google search when configured, else Yahoo."""
     if _is_google_cse_configured(config):
         return create_google_search(
             config.google_api_key,
             config.google_search_id,
             http_client=http_client,
         )
-    return create_duckduckgo_search(http_client=http_client)
+    return create_yahoo_search(http_client=http_client)
 
 
 @asynccontextmanager
