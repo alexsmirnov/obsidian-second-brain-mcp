@@ -113,7 +113,7 @@ Contract tests for background research jobs. `test_research_jobs.py` covers `Res
 Stops the test session with setup instructions when the NLTK data used by the BM25 ranker is missing. Run tests with `NLTK_DATA="${XDG_CACHE_HOME:-$HOME/.cache}/nltk_data"` exported.
 
 ### [tests/test_web_fetch_evaluation.py](../tests/test_web_fetch_evaluation.py)
-Contract tests for `load_cases` and `summarize` of the fetch evaluation script, including loading the shipped case files.
+Contract tests for `load_cases`, `summarize`, and `run_cases` of the fetch evaluation script, including loading the shipped case files. The `run_cases` tests cover parallel fetches within a batch, sequential batches, the peak count of calls in flight, row order, per-batch reporting, and batch size validation.
 
 ### [tests/test_llm_reranker.py](../tests/test_llm_reranker.py)
 Integration tests for `LlmReranker` with different model pairs and embedding fusion.
@@ -167,7 +167,7 @@ DRACO benchmark (`perplexity-ai/draco`, Technology + Academic domains) for the d
 ### [tests/web_fetch_evaluation.py](../tests/web_fetch_evaluation.py)
 Replays JSONL fetch cases through the production `fetch(url, query)` and prints failure counts (restricted domains are not failures) and mean response size versus the saved baseline. Cases: `tests/evaluation/data/fetch-cases-smoke.jsonl` (8, default) and `fetch-cases-baseline.jsonl` (279).
 
-**Run**: `uv run tests/web_fetch_evaluation.py --output tmp/fetch-smoke.jsonl [--cases tests/evaluation/data/fetch-cases-baseline.jsonl]`. Requires a reachable CDP browser (`BROWSER_CDP_URL`).
+**Run**: `uv run tests/web_fetch_evaluation.py --output tmp/fetch-smoke.jsonl [--cases tests/evaluation/data/fetch-cases-baseline.jsonl] [--batch-size N]`. Requires a reachable CDP browser (`BROWSER_CDP_URL`). The cases run in batches, and the fetches of one batch run in parallel. The default batch size is `BROWSER_POOL_SIZE`, and `--batch-size 1` runs the cases one by one. The summary reports `batch_size` and `peak_in_flight`, the most fetch calls that ran at once.
 
 ### [tests/vault_evaluation.py](../tests/vault_evaluation.py)
 Comprehensive evaluation test for vault search functionality measuring precision, recall, and F-score.

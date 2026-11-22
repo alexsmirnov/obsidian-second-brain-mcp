@@ -1,5 +1,7 @@
 """Contract tests for the fetch evaluation replay helpers."""
 
+import argparse
+import asyncio
 import json
 from pathlib import Path
 
@@ -7,7 +9,9 @@ import pytest
 from web_fetch_evaluation import (
     CASES_DIR,
     FetchCase,
+    _positive_int,
     load_cases,
+    run_cases,
     save_baseline,
     summarize,
 )
@@ -158,3 +162,121 @@ def test_save_baseline_skips_errors_and_blank_content(
 ):
     assert save_baseline(tmp_path, "baseline-1", result) is None
     assert not any(tmp_path.iterdir())
+
+
+# ---------------------------------------------------------------------------
+# Parallel batches
+# ---------------------------------------------------------------------------
+
+
+class RecordingFetch:
+    """Fetch that yields to the event loop so overlapping calls are observable."""
+
+    def __init__(self) -> None:
+        self.in_flight = 0
+        self.peak = 0
+        self.trace: list[str] = []
+
+    async def __call__(self, url: str, query: str | None = None, /) -> FetchResult:
+        self.in_flight += 1
+        self.peak = max(self.peak, self.in_flight)
+        self.trace.append(f"start:{url}")
+        try:
+            for _ in range(3):
+                await asyncio.sleep(0)
+            return FetchResult(
+                url=url, status=FetchStatus.OK, mime="text/plain", content=f"of {url}"
+            )
+        finally:
+            self.in_flight -= 1
+            self.trace.append(f"end:{url}")
+
+
+def _cases(count: int) -> list[FetchCase]:
+    return [
+        FetchCase(
+            case_id=f"c{number}",
+            url=f"https://{number}.example",
+            query=None,
+            baseline_error=None,
+            baseline_chars=None,
+        )
+        for number in range(count)
+    ]
+
+
+async def test_run_cases_fetches_a_batch_in_parallel():
+    batch_size, count = 3, 7
+    fetch = RecordingFetch()
+
+    _, peak = await run_cases(fetch, _cases(count), batch_size=batch_size)
+
+    assert peak == fetch.peak == batch_size
+
+
+async def test_run_cases_batch_size_one_is_sequential():
+    fetch = RecordingFetch()
+
+    _, peak = await run_cases(fetch, _cases(4), batch_size=1)
+
+    assert peak == fetch.peak == 1
+
+
+async def test_run_cases_peak_is_capped_by_the_number_of_cases():
+    count = 2
+    fetch = RecordingFetch()
+
+    _, peak = await run_cases(fetch, _cases(count), batch_size=count + 5)
+
+    assert peak == count
+
+
+async def test_run_cases_starts_a_batch_after_the_previous_one_ended():
+    cases = _cases(4)
+    fetch = RecordingFetch()
+
+    await run_cases(fetch, cases, batch_size=2)
+
+    first_batch_end = max(fetch.trace.index(f"end:{case.url}") for case in cases[:2])
+    second_batch_start = min(
+        fetch.trace.index(f"start:{case.url}") for case in cases[2:]
+    )
+    assert first_batch_end < second_batch_start
+
+
+async def test_run_cases_returns_rows_in_case_order():
+    cases = _cases(5)
+
+    rows, _ = await run_cases(RecordingFetch(), cases, batch_size=2)
+
+    assert [row["case_id"] for row in rows] == [case.case_id for case in cases]
+    assert [row["content"] for row in rows] == [f"of {case.url}" for case in cases]
+
+
+async def test_run_cases_reports_each_batch_when_it_ends():
+    batch_size, count = 2, 5
+    reported: list[list[object]] = []
+
+    rows, _ = await run_cases(
+        RecordingFetch(),
+        _cases(count),
+        batch_size=batch_size,
+        on_rows=lambda batch: reported.append([row["case_id"] for row in batch]),
+    )
+
+    assert [len(batch) for batch in reported] == [2, 2, 1]
+    assert [case_id for batch in reported for case_id in batch] == [
+        row["case_id"] for row in rows
+    ]
+
+
+async def test_run_cases_rejects_non_positive_batch_size():
+    with pytest.raises(ValueError, match="batch_size"):
+        await run_cases(RecordingFetch(), _cases(1), batch_size=0)
+
+
+def test_positive_int_parses_counts_and_rejects_the_rest():
+    assert _positive_int("3") == 3
+    for bad in ("0", "-1", "many"):
+        with pytest.raises(argparse.ArgumentTypeError):
+            _positive_int(bad)

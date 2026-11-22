@@ -7,6 +7,13 @@ Run from the repository root:
 ``--save tmp/baseline`` bypasses relevance filtering, Markdown normalization and
 truncation, and writes each successful raw result to
 ``tmp/baseline/baseline-<n>.[html|md|txt]`` as a filter evaluation dataset.
+
+Cases run in batches: the fetches of one batch run in parallel and the next
+batch starts after the previous one ended. ``--batch-size`` sets the batch size
+(default: ``BROWSER_POOL_SIZE``; ``1`` replays the cases one by one). The summary
+reports ``peak_in_flight``, the most fetch calls that ran at once. Each case's
+``response_time_ms`` includes the wait for a free browser tab when a batch is
+larger than the pool.
 """
 
 from __future__ import annotations
@@ -17,9 +24,10 @@ import json
 import logging
 import sys
 import time
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable
 from contextlib import asynccontextmanager, nullcontext
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from statistics import mean
 from typing import TextIO
@@ -220,6 +228,59 @@ async def _run_case(
     }
 
 
+async def run_cases(
+    fetch: Fetch,
+    cases: list[FetchCase],
+    *,
+    batch_size: int,
+    save: Path | None = None,
+    on_rows: Callable[[list[dict[str, object]]], None] | None = None,
+) -> tuple[list[dict[str, object]], int]:
+    """Replay ``cases`` in batches; return the rows in case order and the peak.
+
+    The fetches of one batch run in parallel, and a batch starts only after the
+    previous one finished. ``on_rows`` receives each batch's rows as soon as the
+    batch ends. The peak is the most fetch calls that were in flight at once.
+    """
+    if batch_size < 1:
+        raise ValueError(f"batch_size must be at least 1, got {batch_size}")
+    in_flight = peak = 0
+
+    async def counted(url: str, query: str | None = None, /) -> FetchResult:
+        nonlocal in_flight, peak
+        in_flight += 1
+        peak = max(peak, in_flight)
+        try:
+            return await fetch(url, query)
+        finally:
+            in_flight -= 1
+
+    rows: list[dict[str, object]] = []
+    total = len(cases)
+    for start in range(0, total, batch_size):
+        batch = cases[start : start + batch_size]
+        batch_rows = await asyncio.gather(
+            *(
+                _run_case(counted, case, start + offset, total, save)
+                for offset, case in enumerate(batch, start=1)
+            )
+        )
+        rows.extend(batch_rows)
+        if on_rows is not None:
+            on_rows(batch_rows)
+    return rows, peak
+
+
+def _positive_int(value: str) -> int:
+    try:
+        number = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"not a whole number: {value!r}") from None
+    if number < 1:
+        raise argparse.ArgumentTypeError(f"must be at least 1, got {number}")
+    return number
+
+
 async def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -229,16 +290,27 @@ async def main(argv: list[str] | None = None) -> None:
     parser.add_argument(
         "--save", type=Path, help="folder for raw unfiltered baseline-<n> files"
     )
+    parser.add_argument(
+        "--batch-size",
+        type=_positive_int,
+        help="cases fetched in parallel per batch (default: BROWSER_POOL_SIZE)",
+    )
     args = parser.parse_args(argv)
 
     _configure_logging()
     load_dotenv()
     server_config = create_config()
     cases = load_cases(args.cases)
-    logger.info("Replaying %d cases from %s", len(cases), args.cases)
+    batch_size = args.batch_size or server_config.browser_pool_size
+    logger.info(
+        "Replaying %d cases from %s in batches of %d (browser pool size %d)",
+        len(cases),
+        args.cases,
+        batch_size,
+        server_config.browser_pool_size,
+    )
     if args.save:
         args.save.mkdir(parents=True, exist_ok=True)
-    rows: list[dict[str, object]] = []
     # With --save, rows are streamed so an interrupted run keeps what it fetched.
     stream_rows = bool(args.save and args.output)
     with _open_jsonl(args.output) if stream_rows else nullcontext() as sink:
@@ -248,15 +320,22 @@ async def main(argv: list[str] | None = None) -> None:
             tool = _raw_fetch_tool if args.save else build_fetch_tool
             async with tool(server_config, http_client) as fetch:
                 assert fetch is not None
-                for number, case in enumerate(cases, start=1):
-                    row = await _run_case(fetch, case, number, len(cases), args.save)
-                    rows.append(row)
-                    if sink is not None:
-                        _write_rows(sink, [row])
+                rows, peak = await run_cases(
+                    fetch,
+                    cases,
+                    batch_size=batch_size,
+                    save=args.save,
+                    on_rows=partial(_write_rows, sink) if sink is not None else None,
+                )
     if args.output and not stream_rows:
         with _open_jsonl(args.output) as sink:
             _write_rows(sink, rows)
-    print(json.dumps(summarize(cases, rows), indent=2))
+    summary = {
+        **summarize(cases, rows),
+        "batch_size": batch_size,
+        "peak_in_flight": peak,
+    }
+    print(json.dumps(summary, indent=2))
 
 
 if __name__ == "__main__":
