@@ -39,6 +39,7 @@ from mcps.research.deep_research import (
 from mcps.research.tools import SearchResult
 from mcps.research.tools.models import FetchResult, FetchStatus
 from mcps.server import create_server
+from tests.research_fakes import fake_crawler_strategy
 
 # ---------------------------------------------------------------------------
 # Fakes and helpers
@@ -69,6 +70,7 @@ class _ReachableCrawler:
 
     def __init__(self, config: Any = None) -> None:
         self.config = config
+        self.crawler_strategy = fake_crawler_strategy()
 
     async def __aenter__(self) -> _ReachableCrawler:
         return self

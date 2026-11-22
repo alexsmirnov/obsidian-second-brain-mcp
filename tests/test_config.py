@@ -312,20 +312,44 @@ class TestCreateConfigMinScore:
         assert "MIN_SCORE" in caplog.text
 
 
+def test_validate_config_warns_when_browser_pool_size_not_positive(caplog):
+    config = ServerConfig(browser_pool_size=0)
+
+    with caplog.at_level("WARNING", logger="mcps.config"):
+        validate_config(config)
+
+    assert "BROWSER_POOL_SIZE" in caplog.text
+
+
 class TestCreateConfigFetch:
     def test_restricted_domains_default_to_none(self, monkeypatch):
         monkeypatch.delenv("FETCH_RESTRICTED_DOMAINS", raising=False)
 
         assert create_config().fetch_restricted_domains == ()
 
-    def test_fetch_settings_read_env_vars(self, monkeypatch):
+    def test_restricted_domains_read_env_var(self, monkeypatch):
         monkeypatch.setenv("FETCH_RESTRICTED_DOMAINS", " A.com, b.org ,")
-        monkeypatch.setenv("FETCH_CONCURRENCY", "3")
 
         config = create_config()
 
         assert config.fetch_restricted_domains == ("a.com", "b.org")
-        assert config.fetch_concurrency == 3
+
+    def test_browser_settings_read_env_vars(self, monkeypatch):
+        monkeypatch.setenv("BROWSER_POOL_SIZE", "5")
+        monkeypatch.setenv("BROWSER_RECONNECT_ATTEMPTS", "7")
+        monkeypatch.setenv("BROWSER_RECONNECT_DELAY_SECONDS", "0.5")
+        monkeypatch.setenv("BROWSER_CONNECT_TIMEOUT_SECONDS", "9.5")
+        monkeypatch.setenv("BROWSER_FETCH_RETRIES", "3")
+        monkeypatch.setenv("BROWSER_CLEANUP_TIMEOUT_SECONDS", "1.5")
+
+        config = create_config()
+
+        assert config.browser_pool_size == 5
+        assert config.browser_reconnect_attempts == 7
+        assert config.browser_reconnect_delay_seconds == 0.5
+        assert config.browser_connect_timeout_seconds == 9.5
+        assert config.browser_fetch_retries == 3
+        assert config.browser_cleanup_timeout_seconds == 1.5
 
     def test_decision_model_defaults_to_empty_and_reads_env_var(self, monkeypatch):
         monkeypatch.delenv("DECISION_MODEL", raising=False)

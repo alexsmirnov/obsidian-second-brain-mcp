@@ -77,8 +77,19 @@ class ServerConfig:
     decision_model: str = ""
     # Hostnames (and their subdomains) fetch must never visit.
     fetch_restricted_domains: tuple[str, ...] = ()
-    # Max parallel browser renders across all research branches.
-    fetch_concurrency: int = 2
+    # Browser session pool: named tabs reused across fetches. The pool size is
+    # also the cap on parallel browser renders across all research branches.
+    browser_pool_size: int = 2
+    # Attempts to start a replacement crawler after the connection is lost.
+    browser_reconnect_attempts: int = 5
+    # Pause before each reconnect attempt.
+    browser_reconnect_delay_seconds: float = 2.0
+    # Time limit for connecting one crawler to the CDP endpoint.
+    browser_connect_timeout_seconds: float = 30.0
+    # Extra tries of a fetch whose browser connection was lost.
+    browser_fetch_retries: int = 1
+    # Time limit for resetting a tab or closing a crawler.
+    browser_cleanup_timeout_seconds: float = 5.0
 
 def _parse_restricted_domains(raw: str) -> tuple[str, ...]:
     """Parse a comma-separated domain list into lowercase, trimmed entries."""
@@ -161,7 +172,20 @@ def create_config(
         fetch_restricted_domains=_parse_restricted_domains(
             os.environ.get("FETCH_RESTRICTED_DOMAINS", "")
         ),
-        fetch_concurrency=int(os.environ.get("FETCH_CONCURRENCY") or 2),
+        browser_pool_size=int(os.environ.get("BROWSER_POOL_SIZE") or 2),
+        browser_reconnect_attempts=int(
+            os.environ.get("BROWSER_RECONNECT_ATTEMPTS") or 5
+        ),
+        browser_reconnect_delay_seconds=float(
+            os.environ.get("BROWSER_RECONNECT_DELAY_SECONDS") or 2.0
+        ),
+        browser_connect_timeout_seconds=float(
+            os.environ.get("BROWSER_CONNECT_TIMEOUT_SECONDS") or 30.0
+        ),
+        browser_fetch_retries=int(os.environ.get("BROWSER_FETCH_RETRIES") or 1),
+        browser_cleanup_timeout_seconds=float(
+            os.environ.get("BROWSER_CLEANUP_TIMEOUT_SECONDS") or 5.0
+        ),
     )
     validate_config(config)
     return config
@@ -185,6 +209,12 @@ def validate_config(config: ServerConfig) -> None:
             "Undersized sections will be merged up to max_chunk_size.",
             config.min_chunk_size,
             config.max_chunk_size,
+        )
+
+    if config.browser_pool_size < 1:
+        logger.warning(
+            "browser_pool_size (%d) must be at least 1; check BROWSER_POOL_SIZE.",
+            config.browser_pool_size,
         )
 
     if not 0.0 <= config.min_score <= 1.0:

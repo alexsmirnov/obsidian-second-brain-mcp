@@ -428,37 +428,6 @@ async def test_output_truncated_after_filter(bm25, client):
     assert result.content.endswith("[Content truncated]")
 
 
-async def test_browser_concurrency_is_limited(bm25, client):
-    gate = asyncio.Event()
-    browser = FakeBrowser(TOPIC_HTML, gate=gate)
-    fetch = create_fetch(
-        http_client=client,
-        browser=browser,
-        provider=None,
-        page_filter=bm25,
-        concurrency=2,
-    )
-    tasks = [
-        asyncio.create_task(fetch(f"https://source.example/{i}", None))
-        for i in range(5)
-    ]
-    try:
-        for _ in range(200):
-            if browser.in_flight == 2:
-                break
-            await asyncio.sleep(0.01)
-        assert browser.in_flight == 2
-        gate.set()
-        results = await asyncio.gather(*tasks)
-    finally:
-        for task in tasks:
-            task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
-
-    assert browser.max_in_flight == 2
-    assert len(results) == 5
-
-
 # ---------------------------------------------------------------------------
 # Direct (no browser) fetch behavior
 # ---------------------------------------------------------------------------

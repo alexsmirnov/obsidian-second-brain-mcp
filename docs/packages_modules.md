@@ -143,7 +143,6 @@ Async web search and content fetching. The fetch tool is a chain of small classe
 | `UrlSelector(routes, default)` | `Fetch`; first route whose URL predicate matches |
 | `FilterSelector(routes, default=None)` | `Filter`; first route whose result predicate matches (for example by mime); unchanged result without a match |
 | `FilterChain(*filters)` | `Filter`; in order, stops at the first failure |
-| `Throttled(fetch, limit)` | `Fetch`; at most `limit` concurrent calls |
 | `Blocked()` | `Fetch`; `RESTRICTED` without I/O |
 | `Truncate(max_chars)` | `Filter`; MIME-aware safe prefix plus `[Content truncated]` marker outside the cap |
 
@@ -156,7 +155,7 @@ Async web search and content fetching. The fetch tool is a chain of small classe
 | `google.py`, `duckduckgo.py` | `Search` factories |
 | `default.py` | `HttpFetch`: the single owner of page GETs (shared or owned client, browser-like Chrome headers) and of content-type extraction; HTML stays `text/html`, Markdown stays `text/markdown`, every other supported textual type and raw PDF text is `text/plain` |
 | `arxiv.py`, `github.py`, `wikipedia.py` | `ArxivFetch` (HTML, then PDF, then abstract), `GitHubBlobFetch`, `GitHubRepoFetch` (README), `WikipediaFetch` (raw wikitext via `action=raw` for `wikipedia.org` and its subdomains): thin wrappers over an injected `Fetch`; results are retargeted at the requested URL |
-| `browser.py` | `BrowserFetch` renders pages on an open crawl4ai crawler; `create_browser_fetch` opens one crawler on `BROWSER_CDP_URL` (yields `None` when unset or unreachable) and closes it on exit, so fetches never reconnect |
+| `browser.py` | `BrowserFetch` renders pages in the tabs of a pool of named sessions (`SessionPool`). After each fetch, the tab goes to `about:blank`. If that fails, the session is closed. If closing fails, the crawler is dropped. `CrawlerConnection` owns the crawler. When the connection is lost, it starts a new crawler, and all fetches that failed on the lost one share that recovery. Each of those fetches is then retried. `create_browser_fetch` opens the crawler on `BROWSER_CDP_URL` and closes it on exit. It yields `None` when the URL is unset or unreachable, or when crawl4ai lacks an internal the fetcher needs. All tabs share cookies and storage. |
 | `scrape_do.py`, `bright_data.py` | `ScrapeDoFetch`, `BrightDataFetch`: commercial unblocking fallbacks |
 | `html_markdown.py` | `create_markdown_generator` (the crawl4ai generator shared with `browser.py`: pruning filter, links kept), `is_html`, and `HtmlToMarkdown`, the filter converting an HTML result to Markdown |
 | `filtering.py` | The `Chunker` (`split` text to fragments, `merge` selected fragments back to one text) and `Ranker` (fragment texts to relevant indices) protocols, the `Fragment(text, start, end)` type (one contiguous source slice addressed by half-open offsets that may overlap other fragments), the `FilterModelError` ranker failure, and `RelevanceFilter`, which splits a textual result, ranks the fragment texts, and merges the selected fragments in document order |
@@ -166,7 +165,7 @@ Async web search and content fetching. The fetch tool is a chain of small classe
 
 #### Composition ([fetch.py](../src/mcps/research/tools/fetch.py)) #architecture
 ```
-generic = UrlSelector([.pdf -> HttpFetch], default = Throttled(browser) or HttpFetch)
+generic = UrlSelector([.pdf -> HttpFetch], default = browser or HttpFetch)
 generic = Fallback(generic, provider)                     # when a provider is configured
 routed  = UrlSelector([restricted -> Blocked, arXiv, GitHub blob, GitHub repo, Wikipedia], default=generic)
 fetch   = Filtered(routed, FilterChain(FilterSelector([html -> HtmlToMarkdown]), create_page_filter(config), Truncate))

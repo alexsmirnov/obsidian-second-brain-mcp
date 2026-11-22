@@ -89,16 +89,19 @@ Tests for `ServerConfig` creation, environment variable precedence, CLI override
 Contract tests for the LangGraph deep research agent with mocked models and HTTP calls.
 
 ### [tests/test_fetch_combinators.py](../tests/test_fetch_combinators.py)
-Contract tests for `FetchResult` (`ok`, `is_retryable`) and the combinators `Filtered`, `Fallback`, `UrlSelector`, `FilterSelector`, `FilterChain`, `Throttled`, `Blocked`, `Truncate`, using recording stubs. `Truncate` cases cover syntax-safe Markdown fences/tables/reference definitions, orphan-heading avoidance, and plain-text word boundaries.
+Contract tests for `FetchResult` (`ok`, `is_retryable`) and the combinators `Filtered`, `Fallback`, `UrlSelector`, `FilterSelector`, `FilterChain`, `Blocked`, `Truncate`, using recording stubs. `Truncate` cases cover syntax-safe Markdown fences/tables/reference definitions, orphan-heading avoidance, and plain-text word boundaries.
 
 ### [tests/test_research_tools.py](../tests/test_research_tools.py)
 Contract tests for search parsing (Google, DuckDuckGo), the composed `create_fetch` (routing, restricted domains, escalation, truncation, concurrency), per-source status mapping and native mime/text preservation (HTML, Markdown, other textual types, raw PDF text), and exceptions becoming `UNSUPPORTED` results (HTTP mocked with pytest-httpx). Large HTML and PDF fixtures make sure that start/middle/end evidence survives composed local filtering, and that distant unselected windows are dropped.
 
 ### [tests/test_research_fallback_fetchers.py](../tests/test_research_fallback_fetchers.py)
-Contract tests for the browser (fake crawl4ai crawler), Scrape.do and Bright Data fallbacks: request shape, target vs. provider status mapping, provider selection from `ServerConfig`, and crawler connection lifetime (reuse across repeated and overlapping fetches, no replacement on failure, single open/close, startup failure yielding no crawler).
+Contract tests for the browser (fake crawl4ai crawler), Scrape.do and Bright Data fallbacks: request shape, target vs. provider status mapping, provider selection from `ServerConfig`, crawler connection lifetime (single open/close, startup failure yielding no crawler), the session pool (tab reuse, concurrency cap, tab reset after each fetch, session kill, crawler drop), connection-loss recovery (shared recovery, retries, late failures), and exit ordering.
 
 ### [tests/test_markdown_chunker.py](../tests/test_markdown_chunker.py), [tests/test_html_markdown.py](../tests/test_html_markdown.py), [tests/test_relevance_filter.py](../tests/test_relevance_filter.py), [tests/test_bm25_ranker.py](../tests/test_bm25_ranker.py)
 Contract tests for the filter pipeline units: `MarkdownChunker` (windows that target `max_chars`, snap to nearby headings and lines after blank lines, overlap neighbors, keep exact source slices, advance with maximal overlap, and reject invalid sizes, plus `merge`: shared overlap once, touching and gapped ranges, order, duplicates, contained fragments), `HtmlToMarkdown` (conversion, links kept, selector pass-through, error mapping), `RelevanceFilter` with fake chunker and ranker (guards, blank query, empty selection, split/merge hand-off, document order, failure mapping for split, ranker and merge), and `Bm25Ranker`.
+
+### [tests/test_browser_crawl4ai_contract.py](../tests/test_browser_crawl4ai_contract.py), [tests/test_browser_live.py](../tests/test_browser_live.py)
+Contract tests of the crawl4ai internals the browser fetcher uses, run against the real `BrowserManager`: required internals exist, disabled expiry keeps a pooled session, default expiry closes a stale one, and the session store layout. The live test fetches a page twice through a real CDP browser. It runs only when `MCPS_LIVE_CDP_URL` is set.
 
 ### [tests/test_browser_runtime.py](../tests/test_browser_runtime.py)
 Tests for `create_browser_fetch` (configured, unset, and unreachable CDP), the lifespan enabling/disabling only the research tools (`web_research` and `web_research_status`), and the research lifespan owning one browser crawler (reused across fetches, closed on exit).

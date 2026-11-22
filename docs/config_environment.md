@@ -227,6 +227,48 @@ CDP endpoint of a running browser (e.g. `ws://127.0.0.1:9222`). Must be unauthen
 **Environment**: `BROWSER_CDP_URL`
 **Used by**: [src/mcps/research/tools/fetch.py](../src/mcps/research/tools/fetch.py), [src/mcps/research/tools/browser.py](../src/mcps/research/tools/browser.py)
 
+#### `browser_pool_size` #config
+Number of named browser sessions. Each session keeps one tab that later fetches reuse. The pool size also limits how many pages render at the same time. It replaces `FETCH_CONCURRENCY`. A value below 1 is raised to 1.
+**Type**: int
+**Default**: `2`
+**Environment**: `BROWSER_POOL_SIZE`
+**Used by**: [src/mcps/research/tools/browser.py](../src/mcps/research/tools/browser.py)
+
+#### `browser_reconnect_attempts` #config
+Number of times the server tries to start a new browser connection after it loses the current one. All fetches that failed on the lost connection share one round of attempts.
+**Type**: int
+**Default**: `5`
+**Environment**: `BROWSER_RECONNECT_ATTEMPTS`
+**Used by**: [src/mcps/research/tools/browser.py](../src/mcps/research/tools/browser.py)
+
+#### `browser_reconnect_delay_seconds` #config
+Pause before each reconnect attempt, in seconds.
+**Type**: float
+**Default**: `2.0`
+**Environment**: `BROWSER_RECONNECT_DELAY_SECONDS`
+**Used by**: [src/mcps/research/tools/browser.py](../src/mcps/research/tools/browser.py)
+
+#### `browser_connect_timeout_seconds` #config
+Time limit for one connection attempt, in seconds.
+**Type**: float
+**Default**: `30.0`
+**Environment**: `BROWSER_CONNECT_TIMEOUT_SECONDS`
+**Used by**: [src/mcps/research/tools/browser.py](../src/mcps/research/tools/browser.py)
+
+#### `browser_fetch_retries` #config
+Number of extra tries for a fetch that lost the browser connection. The server does not retry HTTP errors or other failed pages.
+**Type**: int
+**Default**: `1`
+**Environment**: `BROWSER_FETCH_RETRIES`
+**Used by**: [src/mcps/research/tools/browser.py](../src/mcps/research/tools/browser.py)
+
+#### `browser_cleanup_timeout_seconds` #config
+Time limit for resetting one tab and for closing one connection, in seconds. If the reset takes longer, the server closes the tab.
+**Type**: float
+**Default**: `5.0`
+**Environment**: `BROWSER_CLEANUP_TIMEOUT_SECONDS`
+**Used by**: [src/mcps/research/tools/browser.py](../src/mcps/research/tools/browser.py)
+
 #### `research_wait_seconds` #config
 How long `web_research` and `web_research_status` wait for a research job before they return its current state. Keep it below the MCP client timeout (30 s by default).
 **Type**: float
@@ -274,13 +316,6 @@ Comma-separated hostnames; the hostname itself and its subdomains are never fetc
 **Type**: tuple[str, ...]
 **Default**: `()`
 **Environment**: `FETCH_RESTRICTED_DOMAINS`
-**Used by**: [src/mcps/research/tools/fetch.py](../src/mcps/research/tools/fetch.py)
-
-#### `fetch_concurrency` #config
-Maximum concurrent browser fetches across all research branches.
-**Type**: int
-**Default**: `2`
-**Environment**: `FETCH_CONCURRENCY`
 **Used by**: [src/mcps/research/tools/fetch.py](../src/mcps/research/tools/fetch.py)
 
 ## Environment File Loading

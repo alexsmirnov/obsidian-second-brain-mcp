@@ -12,6 +12,7 @@ from mcps.research.lifespan import build_research_lifespan
 from mcps.research.tools.browser import create_browser_fetch
 from mcps.research.tools.models import FetchStatus
 from mcps.server import create_server
+from tests.research_fakes import fake_crawler_strategy
 
 
 class FakeAsyncWebCrawler:
@@ -28,6 +29,7 @@ class FakeAsyncWebCrawler:
         self.config = config
         self.urls: list[str] = []
         self.is_open = False
+        self.crawler_strategy = fake_crawler_strategy()
         type(self).started.append(self)
 
     def _cdp_url(self) -> str:

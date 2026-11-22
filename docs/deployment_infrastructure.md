@@ -213,7 +213,12 @@ docker run --rm --env-file .env -e VAULT=/vault -v <host-vault-path>:/vault -p 8
 **Compose** [docker-compose.yaml](../docker-compose.yaml) runs an Obscura `browser` container and the `mcps` container in one shared network namespace (`network_mode: "service:browser"`):
 - Obscura serves CDP on `127.0.0.1:9222`; `mcps` reaches it over loopback via `BROWSER_CDP_URL=ws://127.0.0.1:9222`, so CDP is never exposed to the host network (no CDP auth is used; a remote `BROWSER_CDP_URL` must be unauthenticated).
 - The MCP port is published as `127.0.0.1:8000:8000` on the `browser` service because of the shared namespace.
-- The Obscura image is distroless (no shell or HTTP client), so a `browser-health` busybox sidecar in the same namespace runs the healthcheck (`wget http://localhost:9222/json/version`); `mcps` starts only after it reports healthy (`depends_on: condition: service_healthy`).
+- The browser healthcheck runs `/obscura fetch http://localhost:9222/json/version` every 15 seconds. `mcps` starts only after the browser is healthy (`depends_on: condition: service_healthy`).
+- The browser container has a memory limit of 1 GB with no swap (`BROWSER_MEMORY_LIMIT`) and 256 MB of shared memory (`BROWSER_SHM_SIZE`). If the browser leaks memory, Docker stops it and the restart policy `unless-stopped` starts a clean one.
+- Obscura time budgets come from `OBSCURA_NAV_TIMEOUT_MS`, `OBSCURA_SCRIPT_DEADLINE_MS`, `OBSCURA_MODULE_BUDGET_MS`, and `OBSCURA_CDP_COMMAND_TIMEOUT_MS`. With these budgets, stalled tabs fail fast.
+- The `depends_on` entry for the browser has `restart: true`. If Compose restarts the browser, Compose restarts `mcps` too. This option needs Docker Compose 2.17 or later.
+- If the Docker daemon restarts the browser, for example after an out-of-memory stop, `mcps` stays in the old network namespace and cannot reach the new browser. Run `docker compose restart server` to fix this.
+- The setting `FETCH_CONCURRENCY` no longer exists, and `mcps` ignores it. Use `BROWSER_POOL_SIZE`.
 - `.env` is optional; `VAULT` is empty by default (no vault tools). If the browser is unreachable at startup, only `web_research` is disabled.
 - Run: `docker compose up -d --build`.
 

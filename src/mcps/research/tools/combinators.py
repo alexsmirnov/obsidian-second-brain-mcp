@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import re
 from collections.abc import Callable, Sequence
@@ -17,7 +16,6 @@ __all__ = [
     "FilterChain",
     "FilterSelector",
     "Filtered",
-    "Throttled",
     "Truncate",
     "UrlSelector",
 ]
@@ -124,18 +122,6 @@ class FilterChain:
             if not result.ok:
                 break
         return result
-
-
-class Throttled:
-    """Fetch allowing at most ``limit`` concurrent calls."""
-
-    def __init__(self, fetch: Fetch, limit: int) -> None:
-        self._fetch = fetch
-        self._semaphore = asyncio.Semaphore(limit)
-
-    async def __call__(self, url: str, query: str | None = None, /) -> FetchResult:
-        async with self._semaphore:
-            return await self._fetch(url, query)
 
 
 class Blocked:

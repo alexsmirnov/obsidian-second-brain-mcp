@@ -121,7 +121,6 @@ async def _raw_fetch_tool(
             provider=_create_provider_fallback(config, http_client),
             page_filter=_passthrough,
             restricted_domains=config.fetch_restricted_domains,
-            concurrency=config.fetch_concurrency,
             max_chars=sys.maxsize,
         )
 

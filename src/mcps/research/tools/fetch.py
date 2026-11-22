@@ -21,7 +21,6 @@ from mcps.research.tools.combinators import (
     FilterChain,
     Filtered,
     FilterSelector,
-    Throttled,
     Truncate,
     UrlSelector,
 )
@@ -78,7 +77,6 @@ def create_fetch(
     provider: Fetch | None = None,
     page_filter: Filter,
     restricted_domains: Sequence[str] = (),
-    concurrency: int = 2,
     max_chars: int = 15000,
 ) -> Fetch:
     """Compose the page fetch returning query-relevant Markdown.
@@ -86,7 +84,7 @@ def create_fetch(
     A restricted host is refused without I/O. GitHub, arXiv and Wikipedia use
     their specialized fetcher and never fall back. ``.pdf`` and (when no browser is
     available) every other URL use the httpx extractor; all remaining URLs are
-    rendered in the browser, at most ``concurrency`` at a time. A blocked,
+    rendered in the browser. A blocked,
     empty, timed-out, or unavailable generic result escalates once to
     ``provider`` when configured. Every successful source is converted to
     Markdown when HTML, passed through ``page_filter`` and truncated to
@@ -94,7 +92,7 @@ def create_fetch(
     """
     http = HttpFetch(http_client)
     wikipedia_http = HttpFetch(http_client, WIKIPEDIA_HEADERS)
-    generic: Fetch = Throttled(browser, concurrency) if browser else http
+    generic: Fetch = browser if browser else http
     generic = UrlSelector([(_is_pdf_url, http)], default=generic)
     if provider is not None:
         generic = Fallback(generic, provider)
@@ -242,5 +240,4 @@ async def build_fetch_tool(
             provider=_create_provider_fallback(config, http_client),
             page_filter=create_page_filter(config, http_client),
             restricted_domains=config.fetch_restricted_domains,
-            concurrency=config.fetch_concurrency,
         )

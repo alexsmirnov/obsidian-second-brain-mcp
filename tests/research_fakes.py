@@ -3,11 +3,40 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
+from typing import Any
 
 from mcps.research.agent import ProgressReporter, ResearchResponse
 
 _RELEASE_TIMEOUT = 3.0
+
+
+def fake_crawler_strategy(
+    sessions: dict[str, Any] | None = None,
+    connected: Callable[[], bool] = lambda: True,
+    kill: Callable[[str], Awaitable[None]] | None = None,
+) -> SimpleNamespace:
+    """Stand-in for the crawl4ai internals the browser fetcher relies on.
+
+    Mirrors ``crawler.crawler_strategy``: ``browser_manager`` holds the session
+    store (``session_id -> (context, page, last_used)``), the session expiry and
+    the Playwright browser; ``kill_session`` closes a session's tab.
+    """
+    store = {} if sessions is None else sessions
+
+    async def pop_session(session_id: str) -> None:
+        store.pop(session_id, None)
+
+    return SimpleNamespace(
+        browser_manager=SimpleNamespace(
+            sessions=store,
+            browser=SimpleNamespace(is_connected=connected),
+            session_ttl=1800.0,
+        ),
+        kill_session=kill or pop_session,
+    )
 
 
 class FakeResearcher:

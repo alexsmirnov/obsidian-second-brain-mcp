@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from dataclasses import replace
 
 import pytest
@@ -13,7 +12,6 @@ from mcps.research.tools.combinators import (
     FilterChain,
     Filtered,
     FilterSelector,
-    Throttled,
     Truncate,
     UrlSelector,
 )
@@ -290,46 +288,6 @@ async def test_filter_chain_stops_at_first_failure():
 
     assert result is failure
     assert later.calls == []
-
-
-# ---------------------------------------------------------------------------
-# Throttled
-# ---------------------------------------------------------------------------
-
-
-class GatedFetch:
-    """Fetch that blocks on a gate and tracks peak concurrency."""
-
-    def __init__(self, gate: asyncio.Event) -> None:
-        self.gate = gate
-        self.in_flight = 0
-        self.max_in_flight = 0
-
-    async def __call__(self, url: str, query: str | None = None, /) -> FetchResult:
-        self.in_flight += 1
-        self.max_in_flight = max(self.max_in_flight, self.in_flight)
-        try:
-            await self.gate.wait()
-            return ok()
-        finally:
-            self.in_flight -= 1
-
-
-async def test_throttled_caps_concurrency_at_limit():
-    gate = asyncio.Event()
-    inner = GatedFetch(gate)
-    fetch = Throttled(inner, 2)
-
-    tasks = [asyncio.create_task(fetch(URL)) for _ in range(5)]
-    await asyncio.sleep(0)
-    await asyncio.sleep(0)
-    peak_before_release = inner.max_in_flight
-    gate.set()
-    results = await asyncio.gather(*tasks)
-
-    assert peak_before_release == 2
-    assert inner.max_in_flight == 2
-    assert all(result.ok for result in results)
 
 
 # ---------------------------------------------------------------------------
