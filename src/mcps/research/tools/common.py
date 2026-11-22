@@ -9,6 +9,7 @@ from mcps.research.tools.models import FetchResult, FetchStatus
 __all__ = [
     "MIME_HTML",
     "MIME_MARKDOWN",
+    "MIME_PDF",
     "MIME_PLAIN",
     "TRUNCATION_MARKER",
     "extract_hostname",
@@ -21,6 +22,7 @@ __all__ = [
 MIME_HTML = "text/html"
 MIME_MARKDOWN = "text/markdown"
 MIME_PLAIN = "text/plain"
+MIME_PDF = "application/pdf"
 
 TRUNCATION_MARKER = "\n\n[Content truncated]"
 
@@ -59,7 +61,12 @@ def textual_mime(value: str) -> str | None:
 def failure(
     url: str, status: FetchStatus, http_status: int | None = None
 ) -> FetchResult:
-    """Build an unsuccessful result; error results carry no mime."""
+    """Build an unsuccessful result; error results carry no mime.
+
+    The browser's ``UNSUPPORTED`` result for a non-textual page is the one
+    exception: it carries the declared media type so ``create_fetch`` can retry
+    the URL with a registered extractor.
+    """
     return FetchResult(url=url, status=status, mime="", http_status=http_status)
 
 

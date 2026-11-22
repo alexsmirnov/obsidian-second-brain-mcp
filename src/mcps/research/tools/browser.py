@@ -31,6 +31,7 @@ from mcps.research.tools.common import (
     MIME_MARKDOWN,
     MIME_PLAIN,
     failure,
+    normalize_mime,
     textual_mime,
 )
 from mcps.research.tools.html_markdown import create_markdown_generator
@@ -98,6 +99,40 @@ class SessionPool:
         self._free.put_nowait(name)
 
 
+class NavigationTypes:
+    """Final navigation ``content-type`` of each session's latest render.
+
+    crawl4ai reports the headers of the first redirect hop and keeps no body
+    for non-HTML pages. Its ``after_goto`` hook sees the last response, so the
+    hook feeds this recorder and the fetch reads it back after the render.
+    """
+
+    def __init__(self) -> None:
+        self._types: dict[str, str] = {}
+
+    async def record(
+        self,
+        page: Any,
+        *,
+        response: Any = None,
+        config: Any = None,
+        **_hook_arguments: Any,
+    ) -> Any:
+        """``after_goto`` hook: store the response type; never fail the render."""
+        try:
+            self._types[config.session_id] = response.headers.get("content-type", "")
+        except Exception as error:
+            logger.debug("Final navigation type unavailable: %r", error)
+        return page
+
+    def clear(self, session_id: str) -> None:
+        self._types.pop(session_id, None)
+
+    def take(self, session_id: str) -> str:
+        """Return and forget the recorded type; empty when none was recorded."""
+        return self._types.pop(session_id, "")
+
+
 def _new_crawler(cdp_url: str) -> AsyncWebCrawler:
     """Build a crawl4ai crawler bound to ``cdp_url``.
 
@@ -118,6 +153,20 @@ def _new_crawler(cdp_url: str) -> AsyncWebCrawler:
         memory_saving_mode=True,
     )
     return AsyncWebCrawler(config=browser_config)
+
+
+def _install_navigation_hook(
+    crawler: AsyncWebCrawler, navigation: NavigationTypes
+) -> None:
+    """Make ``crawler`` report each render's final response type to ``navigation``.
+
+    Raises ``RuntimeError`` when crawl4ai has no hook API, like
+    ``_require_internals`` does for the other internals it relies on.
+    """
+    set_hook = getattr(crawler.crawler_strategy, "set_hook", None)
+    if not callable(set_hook):
+        raise RuntimeError("incompatible crawl4ai: no set_hook")
+    set_hook("after_goto", navigation.record)
 
 
 # ---------------------------------------------------------------------------
@@ -245,24 +294,46 @@ def _content_result(url: str, mime: str, content: str) -> FetchResult:
     return FetchResult(url=url, status=FetchStatus.OK, mime=mime, content=content)
 
 
-def _to_fetch_result(url: str, crawl: CrawlResult) -> FetchResult:
-    """Map a crawl4ai ``CrawlResult`` to typed source content or a failure."""
-    if not crawl.success:
-        logger.warning("Browser fetch failed for %s: %s", url, crawl.error_message)
-        return failure(url, FetchStatus.UNAVAILABLE)
-    if crawl.status_code is not None and crawl.status_code >= 400:
-        return failure(url, FetchStatus.HTTP_ERROR, crawl.status_code)
+def _is_http_error(crawl: CrawlResult) -> bool:
+    return crawl.status_code is not None and crawl.status_code >= 400
 
+
+def _binary_handoff(url: str, content_type: str) -> FetchResult:
+    """``UNSUPPORTED`` result carrying the media type of a page the browser cannot read.
+
+    ``create_fetch`` retries the URL over HTTP when a registered extractor
+    handles the type; the browser itself knows nothing about extractors.
+    """
+    mime = normalize_mime(content_type)
+    logger.info("Browser got %s for %s, leaving it to the HTTP extractors", mime, url)
+    return FetchResult(url=url, status=FetchStatus.UNSUPPORTED, mime=mime)
+
+
+def _to_fetch_result(
+    url: str, crawl: CrawlResult, final_content_type: str = ""
+) -> FetchResult:
+    """Map a crawl4ai ``CrawlResult`` to typed source content or a failure.
+
+    ``final_content_type`` is the last navigation response's type (see
+    :class:`NavigationTypes`); it wins over the first-hop crawl headers. A
+    non-textual type is reported even when crawl4ai judged the viewer page
+    blocked, but an HTTP error status keeps its usual outcome.
+    """
     headers = {
         key.lower(): value for key, value in (crawl.response_headers or {}).items()
     }
-    content_type = headers.get("content-type", "")
-    rendered_html = crawl.cleaned_html or ""
+    content_type = final_content_type or headers.get("content-type", "")
     declared = textual_mime(content_type) if content_type else None
+    if content_type and declared is None and not _is_http_error(crawl):
+        return _binary_handoff(url, content_type)
+    if not crawl.success:
+        logger.warning("Browser fetch failed for %s: %s", url, crawl.error_message)
+        return failure(url, FetchStatus.UNAVAILABLE)
+    if _is_http_error(crawl):
+        return failure(url, FetchStatus.HTTP_ERROR, crawl.status_code)
+
+    rendered_html = crawl.cleaned_html or ""
     page_url = crawl.redirected_url or url
-    if content_type and declared is None:
-        logger.warning("Browser fetch failed for %s: unsupported type", url)
-        return failure(url, FetchStatus.UNSUPPORTED)
     if crawl.markdown :
         logger.debug("Markdown result, size %d",len(crawl.markdown))
         return _content_result(page_url, MIME_MARKDOWN, crawl.markdown.fit_markdown)
@@ -304,14 +375,20 @@ class CrawlerConnection:
 
     At most one recovery runs at a time. All fetches that fail on the same
     generation share its outcome, and fetches that arrive during a recovery
-    wait for it. Every teardown and start is time-bounded.
+    wait for it. Every teardown and start is time-bounded. ``configure`` runs on
+    every new crawler after it connected and passed the internals check; if it
+    raises, the crawler is torn down like any other failed start.
     """
 
     def __init__(
-        self, factory: Callable[[], AsyncWebCrawler], settings: BrowserSettings
+        self,
+        factory: Callable[[], AsyncWebCrawler],
+        settings: BrowserSettings,
+        configure: Callable[[AsyncWebCrawler], None] = lambda _: None,
     ) -> None:
         self._factory = factory
         self._settings = settings
+        self._configure = configure
         self._current = _Generation(None)
         self._active_recovery: asyncio.Task[bool] | None = None
 
@@ -395,6 +472,7 @@ class CrawlerConnection:
                 await crawler.__aenter__()
             _require_internals(crawler)
             _disable_session_expiry(crawler)
+            self._configure(crawler)
         except BaseException:
             await self._teardown(crawler)
             raise
@@ -439,10 +517,12 @@ class BrowserFetch:
         connection: CrawlerConnection,
         sessions: SessionPool,
         settings: BrowserSettings,
+        navigation: NavigationTypes,
     ) -> None:
         self._connection = connection
         self._sessions = sessions
         self._settings = settings
+        self._navigation = navigation
         self._cleanups: set[asyncio.Task[None]] = set()
 
     async def __call__(self, url: str, query: str | None = None, /) -> FetchResult:
@@ -481,10 +561,12 @@ class BrowserFetch:
             attempt.lost = False
             if attempt.lease is None:
                 return failure(url, FetchStatus.UNAVAILABLE)
-            outcome = await self._render(attempt.lease.crawler, url, session_id)
+            outcome, final_type = await self._render(
+                attempt.lease.crawler, url, session_id
+            )
             attempt.lost = _is_connection_lost(attempt.lease.crawler, outcome)
             if not attempt.lost:
-                return _to_fetch_result(url, cast(CrawlResult, outcome))
+                return _to_fetch_result(url, cast(CrawlResult, outcome), final_type)
             logger.warning("Browser connection lost while fetching %s", url)
             if not await self._connection.recover(attempt.lease.generation):
                 return failure(url, FetchStatus.UNAVAILABLE)
@@ -492,30 +574,42 @@ class BrowserFetch:
 
     async def _render(
         self, crawler: AsyncWebCrawler, url: str, session_id: str
-    ) -> CrawlResult | Exception:
+    ) -> tuple[CrawlResult | Exception, str]:
+        """Render ``url``; return the outcome and the final response's media type."""
+        self._navigation.clear(session_id)
+        outcome: CrawlResult | Exception
         try:
-            crawler_config = CrawlerRunConfig(
-                session_id=session_id,
-                cache_mode=CacheMode.BYPASS,
-                wait_until="domcontentloaded",
-                simulate_user=False,  # Add user simulation
-                magic=False,  # Enable magic mode
-                # Give cloudflare a moment to render the DOM elements, it waits 5 second
-                delay_before_return_html=0.2,
-                body_visibility_timeout=15000,
-                scan_full_page=False,
-                exclude_all_images=True,
-                # Prevents recursively crawling deep iframe trees
-                process_iframes=False,
-                # Cuts down on event loops monitoring image states
-                wait_for_images=False,
-                markdown_generator=create_markdown_generator(),
-                verbose=False,
-            )
-            return cast(CrawlResult, await crawler.arun(url, config=crawler_config))
+            outcome = await self._arun(crawler, url, session_id)
         except Exception as error:
             logger.warning("Browser render failed for %s: %r", url, error)
-            return error
+            outcome = error
+        finally:
+            final_type = self._navigation.take(session_id)
+        return outcome, final_type
+
+    @staticmethod
+    async def _arun(
+        crawler: AsyncWebCrawler, url: str, session_id: str
+    ) -> CrawlResult:
+        crawler_config = CrawlerRunConfig(
+            session_id=session_id,
+            cache_mode=CacheMode.BYPASS,
+            wait_until="domcontentloaded",
+            simulate_user=False,  # Add user simulation
+            magic=False,  # Enable magic mode
+            # Give cloudflare a moment to render the DOM elements, it waits 5 second
+            delay_before_return_html=0.2,
+            body_visibility_timeout=15000,
+            scan_full_page=False,
+            exclude_all_images=True,
+            # Prevents recursively crawling deep iframe trees
+            process_iframes=False,
+            # Cuts down on event loops monitoring image states
+            wait_for_images=False,
+            markdown_generator=create_markdown_generator(),
+            verbose=False,
+        )
+        return cast(CrawlResult, await crawler.arun(url, config=crawler_config))
 
     async def _release(self, attempt: _Attempt, session_id: str) -> None:
         try:
@@ -570,11 +664,18 @@ async def create_browser_fetch(
         yield None
         return
     settings = BrowserSettings.from_config(config)
-    connection = CrawlerConnection(lambda: _new_crawler(cdp_url), settings)
+    navigation = NavigationTypes()
+    connection = CrawlerConnection(
+        lambda: _new_crawler(cdp_url),
+        settings,
+        lambda crawler: _install_navigation_hook(crawler, navigation),
+    )
     if not await _open_connection(connection, cdp_url):
         yield None
         return
-    fetch = BrowserFetch(connection, SessionPool(settings.pool_size), settings)
+    fetch = BrowserFetch(
+        connection, SessionPool(settings.pool_size), settings, navigation
+    )
     try:
         yield fetch
     except BaseException:

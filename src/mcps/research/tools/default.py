@@ -6,7 +6,6 @@ import logging
 from collections.abc import Mapping
 
 import httpx
-import pymupdf
 
 from mcps.research.tools.common import (
     MIME_HTML,
@@ -14,6 +13,11 @@ from mcps.research.tools.common import (
     failure,
     normalize_mime,
     textual_mime,
+)
+from mcps.research.tools.extractors import (
+    BinaryExtractor,
+    extractor_for_content,
+    extractor_for_mime,
 )
 from mcps.research.tools.models import FetchResult, FetchStatus
 
@@ -49,39 +53,14 @@ CHROME_HEADERS = {
     ),
 }
 
-_PDF_ANNOT_SCREEN = 21  # pymupdf.PDF_ANNOT_SCREEN
-
 # (content, mime); None when the body holds no content.
 Extracted = tuple[str, str] | None
 
 
-def _convert_pdf_to_text(pdf_bytes: bytes) -> str:
-    page_text: list[str] = []
-    # Open, clean, and reload the PDF to fix annotation errors
-    with pymupdf.open(stream=pdf_bytes, filetype="pdf") as document:
-        # clean=True fixes appearance streams; deflate recompresses objects
-        cleaned_bytes = document.tobytes(clean=True, deflate=True)
-
-    with pymupdf.open(stream=cleaned_bytes, filetype="pdf") as document:
-        for page in document:
-            # Strip out Screen annotations entirely if errors persist
-            for annot in page.annots():
-                if annot.type[0] == _PDF_ANNOT_SCREEN:
-                    page.delete_annot(annot)
-
-            raw_text = page.get_text("text")
-            if not isinstance(raw_text, str):
-                continue
-            extracted = raw_text.strip()
-            if extracted:
-                page_text.append(extracted)
-    return "\n\n".join(page_text).strip()
-
-
-def _extract_pdf_response(response: httpx.Response) -> Extracted:
+def _extract_binary(response: httpx.Response, extractor: BinaryExtractor) -> Extracted:
     if not response.content:
         return None
-    extracted = _convert_pdf_to_text(response.content)
+    extracted = extractor.to_text(response.content)
     if not extracted.strip():
         return None
     return extracted, MIME_PLAIN
@@ -94,10 +73,6 @@ def _extract_plain_text_response(response: httpx.Response, mime: str) -> Extract
     return content, mime
 
 
-def _looks_like_pdf(content: bytes) -> bool:
-    return content.startswith(b"%PDF-")
-
-
 def _looks_like_html(content: str) -> bool:
     lowered = content.lstrip().lower()
     html_prefixes = ("<!doctype html", "<html", "<head", "<body")
@@ -105,8 +80,9 @@ def _looks_like_html(content: str) -> bool:
 
 
 def _extract_without_content_type(response: httpx.Response) -> Extracted:
-    if response.content and _looks_like_pdf(response.content):
-        return _extract_pdf_response(response)
+    extractor = extractor_for_content(response.content)
+    if extractor is not None:
+        return _extract_binary(response, extractor)
     if response.text and _looks_like_html(response.text):
         return _extract_plain_text_response(response, MIME_HTML)
     return _extract_plain_text_response(response, MIME_PLAIN)
@@ -117,8 +93,9 @@ def _extract(response: httpx.Response) -> Extracted:
     content_type = normalize_mime(response.headers.get("content-type", ""))
     if not content_type:
         return _extract_without_content_type(response)
-    if content_type == "application/pdf":
-        return _extract_pdf_response(response)
+    extractor = extractor_for_mime(content_type)
+    if extractor is not None:
+        return _extract_binary(response, extractor)
     classified = textual_mime(content_type)
     if classified is None:
         raise LookupError(content_type)

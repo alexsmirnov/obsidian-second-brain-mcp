@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from mcps.research.agent import ProgressReporter, ResearchResponse
+from mcps.research.tools.models import FetchResult
 
 _RELEASE_TIMEOUT = 3.0
 
@@ -22,9 +23,11 @@ def fake_crawler_strategy(
 
     Mirrors ``crawler.crawler_strategy``: ``browser_manager`` holds the session
     store (``session_id -> (context, page, last_used)``), the session expiry and
-    the Playwright browser; ``kill_session`` closes a session's tab.
+    the Playwright browser; ``kill_session`` closes a session's tab; ``set_hook``
+    registers crawl4ai hooks into ``hooks``.
     """
     store = {} if sessions is None else sessions
+    hooks: dict[str, Callable[..., Awaitable[Any]]] = {}
 
     async def pop_session(session_id: str) -> None:
         store.pop(session_id, None)
@@ -36,7 +39,21 @@ def fake_crawler_strategy(
             session_ttl=1800.0,
         ),
         kill_session=kill or pop_session,
+        hooks=hooks,
+        set_hook=hooks.__setitem__,
     )
+
+
+class StaticFetch:
+    """Fetch stub answering every URL with one fixed result and recording calls."""
+
+    def __init__(self, result: FetchResult) -> None:
+        self.result = result
+        self.calls: list[str] = []
+
+    async def __call__(self, url: str, query: str | None = None, /) -> FetchResult:
+        self.calls.append(url)
+        return self.result
 
 
 class FakeResearcher:

@@ -56,6 +56,9 @@ async def client() -> AsyncIterator[httpx.AsyncClient]:
 # ---------------------------------------------------------------------------
 
 
+NO_HOOK_CALL = object()
+
+
 @dataclass
 class FakePage:
     """Playwright page stub recording navigations into the crawler's trace."""
@@ -104,6 +107,9 @@ class FakeCrawler:
     arun_gate: asyncio.Event | None = None
     arun_entered: asyncio.Event = field(default_factory=asyncio.Event)
     url_gates: dict[str, asyncio.Event] = field(default_factory=dict)
+    # Final navigation response handed to the ``after_goto`` hook; the hook is
+    # not called while this stays ``NO_HOOK_CALL``.
+    final_response: Any = NO_HOOK_CALL
     crawler_strategy: Any = field(init=False, default=None)
 
     def __post_init__(self) -> None:
@@ -132,6 +138,7 @@ class FakeCrawler:
         gate = self.url_gates.get(url, self.arun_gate)
         if gate is not None:
             await gate.wait()
+        await self._run_after_goto_hook(url, config, session_id)
         if self.error is not None:
             raise self.error
         if self.error_message is not None:
@@ -139,6 +146,33 @@ class FakeCrawler:
             failed.error_message = self.error_message
             return failed
         return self.result
+
+    async def _run_after_goto_hook(
+        self, url: str, config: Any, session_id: str | None
+    ) -> None:
+        hook = self.crawler_strategy.hooks.get("after_goto")
+        if hook is None or self.final_response is NO_HOOK_CALL:
+            return
+        page = self.sessions[session_id][1] if session_id else None
+        await hook(
+            page,
+            context=None,
+            url=url,
+            response=self.final_response,
+            config=config,
+        )
+
+
+def navigation_response(content_type: str | None) -> SimpleNamespace:
+    """Final Playwright response stub carrying only a ``content-type`` header."""
+    headers = {} if content_type is None else {"content-type": content_type}
+    return SimpleNamespace(headers=headers)
+
+
+class _RaisingHeadersResponse:
+    @property
+    def headers(self) -> dict[str, str]:
+        raise RuntimeError("response is gone")
 
 
 def crawl_result(
@@ -431,7 +465,7 @@ async def test_browser_binary_type_is_unsupported_even_with_viewer_html(monkeypa
         result = await fetch(TARGET)
 
     assert outcome(result) == (FetchStatus.UNSUPPORTED, None)
-    assert (result.content, result.mime) == ("", "")
+    assert (result.content, result.mime) == ("", "image/png")
 
 
 async def test_browser_malformed_declared_text_is_unsupported(monkeypatch):
@@ -838,6 +872,10 @@ def _drop_kill_session(crawler: FakeCrawler) -> None:
     del crawler.crawler_strategy.kill_session
 
 
+def _drop_set_hook(crawler: FakeCrawler) -> None:
+    del crawler.crawler_strategy.set_hook
+
+
 @pytest.mark.parametrize(
     "break_internals",
     [
@@ -846,6 +884,7 @@ def _drop_kill_session(crawler: FakeCrawler) -> None:
         pytest.param(_drop_sessions, id="no-session-store"),
         pytest.param(_drop_is_connected, id="no-connection-check"),
         pytest.param(_drop_kill_session, id="no-kill-session"),
+        pytest.param(_drop_set_hook, id="no-hook-api"),
     ],
 )
 async def test_create_browser_fetch_yields_none_without_crawl4ai_internals(
@@ -1633,3 +1672,194 @@ async def test_default_page_filter_drops_unrelated_section_of_short_page(
     assert result.status is FetchStatus.OK
     assert relevant.strip() in result.content
     assert "DISTANT_MARKER" not in result.content
+
+
+# ---------------------------------------------------------------------------
+# Non-textual pages: the browser reports the final media type for retry
+# ---------------------------------------------------------------------------
+
+PDF_MIME = "application/pdf"
+VIEWER_HTML = "<h1>viewer</h1>"
+
+
+def _handoff(url: str, mime: str) -> tuple[FetchStatus, str, str, int | None, str]:
+    return FetchStatus.UNSUPPORTED, mime, "", None, url
+
+
+def _handoff_of(result: FetchResult) -> tuple[FetchStatus, str, str, int | None, str]:
+    return result.status, result.mime, result.content, result.http_status, result.url
+
+
+async def test_browser_redirect_to_pdf_reports_final_type(monkeypatch):
+    # The crawl headers describe the first redirect hop; the hook sees the last.
+    crawler = FakeCrawler(
+        result=crawl_result(
+            cleaned_html=VIEWER_HTML, response_headers={"content-type": "text/html"}
+        ),
+        final_response=navigation_response(PDF_MIME),
+    )
+
+    async with _open_browser(monkeypatch, crawler) as fetch:
+        result = await fetch(TARGET)
+
+    assert _handoff_of(result) == _handoff(TARGET, PDF_MIME)
+
+
+async def test_browser_blocked_viewer_page_still_reports_pdf(monkeypatch):
+    crawler = FakeCrawler(
+        result=crawl_result(success=False),
+        final_response=navigation_response("Application/PDF; qs=0.001"),
+    )
+
+    async with _open_browser(monkeypatch, crawler) as fetch:
+        result = await fetch(TARGET)
+
+    assert _handoff_of(result) == _handoff(TARGET, PDF_MIME)
+
+
+async def test_browser_without_hook_call_uses_crawl_headers_for_pdf(monkeypatch):
+    crawler = FakeCrawler(
+        result=crawl_result(
+            cleaned_html=VIEWER_HTML, response_headers={"content-type": PDF_MIME}
+        )
+    )
+
+    async with _open_browser(monkeypatch, crawler) as fetch:
+        result = await fetch(TARGET)
+
+    assert _handoff_of(result) == _handoff(TARGET, PDF_MIME)
+
+
+async def test_browser_pdf_handoff_is_logged_at_info_with_url_and_type(
+    monkeypatch, caplog: pytest.LogCaptureFixture
+):
+    crawler = FakeCrawler(
+        result=crawl_result(cleaned_html=VIEWER_HTML),
+        final_response=navigation_response(PDF_MIME),
+    )
+
+    with caplog.at_level("DEBUG", logger=browser_module.logger.name):
+        async with _open_browser(monkeypatch, crawler) as fetch:
+            await fetch(TARGET)
+
+    handoffs = [r for r in caplog.records if TARGET in r.getMessage()]
+    assert [r.levelname for r in handoffs] == ["INFO"]
+    assert PDF_MIME in handoffs[0].getMessage()
+
+
+async def test_browser_http_error_keeps_its_status_for_binary_type(monkeypatch):
+    crawler = FakeCrawler(
+        result=crawl_result(status_code=404, cleaned_html=VIEWER_HTML),
+        final_response=navigation_response(PDF_MIME),
+    )
+
+    async with _open_browser(monkeypatch, crawler) as fetch:
+        result = await fetch(TARGET)
+
+    assert outcome(result) == (FetchStatus.HTTP_ERROR, 404)
+
+
+async def test_browser_textual_final_type_overrides_stale_pdf_header(monkeypatch):
+    crawler = FakeCrawler(
+        result=crawl_result(
+            cleaned_html=OK_PAGE, response_headers={"content-type": PDF_MIME}
+        ),
+        final_response=navigation_response("text/html; charset=utf-8"),
+    )
+
+    async with _open_browser(monkeypatch, crawler) as fetch:
+        result = await fetch(TARGET)
+
+    assert result.ok
+    assert result.content == OK_PAGE
+
+
+async def test_browser_pdf_type_does_not_leak_into_next_fetch_of_session(monkeypatch):
+    crawler = FakeCrawler(
+        result=crawl_result(cleaned_html=VIEWER_HTML),
+        final_response=navigation_response(PDF_MIME),
+    )
+
+    async with _open_browser(monkeypatch, crawler, browser_pool_size=1) as fetch:
+        first = await fetch(TARGET)
+        crawler.result = crawl_result(cleaned_html=OK_PAGE)
+        crawler.final_response = NO_HOOK_CALL
+        second = await fetch(TARGET)
+
+    assert first.status is FetchStatus.UNSUPPORTED
+    assert second.ok
+    assert second.content == OK_PAGE
+
+
+@pytest.mark.parametrize(
+    "final_response",
+    [None, _RaisingHeadersResponse(), navigation_response(None)],
+    ids=["no-response", "headers-raise", "no-content-type"],
+)
+async def test_browser_unreadable_final_response_keeps_render_result(
+    monkeypatch, final_response: Any
+):
+    crawler = _ok_crawler(final_response=final_response)
+
+    async with _open_browser(monkeypatch, crawler) as fetch:
+        result = await fetch(TARGET)
+
+    assert result.ok
+    assert result.content == OK_PAGE
+
+
+async def test_browser_hook_failure_is_logged_at_debug(
+    monkeypatch, caplog: pytest.LogCaptureFixture
+):
+    crawler = _ok_crawler(final_response=_RaisingHeadersResponse())
+
+    with caplog.at_level("DEBUG", logger=browser_module.logger.name):
+        async with _open_browser(monkeypatch, crawler) as fetch:
+            await fetch(TARGET)
+
+    levels = {
+        record.levelname
+        for record in caplog.records
+        if "response is gone" in record.getMessage()
+    }
+    assert levels == {"DEBUG"}
+
+
+async def test_browser_recovered_crawler_still_reports_pdf(monkeypatch):
+    lost = _lost_crawler()
+    healthy = FakeCrawler(
+        result=crawl_result(cleaned_html=VIEWER_HTML),
+        final_response=navigation_response(PDF_MIME),
+    )
+
+    async with _open_browser(
+        monkeypatch,
+        lost,
+        healthy,
+        browser_fetch_retries=1,
+        browser_reconnect_attempts=1,
+    ) as fetch:
+        result = await fetch(TARGET)
+
+    assert _handoff_of(result) == _handoff(TARGET, PDF_MIME)
+
+
+async def test_browser_connection_loss_wins_over_recorded_pdf_type(monkeypatch):
+    lost = _lost_crawler(final_response=navigation_response(PDF_MIME))
+    healthy = _ok_crawler()
+
+    async with _open_browser(
+        monkeypatch,
+        lost,
+        healthy,
+        browser_pool_size=1,
+        browser_fetch_retries=1,
+        browser_reconnect_attempts=1,
+    ) as fetch:
+        retried = await fetch(TARGET)
+        healthy.final_response = NO_HOOK_CALL
+        next_fetch = await fetch(TARGET)
+
+    assert retried.ok
+    assert next_fetch.ok
+    assert next_fetch.content == OK_PAGE

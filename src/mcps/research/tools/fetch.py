@@ -27,6 +27,7 @@ from mcps.research.tools.combinators import (
 from mcps.research.tools.common import valid_router_url
 from mcps.research.tools.decision_ranker import DecisionRanker
 from mcps.research.tools.default import HttpFetch
+from mcps.research.tools.extractors import extractor_for_mime, extractor_for_url
 from mcps.research.tools.filtering import Ranker, RelevanceFilter
 from mcps.research.tools.github import (
     GitHubBlobFetch,
@@ -40,7 +41,7 @@ from mcps.research.tools.html_markdown import (
     is_html,
 )
 from mcps.research.tools.markdown_chunker import MarkdownChunker
-from mcps.research.tools.models import Fetch, Filter
+from mcps.research.tools.models import Fetch, FetchResult, FetchStatus, Filter
 from mcps.research.tools.scrape_do import ScrapeDoFetch
 from mcps.research.tools.wikipedia import (
     WIKIPEDIA_HEADERS,
@@ -66,8 +67,16 @@ def _is_restricted(domains: Sequence[str]):
     return matches
 
 
-def _is_pdf_url(url: str) -> bool:
-    return urlparse(url).path.lower().endswith(".pdf")
+def _has_binary_extension(url: str) -> bool:
+    return extractor_for_url(url) is not None
+
+
+def is_extractable_handoff(result: FetchResult) -> bool:
+    """True for a browser result that names a media type ``HttpFetch`` can read."""
+    return (
+        result.status is FetchStatus.UNSUPPORTED
+        and extractor_for_mime(result.mime) is not None
+    )
 
 
 def create_fetch(
@@ -82,9 +91,11 @@ def create_fetch(
     """Compose the page fetch returning query-relevant Markdown.
 
     A restricted host is refused without I/O. GitHub, arXiv and Wikipedia use
-    their specialized fetcher and never fall back. ``.pdf`` and (when no browser is
-    available) every other URL use the httpx extractor; all remaining URLs are
-    rendered in the browser. A blocked,
+    their specialized fetcher and never fall back. URLs with a registered binary
+    extension (see :mod:`mcps.research.tools.extractors`) and, when no browser is
+    available, every other URL use the httpx extractor; all remaining URLs are
+    rendered in the browser. A browser result that reports a registered binary
+    media type is retried once through the httpx extractor. A blocked,
     empty, timed-out, or unavailable generic result escalates once to
     ``provider`` when configured. Every successful source is converted to
     Markdown when HTML, passed through ``page_filter`` and truncated to
@@ -92,8 +103,10 @@ def create_fetch(
     """
     http = HttpFetch(http_client)
     wikipedia_http = HttpFetch(http_client, WIKIPEDIA_HEADERS)
-    generic: Fetch = browser if browser else http
-    generic = UrlSelector([(_is_pdf_url, http)], default=generic)
+    generic: Fetch = (
+        Fallback(browser, http, when=is_extractable_handoff) if browser else http
+    )
+    generic = UrlSelector([(_has_binary_extension, http)], default=generic)
     if provider is not None:
         generic = Fallback(generic, provider)
 

@@ -32,6 +32,7 @@ from mcps.research.tools.markdown_chunker import MarkdownChunker
 from mcps.research.tools.models import FetchResult, FetchStatus
 from mcps.research.tools.wikipedia import WikipediaFetch
 from mcps.research.tools.yahoo import YAHOO_HEADERS
+from tests.research_fakes import StaticFetch
 
 _ERROR_SCRIPTS = {
     "ERROR: http code 403": (FetchStatus.HTTP_ERROR, 403),
@@ -602,6 +603,109 @@ async def test_pdf_uses_http_extractor(
 
     assert "Quantum routing results" in result.content
     assert browser.calls == []
+
+
+PDF_HANDOFF_URL = "https://source.example/paper/abc"
+
+
+def _pdf_handoff(url: str = PDF_HANDOFF_URL) -> FetchResult:
+    return FetchResult(url, FetchStatus.UNSUPPORTED, "application/pdf")
+
+
+async def test_browser_pdf_handoff_is_extracted_over_http_once(
+    bm25, httpx_mock: HTTPXMock, client: httpx.AsyncClient
+):
+    httpx_mock.add_response(
+        url=PDF_HANDOFF_URL,
+        content=_pdf_bytes("Quantum routing results"),
+        headers={"content-type": "application/pdf"},
+    )
+    browser = StaticFetch(_pdf_handoff())
+    fetch = create_fetch(
+        http_client=client, browser=browser, provider=None, page_filter=bm25
+    )
+
+    result = await fetch(PDF_HANDOFF_URL, None)
+
+    assert result.ok
+    assert "Quantum routing results" in result.content
+    assert browser.calls == [PDF_HANDOFF_URL]
+    assert len(httpx_mock.get_requests()) == 1
+
+
+async def test_browser_pdf_handoff_text_goes_through_truncation(
+    bm25, httpx_mock: HTTPXMock, client: httpx.AsyncClient
+):
+    httpx_mock.add_response(
+        url=PDF_HANDOFF_URL,
+        content=_pdf_bytes("\n".join(["Quantum routing results"] * 40)),
+        headers={"content-type": "application/pdf"},
+    )
+    fetch = create_fetch(
+        http_client=client,
+        browser=StaticFetch(_pdf_handoff()),
+        page_filter=bm25,
+        max_chars=200,
+    )
+
+    result = await fetch(PDF_HANDOFF_URL, None)
+
+    assert result.ok
+    assert result.content.startswith("Quantum routing results")
+    assert result.content.endswith("[Content truncated]")
+    assert result.content.count("Quantum routing results") < 40
+
+
+async def test_browser_pdf_handoff_without_content_type_is_sniffed(
+    bm25, httpx_mock: HTTPXMock, client: httpx.AsyncClient
+):
+    httpx_mock.add_response(
+        url=PDF_HANDOFF_URL, content=_pdf_bytes("Quantum routing results")
+    )
+    fetch = create_fetch(
+        http_client=client,
+        browser=StaticFetch(_pdf_handoff()),
+        page_filter=bm25,
+    )
+
+    result = await fetch(PDF_HANDOFF_URL, None)
+
+    assert "Quantum routing results" in result.content
+
+
+async def test_blocked_browser_pdf_handoff_escalates_to_provider(
+    bm25, httpx_mock: HTTPXMock, client: httpx.AsyncClient
+):
+    httpx_mock.add_response(url=PDF_HANDOFF_URL, status_code=403)
+    provider = FakeProvider(TOPIC_HTML)
+    fetch = create_fetch(
+        http_client=client,
+        browser=StaticFetch(_pdf_handoff()),
+        provider=provider,
+        page_filter=bm25,
+    )
+
+    result = await fetch(PDF_HANDOFF_URL, "quantum optimization")
+
+    assert result.ok
+    assert provider.calls == [PDF_HANDOFF_URL]
+
+
+async def test_browser_handoff_without_registered_extractor_makes_no_http_request(
+    bm25, httpx_mock: HTTPXMock, client: httpx.AsyncClient
+):
+    browser = StaticFetch(
+        FetchResult(PDF_HANDOFF_URL, FetchStatus.UNSUPPORTED, "image/png")
+    )
+    fetch = create_fetch(
+        http_client=client, browser=browser, provider=None, page_filter=bm25
+    )
+
+    result = await fetch(PDF_HANDOFF_URL, None)
+
+    assert result.status is FetchStatus.UNSUPPORTED
+    assert browser.calls == [PDF_HANDOFF_URL]
+    assert httpx_mock.get_requests() == []
 
 
 @pytest.mark.parametrize(
