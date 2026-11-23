@@ -61,7 +61,7 @@ async def main():
             agent = create_researcher(config, implementation="deep_research")
 
             logger.info("Loading DRACO questions (Technology + Academic)...")
-            questions = load_draco_questions()[:3]
+            questions = load_draco_questions()[:5]
 
             logger.info("Running evaluation on %d questions...", len(questions))
             summary, results = await run_evaluation(agent, judge, questions)

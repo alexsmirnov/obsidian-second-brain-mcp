@@ -111,7 +111,7 @@
               "url": "https://manuelbagues.com/teaching/applied_micro_course_did1.pdf",
               "title": "Recent Advances in DID methods Overview - Manuel Bagues",
               "snippet": "Event studies Abraham and Sun 2020 • In the previous case (CS simulation), treatment effects had the same shape across cohorts, so mainly we want to ensure we do not use earlier treated as controls.",
-              "expected": false,
+              "expected": true,
               "reason": ""
             }
           ]
@@ -413,7 +413,7 @@
               "url": "https://morimori0456.github.io/ML_report/edge_deployment/tensorrt_quantization_jetson.html",
               "title": "TensorRT INT8 Quantization on Jetson — A Hands-On Recipe for ...",
               "snippet": "A verified, device-side recipe to quantize a small autonomous-driving perception model to INT8 and deploy it with TensorRT on NVIDIA Jetson (incl. Jetson Thor / Blackwell).",
-              "expected": true,
+              "expected": false,
               "reason": "hands-on INT8 quantization with TensorRT on Jetson, accuracy check"
             },
             {
@@ -488,7 +488,7 @@
               "url": "https://docs.nvidia.com/deeplearning/tensorrt/latest/performance/best-practices.html",
               "title": "Best Practices — NVIDIA TensorRT",
               "snippet": "4 days ago · Treat benchmarking and optimization as the core feedback loop: measure first, optimize, then measure again to confirm the change had the impact you expected.",
-              "expected": true,
+              "expected": false,
               "reason": "official NVIDIA TensorRT performance guidance"
             },
             {
@@ -502,7 +502,7 @@
               "url": "https://docs.nvidia.com/deeplearning/tensorrt/latest/performance/optimization.html",
               "title": "Optimizing TensorRT Performance — NVIDIA TensorRT",
               "snippet": "5 days ago · Optimizing TensorRT Performance # The following sections focus on the general inference flow on GPUs and some general strategies to improve performance. These ideas apply to most CUDA programmers but cannot be as obvious to developers from other backgrounds. What You Will Learn How batching, CUDA graphs, and multi-streaming improve throughput How the TensorRT layer fusion and pointwise fusion ...",
-              "expected": false,
+              "expected": true,
               "reason": ""
             },
             {
@@ -531,7 +531,7 @@
               "url": "https://www.frontiersin.org/journals/drug-discovery/articles/10.3389/fddsv.2026.1815176/full",
               "title": "Quantum computing in drug discovery - Frontiers",
               "snippet": "Sep 7, 2026 · Last but not the least; translating classical drug discovery algorithms to the quantum model is also a significant challenge, and as such, quantum-specific algorithms, which can solve real-life drug discovery problems, need to be designed.",
-              "expected": true,
+              "expected": false,
               "reason": "drug discovery review (HTML)"
             },
             {
@@ -566,14 +566,14 @@
               "url": "https://www.sciencedirect.com/science/article/pii/S0167779926000089",
               "title": "Quantum computing for biotechnological innovation ...",
               "snippet": "Oct 1, 2026 · Quantum computing has emerged as a potential catalyst for addressing computational bottlenecks that increasingly constrain biotechnologies, including drug discovery, structural biology, and precision medicine.",
-              "expected": false,
+              "expected": true,
               "reason": ""
             },
             {
               "url": "https://www.sciencedirect.com/org/science/article/pii/S2397856225000035",
               "title": "What is the future role of quantum computation in drug discovery?",
               "snippet": "Sep 11, 2025 · In this article, we describe how this interplay in identifying appropriate challenges and moving towards solutions can affect drug design in the next five years. Before going into further details, it is important to outline what we mean by a ‘classical’ approach to simulating quantum chemistry.",
-              "expected": false,
+              "expected": true,
               "reason": ""
             }
           ]
@@ -599,7 +599,7 @@
               "url": "https://link.springer.com/chapter/10.1007/978-3-032-10947-7_25",
               "title": "Impact of Quantum Computing on Cryptography - Springer",
               "snippet": "Jan 2, 2026 · Current cryptography depends, to a large extent, on the computational difficulty of solving certain highly complex mathematical problems. Therefore, this article seeks to contextualize the principles of quantum computing, analyzing its impact on current cryptography.",
-              "expected": true,
+              "expected": false,
               "reason": "2026 Springer chapter on cryptography impact"
             },
             {
@@ -620,7 +620,7 @@
               "url": "https://www.techtarget.com/searchdatacenter/feature/Explore-the-impact-of-quantum-computing-on-cryptography",
               "title": "Explore the impact of quantum computing on cryptography",
               "snippet": "Apr 23, 2025 · Understand the impact of quantum computing on cryptography, why it could make today's encryption methods vulnerable and ways to prepare for the threat.",
-              "expected": false,
+              "expected": true,
               "reason": ""
             },
             {
@@ -653,7 +653,7 @@
               "url": "https://dl.acm.org/doi/full/10.1145/3678184",
               "title": "Optimization Applications as Quantum Performance Benchmarks",
               "snippet": "The new benchmark exercises multiple components of the integrated hybrid quantum-classical computer systems on which quantum optimization applications run and mimics their real-world use.",
-              "expected": false,
+              "expected": true,
               "reason": ""
             },
             {

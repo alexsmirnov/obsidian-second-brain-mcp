@@ -68,9 +68,10 @@ Produce a research plan:
 """
 
 _SELECT_URLS_PROMPT = """You choose which search results are worth reading.
+The goal of result selection is to reduce research context to the minimal data necessary to answer question.
 Consider the whole candidate pool against the user question, and the KNOWLEDGE GAP when present.
-Select complementary sources that cover distinct subquestions, in priority order by relevance and authority.
-Prefer primary sources and official documentation. Prefer HTML over raw PDFs or binary files when the evidence is comparable.
+Select complementary sources that cover question and may resolve knowledge gap, in priority order by relevance and authority.
+Prefer primary sources and official documentation: restpectful media, vendor documentation, official sites, known expert opinions.
 Return the 0-based indices of at most MAX PAGES candidates without duplicates of the same article, or fewer when fewer are useful, or an empty list when nothing is worth reading.
 """
 
