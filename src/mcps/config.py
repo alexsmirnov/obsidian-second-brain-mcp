@@ -1,250 +1,348 @@
 # mcps/config.py
 import logging
 import os
-import re
-from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Annotated, Any, Literal, Self
+from urllib.parse import urlparse
 
 from dotenv import load_dotenv
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_validator,
+)
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
-from mcps.rag.document_processing import default_skip_patterns
+__all__ = [
+    "ENV_GROUPS",
+    "BrowserSettings",
+    "ChunkingSettings",
+    "FetchSettings",
+    "GoogleSettings",
+    "RagSettings",
+    "ResearchLimits",
+    "ResearchSettings",
+    "RouterSettings",
+    "ScraperSettings",
+    "SearchSettings",
+    "ServerConfig",
+    "VaultSettings",
+    "create_config",
+]
 
 logger = logging.getLogger("mcps.config")
 
+DOTENV_PATHS: tuple[Path, ...] = (
+    Path(__file__).parents[2] / ".env",
+    Path.home() / ".env",
+)
 
-@dataclass
-class ServerConfig:
-    prompts_dir: Path = field(default_factory=lambda: Path(__file__).parent / "prompts")
-    cache_dir: Path = field(default_factory=lambda: Path(__file__).parent / "cache")
-    tests_dir: Path = field(default_factory=lambda: Path(__file__).parent / "tests")
-    library_docs: dict[str, str] = field(default_factory=dict)
-    project_paths: dict[str, str] = field(default_factory=dict)
-    router_api_base: str = ""
-    router_api_key: str = ""
-    # Obsidian Vault configuration
-    vault_dir: Path | None = None
+
+def _is_valid_router_url(url: str) -> bool:
+    parsed = urlparse(url)
+    try:
+        _ = parsed.port
+    except ValueError:
+        return False
+    return (
+        parsed.scheme in ("http", "https")
+        and bool(parsed.hostname)
+        and not parsed.username
+        and not parsed.password
+        and not parsed.query
+        and not parsed.fragment
+    )
+
+
+class _EnvGroup(BaseSettings):
+    """Base of every settings group: frozen, strict, empty env value = default."""
+
+    model_config = SettingsConfigDict(
+        env_ignore_empty=True,
+        allow_inf_nan=False,
+        extra="forbid",
+        frozen=True,
+    )
+
+
+class RouterSettings(_EnvGroup):
+    """OpenAI-compatible model router shared by every AI feature."""
+
+    model_config = SettingsConfigDict(env_prefix="ROUTER_")
+
+    api_base: str = ""
+    # Used instead of ``api_base`` when running inside a Docker container.
+    docker_api_base: str = ""
+    api_key: str = ""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _prefer_docker_api_base(cls, data: Any) -> Any:
+        if (
+            isinstance(data, dict)
+            and data.get("docker_api_base")
+            and os.path.isfile("/.dockerenv")
+        ):
+            return {**data, "api_base": data["docker_api_base"]}
+        return data
+
+    @field_validator("api_base")
+    @classmethod
+    def _valid_router_url(cls, value: str) -> str:
+        if value and not _is_valid_router_url(value):
+            raise ValueError(
+                "must be an http(s) URL with a host and no credentials, "
+                f"query or fragment, got {value!r}"
+            )
+        return value
+
+
+class RagSettings(_EnvGroup):
+    """Models for Obsidian vault indexing, reranking and search.
+
+    All model values are empty by default and must be supplied through
+    environment variables (see env.example).
+    """
+
+    model_config = SettingsConfigDict(env_prefix="RAG_")
+
+    embedding_model: str = ""
+    embedding_dimensions: int = Field(default=0, ge=0)
+    # Rerank model used by ProxyReranker.
+    reranker_model: str = ""
+    # Embeddings and inference models used by LlmReranker.
+    reranker_embedding_model: str = ""
+    reranker_embedding_dimensions: int = Field(default=0, ge=0)
+    reranker_infer_model: str = ""
+    infer_model: str = ""
+    summary_model: str = ""
+
+    @model_validator(mode="after")
+    def _embedding_model_needs_dimensions(self) -> Self:
+        if self.embedding_model and self.embedding_dimensions < 1:
+            raise ValueError(
+                "RAG_EMBEDDING_DIMENSIONS must match RAG_EMBEDDING_MODEL "
+                "(LanceDB schema creation needs it)"
+            )
+        return self
+
+
+class VaultSettings(_EnvGroup):
+    """Obsidian vault location and agent memory storage."""
+
+    model_config = SettingsConfigDict(env_prefix="VAULT_")
+
+    dir: Path | None = Field(default=None, alias="VAULT")
     # Vault-relative folder where agent memories are stored.
-    memory_dir: str = "Memory"
+    memory_dir: str = Field(default="Memory", alias="MEMORY_DIR")
     table_name: str = "documents"
-    skip_patterns: list[str] = field(default_factory=list)
-    batch_size: int = 8
-    # Chunking configuration
-    min_chunk_size: int = 500
-    max_chunk_size: int = 1000
 
-    # RAG models. All model values are intentionally empty by default and must
-    # be supplied through environment variables (see env.example).
-    rag_embedding_model: str = ""
-    rag_embedding_dimensions: int = 0
-    rag_reranker_model: str = ""  # Rerank model to use in ProxyReranker
-    # Embeddings and inference models used by LlmReranker
-    rag_reranker_embedding_model: str = ""
-    rag_reranker_embedding_dimensions: int = 0
-    rag_reranker_infer_model: str = ""
-    rag_infer_model: str = ""
-    rag_summary_model: str = ""
 
-    search_limit: int = 30
-    # Minimum reranker relevance score for a search result to be returned.
-    # 0.0 keeps all results: reranker score scales differ (RRF ~0.016,
-    # LLM/proxy rerankers 0..1), so any positive default would silently
-    # drop all RRF-scored results.
-    min_score: float = 0.0
-    # Web deep research config
-    google_api_key: str = ""
-    google_search_id: str = ""
-    # used to generate queries and clean fetch results
-    research_fast_model: str = ""
-    # used for reflection and final result generation
-    research_infer_model: str = ""
+class ChunkingSettings(_EnvGroup):
+    """Semantic chunk size bounds, in characters."""
+
+    min_size: int = Field(default=500, gt=0, alias="MIN_CHUNK_SIZE")
+    max_size: int = Field(default=1000, gt=0, alias="MAX_CHUNK_SIZE")
+
+    @model_validator(mode="after")
+    def _min_not_above_max(self) -> Self:
+        if self.min_size > self.max_size:
+            raise ValueError(
+                f"MIN_CHUNK_SIZE ({self.min_size}) must not exceed "
+                f"MAX_CHUNK_SIZE ({self.max_size})"
+            )
+        return self
+
+
+class SearchSettings(_EnvGroup):
+    """Vault search result limits."""
+
+    model_config = SettingsConfigDict(env_prefix="SEARCH_")
+
+    limit: int = Field(default=30, ge=1)
+    # Minimum reranker relevance score for a result to be returned. 0.0 keeps
+    # all results: reranker score scales differ (RRF ~0.016, LLM/proxy
+    # rerankers 0..1), so any positive default would silently drop all
+    # RRF-scored results.
+    min_score: float = Field(default=0.0, ge=0.0, le=1.0, alias="MIN_SCORE")
+
+
+class GoogleSettings(_EnvGroup):
+    """Google Custom Search credentials; Yahoo is used when absent."""
+
+    model_config = SettingsConfigDict(env_prefix="GOOGLE_")
+
+    api_key: str = ""
+    search_id: str = ""
+
+
+class BrowserSettings(_EnvGroup):
+    """CDP browser pool, reconnect and cleanup settings."""
+
+    model_config = SettingsConfigDict(env_prefix="BROWSER_")
+
     # CDP endpoint used to render generic pages; empty or unreachable disables
     # web_research.
-    browser_cdp_url: str = ""
+    cdp_url: str = ""
+    # Named tabs reused across fetches; also the cap on parallel renders.
+    pool_size: int = Field(default=8, ge=1)
+    # Attempts to start a replacement crawler after the connection is lost.
+    reconnect_attempts: int = Field(default=5, ge=1)
+    # Pause before each reconnect attempt.
+    reconnect_delay_seconds: float = Field(default=2.0, ge=0)
+    # Time limit for connecting one crawler to the CDP endpoint.
+    connect_timeout_seconds: float = Field(default=30.0, gt=0)
+    # Extra tries of a fetch whose browser connection was lost.
+    fetch_retries: int = Field(default=1, ge=0)
+    # Time limit for resetting a tab or closing a crawler.
+    cleanup_timeout_seconds: float = Field(default=5.0, gt=0)
+
+
+class ScraperSettings(_EnvGroup):
+    """Commercial unblocking provider for blocked or unrenderable pages."""
+
+    provider: Literal["", "scrape_do", "bright_data"] = Field(
+        default="", alias="SCRAPER_PROVIDER"
+    )
+    scrape_do_token: str = Field(default="", alias="SCRAPE_DO_TOKEN")
+    bright_data_api_key: str = Field(default="", alias="BRIGHT_DATA_API_KEY")
+    bright_data_zone: str = Field(default="", alias="BRIGHT_DATA_ZONE")
+
+    @model_validator(mode="after")
+    def _provider_has_credentials(self) -> Self:
+        if self.provider == "scrape_do" and not self.scrape_do_token:
+            raise ValueError("SCRAPER_PROVIDER=scrape_do requires SCRAPE_DO_TOKEN")
+        if self.provider == "bright_data" and not (
+            self.bright_data_api_key and self.bright_data_zone
+        ):
+            raise ValueError(
+                "SCRAPER_PROVIDER=bright_data requires BRIGHT_DATA_API_KEY "
+                "and BRIGHT_DATA_ZONE"
+            )
+        return self
+
+
+class FetchSettings(_EnvGroup):
+    """Content filtering and fetch routing."""
+
+    # Router decision model for per-fragment relevance. Empty selects local
+    # lexical filtering.
+    decision_model: str = Field(default="", alias="DECISION_MODEL")
+    # Hostnames (and their subdomains) fetch must never visit.
+    restricted_domains: Annotated[tuple[str, ...], NoDecode] = Field(
+        default=(), alias="FETCH_RESTRICTED_DOMAINS"
+    )
+
+    @field_validator("restricted_domains", mode="before")
+    @classmethod
+    def _split_domains(cls, value: Any) -> tuple[str, ...]:
+        parts = value.split(",") if isinstance(value, str) else value
+        return tuple(part.strip().lower() for part in parts if part.strip())
+
+
+class ResearchLimits(_EnvGroup):
+    """Tunable bounds for one deep research run."""
+
+    model_config = SettingsConfigDict(env_prefix="RESEARCH_")
+
+    # Seconds since start; no new round begins after it.
+    round_start_budget: float = Field(default=180.0, gt=0)
+    max_pages_per_round: int = Field(default=10, ge=1)
+    max_initial_queries: int = Field(default=3, ge=1)
+    # Independent limit for search_queries and for links.
+    max_follow_ups: int = Field(default=5, ge=1)
+    # First call plus re-prompts on invalid structured output.
+    max_parse_attempts: int = Field(default=3, ge=1)
+
+
+class ResearchSettings(_EnvGroup):
+    """Web research models and background job timing."""
+
+    model_config = SettingsConfigDict(env_prefix="RESEARCH_")
+
+    # Generates queries and cleans fetch results.
+    fast_model: str = ""
+    # Reflection and final result generation.
+    infer_model: str = ""
     # web_research waits this long for a job before returning its name; keep it
     # below the MCP client timeout (30 s by default).
-    research_wait_seconds: float = 25.0
+    wait_seconds: float = Field(default=25.0, gt=0)
     # Finished research jobs are dropped this long after their last update.
-    research_job_ttl_seconds: float = 3600.0
-    # Commercial unblocking provider for blocked (401/403/429), empty, timeout,
-    # or browser-unavailable pages: "scrape_do", "bright_data", or "" (disabled).
-    scraper_provider: str = ""
-    scrape_do_token: str = ""
-    bright_data_api_key: str = ""
-    bright_data_zone: str = ""
-    # Content filtering and fetch routing
-    # Router decision model (TypeSafe System One) for per-fragment relevance.
-    # Empty selects local lexical filtering.
-    decision_model: str = ""
-    # Hostnames (and their subdomains) fetch must never visit.
-    fetch_restricted_domains: tuple[str, ...] = ()
-    # Browser session pool: named tabs reused across fetches. The pool size is
-    # also the cap on parallel browser renders across all research branches.
-    browser_pool_size: int = 8
-    # Attempts to start a replacement crawler after the connection is lost.
-    browser_reconnect_attempts: int = 5
-    # Pause before each reconnect attempt.
-    browser_reconnect_delay_seconds: float = 2.0
-    # Time limit for connecting one crawler to the CDP endpoint.
-    browser_connect_timeout_seconds: float = 30.0
-    # Extra tries of a fetch whose browser connection was lost.
-    browser_fetch_retries: int = 1
-    # Time limit for resetting a tab or closing a crawler.
-    browser_cleanup_timeout_seconds: float = 5.0
-
-def _parse_restricted_domains(raw: str) -> tuple[str, ...]:
-    """Parse a comma-separated domain list into lowercase, trimmed entries."""
-    return tuple(domain.strip().lower() for domain in raw.split(",") if domain.strip())
-
-def create_config(
-    prompts_dir: Path = Path("./prompts"),
-    cache_dir: Path = Path("./cache"),
-    tests_dir: Path = Path("./tests"),
-    library_docs: dict[str, str] | None = None,
-    project_paths: dict[str, str] | None = None,
-    vault_dir: Path | None = None,
-) -> ServerConfig:
-    """
-    Creates a ServerConfig instance, ensuring directories exist and
-    handling default values for library_docs and project_paths.
-    """
-    # Load environment variables from .env files
-    for env_path in [
-        Path(__file__).parent.parent.parent,
-        Path.home()
-    ]:
-        dotenv_path = env_path / ".env"
-        if dotenv_path.exists():
-            load_dotenv(dotenv_path)
-
-    # Use provided dictionaries or default to empty dictionaries
-    library_docs = library_docs if library_docs is not None else {}
-    project_paths = project_paths if project_paths is not None else {}
-
-    config = ServerConfig(
-        prompts_dir=prompts_dir,
-        cache_dir=cache_dir,
-        tests_dir=tests_dir,
-        library_docs=library_docs,
-        project_paths=project_paths,
-        router_api_base=os.getenv(
-            (
-                "ROUTER_DOCKER_API_BASE"
-                if os.path.isfile("/.dockerenv")
-                else "ROUTER_API_BASE"
-            ),
-            "",
-        ),
-        router_api_key=os.getenv("ROUTER_API_KEY", ""),
-        rag_embedding_model=os.getenv("RAG_EMBEDDING_MODEL", ""),
-        rag_embedding_dimensions=int(os.getenv("RAG_EMBEDDING_DIMENSIONS", "0")),
-        rag_reranker_model=os.getenv("RAG_RERANKER_MODEL", ""),
-        rag_reranker_embedding_model=os.getenv("RAG_RERANKER_EMBEDDING_MODEL", ""),
-        rag_reranker_embedding_dimensions=int(
-            os.getenv("RAG_RERANKER_EMBEDDING_DIMENSIONS", "0")
-        ),
-        rag_reranker_infer_model=os.getenv("RAG_RERANKER_INFER_MODEL", ""),
-        rag_infer_model=os.getenv("RAG_INFER_MODEL", ""),
-        rag_summary_model=os.getenv("RAG_SUMMARY_MODEL", ""),
-        research_fast_model=os.getenv("RESEARCH_FAST_MODEL", ""),
-        research_infer_model=os.getenv("RESEARCH_INFER_MODEL", ""),
-        vault_dir=(
-            vault_dir
-            if vault_dir is not None
-            else (Path(env_vault) if (env_vault := os.getenv("VAULT")) else None)
-        ),
-        memory_dir=os.environ.get("MEMORY_DIR") or "Memory",
-        skip_patterns=default_skip_patterns,
-        min_chunk_size=int(os.environ.get("MIN_CHUNK_SIZE") or 500),
-        max_chunk_size=int(os.environ.get("MAX_CHUNK_SIZE") or 1000),
-        min_score=float(os.environ.get("MIN_SCORE") or 0.0),
-        google_api_key=os.environ.get("GOOGLE_API_KEY", ""),
-        google_search_id=os.environ.get("GOOGLE_SEARCH_ID", ""),
-        browser_cdp_url=os.environ.get("BROWSER_CDP_URL", ""),
-        research_wait_seconds=float(os.environ.get("RESEARCH_WAIT_SECONDS") or 25.0),
-        research_job_ttl_seconds=float(
-            os.environ.get("RESEARCH_JOB_TTL_SECONDS") or 3600.0
-        ),
-        scraper_provider=os.environ.get("SCRAPER_PROVIDER", ""),
-        scrape_do_token=os.environ.get("SCRAPE_DO_TOKEN", ""),
-        bright_data_api_key=os.environ.get("BRIGHT_DATA_API_KEY", ""),
-        bright_data_zone=os.environ.get("BRIGHT_DATA_ZONE", ""),
-        decision_model=os.environ.get("DECISION_MODEL", ""),
-        fetch_restricted_domains=_parse_restricted_domains(
-            os.environ.get("FETCH_RESTRICTED_DOMAINS", "")
-        ),
-        browser_pool_size=int(os.environ.get("BROWSER_POOL_SIZE") or 2),
-        browser_reconnect_attempts=int(
-            os.environ.get("BROWSER_RECONNECT_ATTEMPTS") or 5
-        ),
-        browser_reconnect_delay_seconds=float(
-            os.environ.get("BROWSER_RECONNECT_DELAY_SECONDS") or 2.0
-        ),
-        browser_connect_timeout_seconds=float(
-            os.environ.get("BROWSER_CONNECT_TIMEOUT_SECONDS") or 30.0
-        ),
-        browser_fetch_retries=int(os.environ.get("BROWSER_FETCH_RETRIES") or 1),
-        browser_cleanup_timeout_seconds=float(
-            os.environ.get("BROWSER_CLEANUP_TIMEOUT_SECONDS") or 5.0
-        ),
-    )
-    validate_config(config)
-    return config
+    job_ttl_seconds: float = Field(default=3600.0, gt=0)
 
 
-def validate_config(config: ServerConfig) -> None:
-    """Warn about configuration combinations that cannot work at runtime.
+ENV_GROUPS: tuple[type[BaseSettings], ...] = (
+    RouterSettings,
+    RagSettings,
+    VaultSettings,
+    ChunkingSettings,
+    SearchSettings,
+    GoogleSettings,
+    BrowserSettings,
+    ScraperSettings,
+    FetchSettings,
+    ResearchLimits,
+    ResearchSettings,
+)
 
-    Validation is intentionally non-fatal so the server can start with a
-    subset of features enabled (e.g. no vault, no AI tools).
-    """
-    if config.min_chunk_size <= 0 or config.max_chunk_size <= 0:
-        logger.warning(
-            "min_chunk_size (%d) and max_chunk_size (%d) must be positive integers.",
-            config.min_chunk_size,
-            config.max_chunk_size,
-        )
-    elif config.min_chunk_size > config.max_chunk_size:
-        logger.warning(
-            "min_chunk_size (%d) is greater than max_chunk_size (%d). "
-            "Undersized sections will be merged up to max_chunk_size.",
-            config.min_chunk_size,
-            config.max_chunk_size,
-        )
 
-    if config.browser_pool_size < 1:
-        logger.warning(
-            "browser_pool_size (%d) must be at least 1; check BROWSER_POOL_SIZE.",
-            config.browser_pool_size,
-        )
+class ServerConfig(BaseModel):
+    """Server configuration: one validated settings group per feature."""
 
-    if not 0.0 <= config.min_score <= 1.0:
-        logger.warning(
-            "min_score (%.3f) is outside the reranker score range [0, 1]. "
-            "Search will drop all or no results; check MIN_SCORE.",
-            config.min_score,
-        )
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
-    if not config.router_api_base:
-        if config.research_fast_model or config.research_infer_model:
+    router: RouterSettings = Field(default_factory=RouterSettings)
+    rag: RagSettings = Field(default_factory=RagSettings)
+    vault: VaultSettings = Field(default_factory=VaultSettings)
+    chunking: ChunkingSettings = Field(default_factory=ChunkingSettings)
+    search: SearchSettings = Field(default_factory=SearchSettings)
+    google: GoogleSettings = Field(default_factory=GoogleSettings)
+    browser: BrowserSettings = Field(default_factory=BrowserSettings)
+    scraper: ScraperSettings = Field(default_factory=ScraperSettings)
+    fetch: FetchSettings = Field(default_factory=FetchSettings)
+    research: ResearchSettings = Field(default_factory=ResearchSettings)
+    research_limits: ResearchLimits = Field(default_factory=ResearchLimits)
+
+    @model_validator(mode="after")
+    def _warn_about_models_without_router(self) -> Self:
+        """Warn about feature combinations that cannot work at runtime.
+
+        Non-fatal so the server can start with a subset of features enabled
+        (e.g. no vault, no AI tools).
+        """
+        if self.router.api_base:
+            return self
+        if self.research.fast_model or self.research.infer_model:
             logger.warning(
                 "Web research models are configured but ROUTER_API_BASE is empty. "
                 "Web research will fail until a router URL is provided."
             )
-        if config.decision_model:
+        if self.fetch.decision_model:
             logger.warning(
                 "DECISION_MODEL is configured but ROUTER_API_BASE is empty. "
                 "Fetch filtering will use lexical ranking."
             )
-        if config.rag_embedding_model:
+        if self.rag.embedding_model:
             logger.warning(
                 "RAG embedding model is configured but ROUTER_API_BASE is empty. "
                 "Obsidian vault indexing and search will fail until a router URL "
                 "is provided."
             )
+        return self
 
-    if config.rag_embedding_model and not config.rag_embedding_dimensions:
-        logger.warning(
-            "RAG_EMBEDDING_MODEL is set but RAG_EMBEDDING_DIMENSIONS is 0. "
-            "LanceDB schema creation will fail; set the dimension to match "
-            "the embedding model."
-        )
+
+def create_config(vault_dir: Path | None = None) -> ServerConfig:
+    """Load ``.env`` files, then build the config from the environment.
+
+    ``vault_dir`` (the ``--vault`` CLI option) wins over ``VAULT``. Real
+    environment variables win over ``.env`` values.
+    """
+    for dotenv_path in DOTENV_PATHS:
+        if dotenv_path.exists():
+            load_dotenv(dotenv_path)
+
+    if vault_dir is None:
+        return ServerConfig()
+    return ServerConfig(vault=VaultSettings(VAULT=vault_dir))

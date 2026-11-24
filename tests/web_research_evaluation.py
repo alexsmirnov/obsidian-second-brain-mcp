@@ -58,7 +58,11 @@ async def main():
             judge = create_judge_model(server_config, http_client=http_client)
 
             logger.info("Creating research agent...")
-            agent = create_researcher(config, implementation="deep_research")
+            agent = create_researcher(
+                config,
+                implementation="deep_research",
+                limits=server_config.research_limits,
+            )
 
             logger.info("Loading DRACO questions (Technology + Academic)...")
             questions = load_draco_questions()[:5]

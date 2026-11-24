@@ -2,7 +2,6 @@
 
 import logging
 from collections.abc import AsyncIterator
-from dataclasses import replace
 
 import httpx
 import pyarrow as pa
@@ -15,6 +14,8 @@ from mcps.rag.llm_reranker import LlmReranker
 from mcps.rag.vault import create_reranker
 
 logger = logging.getLogger(__name__)
+
+pytestmark = pytest.mark.real_env
 
 # (inference_model, embedding_model, embedding_dimensions)
 MODEL_CASES: list[tuple[str, str, int]] = [
@@ -57,7 +58,7 @@ async def async_client() -> AsyncIterator[httpx.AsyncClient]:
 @pytest.fixture
 def server_config() -> ServerConfig:
     config = create_config()
-    if not config.router_api_base or not config.router_api_key:
+    if not config.router.api_base or not config.router.api_key:
         pytest.skip(
             "ROUTER_API_BASE / ROUTER_API_KEY are not set; "
             "reranker tests need them to build a chat model + embeddings."
@@ -72,12 +73,14 @@ def reranker(
     async_client: httpx.AsyncClient,
 ) -> Reranker:
     infer_model, embed_model, dimensions = request.param
-    config = replace(
-        server_config,
-        rag_reranker_infer_model=infer_model,
-        rag_embedding_model=embed_model,
-        rag_embedding_dimensions=dimensions,
+    rag = server_config.rag.model_copy(
+        update={
+            "reranker_infer_model": infer_model,
+            "embedding_model": embed_model,
+            "embedding_dimensions": dimensions,
+        }
     )
+    config = server_config.model_copy(update={"rag": rag})
     return create_reranker(config, async_client)
 
 
@@ -178,7 +181,8 @@ class TestCreateRerankerEmbeddingOnly:
 
     @pytest.fixture
     def embedding_only_config(self, server_config: ServerConfig) -> ServerConfig:
-        return replace(server_config, rag_reranker_infer_model="")
+        rag = server_config.rag.model_copy(update={"reranker_infer_model": ""})
+        return server_config.model_copy(update={"rag": rag})
 
     def test_factory_creates_llm_reranker_without_chat_model(
         self,

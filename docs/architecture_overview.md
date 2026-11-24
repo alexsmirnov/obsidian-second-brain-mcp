@@ -64,7 +64,7 @@ The architecture follows a **Dependency Injection** pattern with clear interface
 ```
 main() [src/mcps/server.py:192-235]
   ↓
-create_config() [src/mcps/config.py:52-107]
+create_config() [src/mcps/config.py:336]
   ↓
 create_server() [src/mcps/server.py:134-146]
   ↓
@@ -114,7 +114,7 @@ The RAG pipeline in [src/mcps/rag/vault.py:252-556](../src/mcps/rag/vault.py#L25
 - Splits by markdown headers (H1-H3)
 - Merges small sections to meet minimum chunk size
 - Splits large sections by paragraphs
-- Default: max_chunk_size=2000, min_chunk_size=1000 (250-500 tokens)
+- Default: max_chunk_size=1000, min_chunk_size=500, set by `MAX_CHUNK_SIZE` and `MIN_CHUNK_SIZE`
 
 **Chunk Creation** [src/mcps/rag/document_processing.py:56-93](../src/mcps/rag/document_processing.py#L56-L93):
 - Extracts outgoing wikilinks using regex patterns
@@ -158,17 +158,17 @@ The RAG pipeline in [src/mcps/rag/vault.py:252-556](../src/mcps/rag/vault.py#L25
 
 Jobs are handled by `ResearchJobs` in [src/mcps/research/jobs.py](../src/mcps/research/jobs.py) and stored behind the async `JobStore` protocol. The default `InMemoryJobStore` keeps only the last progress message per job and drops finished jobs `research_job_ttl_seconds` after their last update (checked on each create and get; there is no cleanup task). Waiting reads only the stored record, so a persistent store can replace the in-memory one without changing the tools. A persistent store must mark `running` jobs as `failed` at startup, because their tasks do not survive a restart. If a client cancels right after a call returned, the job keeps running until it ends on its own. Running jobs are cancelled when the server shuts down, before the browser closes.
 
-**ObsidianTools** [src/mcps/tools/obsidian_vault.py:208-244](../src/mcps/tools/obsidian_vault.py#L208-L244) - Registered only when `config.vault_dir` is set:
+**ObsidianTools** [src/mcps/tools/obsidian_vault.py:208-244](../src/mcps/tools/obsidian_vault.py#L208-L244) - Registered only when `config.vault.dir` is set:
 - `obsidian_list_files` - List files and subfolders in a vault folder
 - `obsidian_read_note` - Retrieve note content by full path, partial path, or name with optional line-based offset/limit
 - `obsidian_rename_move` - Rename/move notes and rewrite outgoing wikilinks
 - `obsidian_search` - Semantic search in vault with tag/path filtering
 
-**MemoryTools** [src/mcps/tools/vault_memory.py](../src/mcps/tools/vault_memory.py) - Registered together with ObsidianTools. They store agent memories as notes in the vault folder named by `memory_dir`. The existing search and read tools retrieve them.
+**MemoryTools** [src/mcps/tools/vault_memory.py](../src/mcps/tools/vault_memory.py) - Registered together with ObsidianTools. They store agent memories as notes in the vault folder named by `config.vault.memory_dir`. The existing search and read tools retrieve them.
 - `add_memory` - Create a note `<memory_dir>/<project>/<name>.md`; `project` defaults to `general`. It fails if the note exists, and it returns the vault path of the new note.
 - `delete_memory` - Permanently delete one note in the memory folder. It takes the same note references as `obsidian_read_note` (full path, partial path, or bare name). It is marked as destructive.
 
-**ExposedSkillsProvider** [src/mcps/tools/vault_skills.py](../src/mcps/tools/vault_skills.py) - Added when `config.vault_dir` is set. It serves each `Claude/skills/<name>/SKILL.md` in the vault whose frontmatter has `exposed: true` as the MCP resource `skill://<name>/SKILL.md`. It scans the folder again on every request.
+**ExposedSkillsProvider** [src/mcps/tools/vault_skills.py](../src/mcps/tools/vault_skills.py) - Added when `config.vault.dir` is set. It serves each `Claude/skills/<name>/SKILL.md` in the vault whose frontmatter has `exposed: true` as the MCP resource `skill://<name>/SKILL.md`. It scans the folder again on every request.
 
 ### Registered Resources
 

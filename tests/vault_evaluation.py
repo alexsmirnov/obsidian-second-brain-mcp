@@ -359,9 +359,15 @@ async def vault_evaluator(
         Configured VaultEvaluationTest instance with an indexed vault
     """
     config = create_config(vault_dir=test_content_path)
-    config.table_name = "evaluation_test"
+    config = config.model_copy(
+        update={
+            "vault": config.vault.model_copy(
+                update={"table_name": "evaluation_test"}
+            )
+        }
+    )
 
-    if not config.router_api_base or not config.router_api_key:
+    if not config.router.api_base or not config.router.api_key:
         pytest.skip("ROUTER_API_BASE / ROUTER_API_KEY are not configured")
 
     evaluator = VaultEvaluationTest(test_content_path, config)
@@ -467,9 +473,15 @@ if __name__ == "__main__":
             return
 
         config = create_config(vault_dir=test_content_path)
-        config.table_name = "evaluation_test"
+        config = config.model_copy(
+            update={
+                "vault": config.vault.model_copy(
+                    update={"table_name": "evaluation_test"}
+                )
+            }
+        )
 
-        if not config.router_api_base or not config.router_api_key:
+        if not config.router.api_base or not config.router.api_key:
             print(
                 "Error: ROUTER_API_BASE / ROUTER_API_KEY are not configured; "
                 "real embeddings are required for evaluation."

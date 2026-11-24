@@ -13,20 +13,23 @@ from evaluation.dataset import RubricCriterion
 from evaluation.judge import create_judge_model, judge_criterion
 from evaluation.scoring import CriterionVerdict
 
-from mcps.config import create_config
+from mcps.config import ServerConfig, create_config
 
-_CONFIG = create_config()
+pytestmark = pytest.mark.real_env
 
-pytestmark = pytest.mark.skipif(
-    not (_CONFIG.router_api_base and _CONFIG.router_api_key),
-    reason="LLM router environment variables not configured",
-)
+
+@pytest.fixture(scope="module")
+def server_config() -> ServerConfig:
+    config = create_config()
+    if not (config.router.api_base and config.router.api_key):
+        pytest.skip("LLM router environment variables not configured")
+    return config
 
 
 @pytest_asyncio.fixture
-async def evaluation_model():
+async def evaluation_model(server_config: ServerConfig):
     async with httpx.AsyncClient(timeout=30.0) as http_client:
-        yield create_judge_model(_CONFIG, http_client=http_client)
+        yield create_judge_model(server_config, http_client=http_client)
 
 
 class TestCriterionJudgeIntegration:

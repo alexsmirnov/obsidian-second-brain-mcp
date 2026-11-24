@@ -24,7 +24,6 @@ from mcps.research.tools.combinators import (
     Truncate,
     UrlSelector,
 )
-from mcps.research.tools.common import valid_router_url
 from mcps.research.tools.decision_ranker import DecisionRanker
 from mcps.research.tools.default import HttpFetch
 from mcps.research.tools.extractors import extractor_for_mime, extractor_for_url
@@ -132,31 +131,17 @@ def _create_provider_fallback(
     config: ServerConfig, http_client: httpx.AsyncClient
 ) -> Fetch | None:
     """Build the commercial unblocking provider, or None when unconfigured."""
-    match config.scraper_provider:
-        case "":
-            return None
-        case "scrape_do" if config.scrape_do_token:
+    match config.scraper.provider:
+        case "scrape_do":
             return ScrapeDoFetch(
-                config.scrape_do_token,
+                config.scraper.scrape_do_token,
                 http_client=http_client,
             )
-        case "bright_data" if config.bright_data_api_key and config.bright_data_zone:
+        case "bright_data":
             return BrightDataFetch(
-                config.bright_data_api_key,
-                config.bright_data_zone,
+                config.scraper.bright_data_api_key,
+                config.scraper.bright_data_zone,
                 http_client=http_client,
-            )
-        case "scrape_do" | "bright_data":
-            logger.warning(
-                "SCRAPER_PROVIDER=%s is missing credentials; provider fallback "
-                "disabled.",
-                config.scraper_provider,
-            )
-        case _:
-            logger.warning(
-                "Unknown SCRAPER_PROVIDER=%s (expected scrape_do or bright_data); "
-                "provider fallback disabled.",
-                config.scraper_provider,
             )
     return None
 
@@ -174,25 +159,16 @@ DECISION_WINDOW = (5000, 1500)
 
 
 def _decision_configured(config: ServerConfig) -> bool:
-    """True when DECISION_MODEL and a valid router URL are set."""
-    if not config.decision_model:
-        return False
-    if valid_router_url(config.router_api_base):
-        return True
-    logger.warning(
-        "DECISION_MODEL=%s requires a valid router URL; "
-        "falling back to the next ranker.",
-        config.decision_model,
-    )
-    return False
+    """True when DECISION_MODEL and a router URL are set."""
+    return bool(config.fetch.decision_model and config.router.api_base)
 
 
 def _decision_ranker(config: ServerConfig, http_client: httpx.AsyncClient) -> Ranker:
     client = DecisionClient(
         http_client,
-        router_url=config.router_api_base,
-        router_key=config.router_api_key,
-        model=config.decision_model,
+        router_url=config.router.api_base,
+        router_key=config.router.api_key,
+        model=config.fetch.decision_model,
     )
     return DecisionRanker(client)
 
@@ -252,5 +228,5 @@ async def build_fetch_tool(
             browser=browser,
             provider=_create_provider_fallback(config, http_client),
             page_filter=create_page_filter(config, http_client),
-            restricted_domains=config.fetch_restricted_domains,
+            restricted_domains=config.fetch.restricted_domains,
         )

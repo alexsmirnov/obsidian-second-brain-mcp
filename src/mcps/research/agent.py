@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, Literal, Protocol, TypedDict
 
+from mcps.config import ResearchLimits
 from mcps.research.deep_research import ResearchAgent
 
 if TYPE_CHECKING:
@@ -52,6 +53,8 @@ _RESEARCH_SYSTEM_PROMPT = (
 def create_researcher(
     config: ResearchConfig,
     implementation: Literal["react_agent", "deep_research"] = "react_agent",
+    *,
+    limits: ResearchLimits,
     **kwargs: Any,
 ) -> Researcher:
     """Create a LangGraph research agent.
@@ -59,6 +62,7 @@ def create_researcher(
     Args:
         config: Research configuration with model and tool references.
         implementation: Agent implementation variant to use.
+        limits: Bounds for one research run, from ``ServerConfig.research_limits``.
         **kwargs: Additional keyword arguments (reserved for future use).
 
     Returns:
@@ -69,7 +73,7 @@ def create_researcher(
     """
     match implementation:
         case "deep_research":
-            return ResearchAgent(config)
+            return ResearchAgent(config, limits=limits)
         case _:
             raise ValueError(
                 f"Unknown implementation: {implementation!r}. "

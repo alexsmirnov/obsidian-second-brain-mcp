@@ -12,7 +12,7 @@ import pytest
 from fastmcp import Client, Context, FastMCP
 from fastmcp.exceptions import ToolError, ValidationError
 
-from mcps.config import ServerConfig
+from mcps.config import ServerConfig, VaultSettings
 from mcps.rag.index_scheduler import IndexScheduler
 from mcps.rag.interfaces import (
     Chunk,
@@ -152,7 +152,7 @@ def make_context(
 async def test_obsidian_tools_are_registered_when_vault_dir_is_configured(
     tmp_path: Path,
 ):
-    config = ServerConfig(vault_dir=tmp_path)
+    config = ServerConfig(vault=VaultSettings(VAULT=tmp_path))
     server = create_server(config)
 
     tools = await server.mcp.list_tools()
@@ -163,7 +163,7 @@ async def test_obsidian_tools_are_registered_when_vault_dir_is_configured(
 
 @pytest.mark.asyncio
 async def test_obsidian_tools_are_not_registered_without_vault_dir():
-    config = ServerConfig(vault_dir=None)
+    config = ServerConfig(vault=VaultSettings(VAULT=None))
     server = create_server(config)
 
     tools = await server.mcp.list_tools()
@@ -1070,7 +1070,7 @@ async def test_obsidian_traverse_relations_tool_rejects_out_of_range_depth(
     tmp_path: Path,
 ) -> None:
     # Arrange
-    server = create_server(ServerConfig(vault_dir=tmp_path))
+    server = create_server(ServerConfig(vault=VaultSettings(VAULT=tmp_path)))
     tools = await server.mcp.list_tools()
     tool = next(tool for tool in tools if tool.name == "obsidian_traverse_relations")
 

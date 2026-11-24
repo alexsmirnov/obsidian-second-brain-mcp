@@ -121,9 +121,6 @@ Core dependencies [pyproject.toml:10-26](../pyproject.toml#L10-L26):
 - Log file: `mcps.log`
 - Rotating file handler: 10MB max size, 5 backups
 
-**Cache Directory**: Configurable via ServerConfig
-- Default: `./cache` relative to project root
-
 ### API Services
 
 External API services required for full functionality:

@@ -43,6 +43,32 @@ def _ensure_nltk_resources() -> list[str]:
     return _missing_nltk_resources()
 
 
+def _config_env_names() -> list[str]:
+    """Every environment variable name the config schema reads."""
+    from mcps.config import ENV_GROUPS
+
+    names: list[str] = []
+    for group in ENV_GROUPS:
+        prefix = group.model_config.get("env_prefix", "")
+        for name, field in group.model_fields.items():
+            alias = field.validation_alias
+            names.append(alias if isinstance(alias, str) else f"{prefix}{name}")
+    return [name.upper() for name in names]
+
+
+@pytest.fixture(autouse=True)
+def clean_config_env(request, monkeypatch):
+    """Hide the developer's environment and ``.env`` from config tests.
+
+    Tests marked ``real_env`` read the real environment and are left alone.
+    """
+    if request.node.get_closest_marker("real_env"):
+        return
+    for name in _config_env_names():
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr("mcps.config.load_dotenv", lambda *_args, **_kwargs: False)
+
+
 if missing := _ensure_nltk_resources():
     # Fail once with a clear setup hint instead of separate failures in ranker tests.
     pytest.exit(

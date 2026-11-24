@@ -15,7 +15,7 @@ import pymupdf
 import pytest
 from pytest_httpx import HTTPXMock
 
-from mcps.config import ServerConfig
+from mcps.config import GoogleSettings, ServerConfig
 from mcps.research.config import create_search_tool
 from mcps.research.tools import (
     create_fetch,
@@ -458,7 +458,9 @@ async def test_search_tool_uses_google_when_credentials_present(
         url=re.compile(re.escape(GOOGLE_CSE_URL) + r".*"),
         json={"items": [{"link": "https://g.example", "title": "G", "snippet": "g"}]},
     )
-    config = ServerConfig(google_api_key="key", google_search_id="cx")
+    config = ServerConfig(
+        google=GoogleSettings(api_key="key", search_id="cx"),
+    )
     search = create_search_tool(config=config, http_client=client)
 
     results = await search("q")

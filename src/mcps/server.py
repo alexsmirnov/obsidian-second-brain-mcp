@@ -142,7 +142,7 @@ class DevAutomationServer:
     def __init__(self, config: ServerConfig):
         self.config = config
         server_lifespan = build_research_lifespan(self.config)
-        if config.vault_dir:
+        if config.vault.dir:
             server_lifespan = server_lifespan | obsidian_vault.build_obsidian_lifespan(
                 self.config
             )
@@ -151,9 +151,9 @@ class DevAutomationServer:
             instructions=_SERVER_INSTRUCTIONS,
             lifespan=server_lifespan,
         )
-        if config.vault_dir:
+        if config.vault.dir:
             self.mcp.add_provider(
-                ExposedSkillsProvider(config.vault_dir / "Claude" / "skills")
+                ExposedSkillsProvider(config.vault.dir / "Claude" / "skills")
             )
 
     def register(self):
@@ -199,7 +199,7 @@ class DevAutomationServer:
                     "Start a new web_research call."
                 ) from None
 
-        if self.config.vault_dir:
+        if self.config.vault.dir:
             obsidian_vault.register_tools(self.mcp)
             vault_memory.register_tools(self.mcp)
 
@@ -283,14 +283,14 @@ def main(argv: list[str] | None = None) -> int:
     config = create_config(vault_dir=args.vault)
 
     if args.reindex:
-        if config.vault_dir is None:
+        if config.vault.dir is None:
             logger.error(
                 "--reindex requires a vault path via --vault or the VAULT env var"
             )
             return 1
-        if not config.vault_dir.exists() or not config.vault_dir.is_dir():
+        if not config.vault.dir.exists() or not config.vault.dir.is_dir():
             logger.error(
-                f"Vault path does not exist or is not a directory: {config.vault_dir}"
+                f"Vault path does not exist or is not a directory: {config.vault.dir}"
             )
             return 1
 

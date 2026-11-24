@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from mcps.config import ServerConfig
+from mcps.config import ServerConfig, VaultSettings
 from mcps.server import create_server, main, parse_args
 
 
@@ -37,7 +37,7 @@ class TestMain:
         mock_create_config,
         tmp_path: Path,
     ):
-        mock_create_config.return_value = ServerConfig(vault_dir=tmp_path)
+        mock_create_config.return_value = ServerConfig(vault=VaultSettings(VAULT=tmp_path))
         mock_async_client.return_value.__aenter__ = AsyncMock(
             return_value=AsyncMock()
         )
@@ -60,7 +60,7 @@ class TestMain:
         tmp_path: Path,
     ):
         missing_path = tmp_path / "missing"
-        mock_create_config.return_value = ServerConfig(vault_dir=missing_path)
+        mock_create_config.return_value = ServerConfig(vault=VaultSettings(VAULT=missing_path))
 
         result = main(["--reindex"])
 
@@ -75,7 +75,7 @@ class TestMain:
         mock_create_config,
         mock_setup_logging,
     ):
-        config = ServerConfig(vault_dir=None)
+        config = ServerConfig(vault=VaultSettings(VAULT=None))
         mock_create_config.return_value = config
         mock_server = mock_create_server.return_value
         mock_server.start = AsyncMock()

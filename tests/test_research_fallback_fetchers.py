@@ -17,7 +17,14 @@ import pytest
 from crawl4ai import CacheMode
 from pytest_httpx import HTTPXMock
 
-from mcps.config import ServerConfig
+from mcps.config import (
+    BrowserSettings,
+    FetchSettings,
+    RagSettings,
+    RouterSettings,
+    ScraperSettings,
+    ServerConfig,
+)
 from mcps.research.tools import browser as browser_module
 from mcps.research.tools.bright_data import BrightDataFetch
 from mcps.research.tools.browser import SessionPool, create_browser_fetch
@@ -308,8 +315,8 @@ def _script_crawlers(monkeypatch, *items: Any) -> None:
 
 
 def _browser_config(**overrides: Any) -> ServerConfig:
-    overrides.setdefault("browser_reconnect_delay_seconds", 0)
-    return ServerConfig(browser_cdp_url="ws://cdp", **overrides)
+    overrides.setdefault("reconnect_delay_seconds", 0)
+    return ServerConfig(browser=BrowserSettings(cdp_url="ws://cdp", **overrides))
 
 
 @asynccontextmanager
@@ -523,7 +530,7 @@ async def test_browser_fetch_overlapping_requests_share_connection(monkeypatch):
     gates = {URL_A: asyncio.Event(), URL_B: asyncio.Event()}
     crawler = GatedCrawler(gates)
 
-    async with _open_browser(monkeypatch, crawler, browser_pool_size=2) as fetch:
+    async with _open_browser(monkeypatch, crawler, pool_size=2) as fetch:
         tasks = [asyncio.ensure_future(fetch(url)) for url in gates]
         try:
             async with asyncio.timeout(5):
@@ -574,7 +581,8 @@ async def test_browser_fetch_startup_failure_yields_none(monkeypatch, item: Any)
 async def test_browser_fetch_without_endpoint_opens_no_connection(monkeypatch):
     _script_crawlers(monkeypatch)
 
-    async with create_browser_fetch(ServerConfig(browser_cdp_url="")) as browser:
+    config = ServerConfig(browser=BrowserSettings(cdp_url=""))
+    async with create_browser_fetch(config) as browser:
         assert browser is None
 
     assert FakeAsyncWebCrawler.constructed == []
@@ -650,7 +658,7 @@ async def test_session_pool_hands_out_distinct_names():
 async def test_browser_fetch_reuses_session_tab_across_fetches(monkeypatch):
     crawler = _ok_crawler()
 
-    async with _open_browser(monkeypatch, crawler, browser_pool_size=1) as fetch:
+    async with _open_browser(monkeypatch, crawler, pool_size=1) as fetch:
         await fetch(URL_A)
         await fetch(URL_B)
 
@@ -665,7 +673,7 @@ async def test_browser_fetch_concurrent_fetches_use_distinct_sessions(monkeypatc
     crawler = GatedCrawler(gates)
 
     async with _open_browser(
-        monkeypatch, crawler, browser_pool_size=len(gates)
+        monkeypatch, crawler, pool_size=len(gates)
     ) as fetch:
         tasks = [asyncio.ensure_future(fetch(url)) for url in gates]
         try:
@@ -688,7 +696,7 @@ async def test_browser_fetch_caps_concurrent_renders_at_pool_size(monkeypatch):
     def entered() -> list[str]:
         return [url for url in urls if crawler.entered[url].is_set()]
 
-    async with _open_browser(monkeypatch, crawler, browser_pool_size=size) as fetch:
+    async with _open_browser(monkeypatch, crawler, pool_size=size) as fetch:
         tasks = [asyncio.ensure_future(fetch(url)) for url in urls]
         try:
             async with asyncio.timeout(5):
@@ -712,7 +720,7 @@ async def test_browser_fetch_caps_concurrent_renders_at_pool_size(monkeypatch):
 async def test_browser_fetch_resets_tab_after_each_fetch(monkeypatch):
     crawler = _ok_crawler()
 
-    async with _open_browser(monkeypatch, crawler, browser_pool_size=1) as fetch:
+    async with _open_browser(monkeypatch, crawler, pool_size=1) as fetch:
         await fetch(URL_A)
         await fetch(URL_B)
 
@@ -724,7 +732,7 @@ async def test_browser_fetch_resets_tab_after_each_fetch(monkeypatch):
 async def test_browser_fetch_resets_tab_after_ordinary_failure(monkeypatch):
     crawler = FakeCrawler(result=crawl_result(status_code=404, cleaned_html="gone"))
 
-    async with _open_browser(monkeypatch, crawler, browser_pool_size=1) as fetch:
+    async with _open_browser(monkeypatch, crawler, pool_size=1) as fetch:
         result = await fetch(URL_A)
 
     assert result.status is FetchStatus.HTTP_ERROR
@@ -736,7 +744,7 @@ async def test_browser_fetch_cancelled_during_render_resets_before_next_render(
 ):
     crawler = _ok_crawler(url_gates={URL_A: asyncio.Event()})
 
-    async with _open_browser(monkeypatch, crawler, browser_pool_size=1) as fetch:
+    async with _open_browser(monkeypatch, crawler, pool_size=1) as fetch:
         task = asyncio.create_task(fetch(URL_A))
         async with asyncio.timeout(5):
             await crawler.arun_entered.wait()
@@ -755,7 +763,7 @@ async def test_browser_fetch_cancelled_during_reset_finishes_reset_before_next_r
 ):
     crawler = _ok_crawler()
 
-    async with _open_browser(monkeypatch, crawler, browser_pool_size=1) as fetch:
+    async with _open_browser(monkeypatch, crawler, pool_size=1) as fetch:
         await fetch(URL_A)
         page = _only_page(crawler)
         page.goto_gate = asyncio.Event()
@@ -786,7 +794,7 @@ async def test_browser_fetch_cancelled_during_reset_finishes_reset_before_next_r
 async def test_browser_fetch_kills_session_when_reset_fails(monkeypatch):
     crawler = _ok_crawler()
 
-    async with _open_browser(monkeypatch, crawler, browser_pool_size=1) as fetch:
+    async with _open_browser(monkeypatch, crawler, pool_size=1) as fetch:
         await fetch(URL_A)
         first_page = _only_page(crawler)
         first_page.goto_error = RuntimeError("reset failed")
@@ -804,8 +812,8 @@ async def test_browser_fetch_kills_session_when_reset_times_out(monkeypatch):
     async with _open_browser(
         monkeypatch,
         crawler,
-        browser_pool_size=1,
-        browser_cleanup_timeout_seconds=0.05,
+        pool_size=1,
+        cleanup_timeout_seconds=0.05,
     ) as fetch:
         await fetch(URL_A)
         _only_page(crawler).goto_gate = asyncio.Event()
@@ -826,8 +834,8 @@ async def test_browser_fetch_reconnects_when_session_kill_fails(
         monkeypatch,
         first,
         second,
-        browser_pool_size=1,
-        browser_cleanup_timeout_seconds=0.05,
+        pool_size=1,
+        cleanup_timeout_seconds=0.05,
     ) as fetch:
         await fetch(URL_A)
         _only_page(first).goto_error = RuntimeError("reset failed")
@@ -932,7 +940,7 @@ def test_new_crawler_shares_cdp_connection_without_cleanup(monkeypatch):
 async def test_exit_waits_for_pending_reset(monkeypatch):
     crawler = _ok_crawler()
     _script_crawlers(monkeypatch, crawler)
-    context = create_browser_fetch(_browser_config(browser_pool_size=1))
+    context = create_browser_fetch(_browser_config(pool_size=1))
     fetch = await context.__aenter__()
     assert fetch is not None
     await fetch(URL_A)
@@ -1004,8 +1012,8 @@ async def test_browser_fetch_reconnects_and_retries_after_connection_loss(
         monkeypatch,
         lost,
         healthy,
-        browser_fetch_retries=1,
-        browser_reconnect_attempts=1,
+        fetch_retries=1,
+        reconnect_attempts=1,
     ) as fetch:
         result = await fetch(TARGET)
 
@@ -1037,7 +1045,7 @@ async def test_browser_fetch_does_not_retry_final_results(
     crawler = make_final()
 
     async with _open_browser(
-        monkeypatch, crawler, _ok_crawler(), browser_fetch_retries=1
+        monkeypatch, crawler, _ok_crawler(), fetch_retries=1
     ) as fetch:
         await fetch(TARGET)
 
@@ -1054,8 +1062,8 @@ async def test_browser_fetch_stops_after_configured_retries(monkeypatch):
         monkeypatch,
         *lost,
         spare,
-        browser_fetch_retries=retries,
-        browser_reconnect_attempts=1,
+        fetch_retries=retries,
+        reconnect_attempts=1,
     ) as fetch:
         result = await fetch(TARGET)
 
@@ -1080,8 +1088,8 @@ async def test_browser_fetch_survives_failing_teardown(
         monkeypatch,
         lost,
         _ok_crawler(),
-        browser_fetch_retries=1,
-        browser_cleanup_timeout_seconds=0.05,
+        fetch_retries=1,
+        cleanup_timeout_seconds=0.05,
     ) as fetch:
         async with asyncio.timeout(5):
             result = await fetch(TARGET)
@@ -1095,8 +1103,8 @@ async def test_browser_fetch_survives_failing_startup_attempt(monkeypatch):
         _lost_crawler(),
         ConnectionError(DOWN),
         _ok_crawler(),
-        browser_fetch_retries=1,
-        browser_reconnect_attempts=2,
+        fetch_retries=1,
+        reconnect_attempts=2,
     ) as fetch:
         result = await fetch(TARGET)
 
@@ -1112,8 +1120,8 @@ async def test_browser_fetch_concurrent_losses_recover_once(monkeypatch):
         lost,
         _ok_crawler(),
         _ok_crawler(),
-        browser_pool_size=len(urls),
-        browser_fetch_retries=1,
+        pool_size=len(urls),
+        fetch_retries=1,
     ) as fetch:
         tasks = [asyncio.ensure_future(fetch(url)) for url in urls]
         try:
@@ -1136,8 +1144,8 @@ async def test_browser_fetch_waits_for_running_recovery(monkeypatch):
         monkeypatch,
         lost,
         replacement,
-        browser_pool_size=2,
-        browser_fetch_retries=1,
+        pool_size=2,
+        fetch_retries=1,
     ) as fetch:
         first = asyncio.ensure_future(fetch(URL_A))
         second = None
@@ -1165,8 +1173,8 @@ async def test_browser_fetch_cancelled_waiter_does_not_stop_recovery(monkeypatch
         monkeypatch,
         _lost_crawler(),
         replacement,
-        browser_pool_size=2,
-        browser_fetch_retries=1,
+        pool_size=2,
+        fetch_retries=1,
     ) as fetch:
         first = asyncio.ensure_future(fetch(URL_A))
         waiter = None
@@ -1200,9 +1208,9 @@ async def test_browser_fetch_late_loss_shares_failed_recovery(monkeypatch):
         lost,
         *[ConnectionError(DOWN)] * attempts,
         healthy,
-        browser_pool_size=len(urls),
-        browser_fetch_retries=1,
-        browser_reconnect_attempts=attempts,
+        pool_size=len(urls),
+        fetch_retries=1,
+        reconnect_attempts=attempts,
     ) as fetch:
         first = asyncio.ensure_future(fetch(URL_A))
         late = asyncio.ensure_future(fetch(URL_B))
@@ -1235,8 +1243,8 @@ async def test_browser_fetch_recovers_on_next_call_after_failed_recovery(monkeyp
         _lost_crawler(),
         *[ConnectionError(DOWN)] * attempts,
         _ok_crawler(),
-        browser_fetch_retries=0,
-        browser_reconnect_attempts=attempts,
+        fetch_retries=0,
+        reconnect_attempts=attempts,
     ) as fetch:
         first = await fetch(URL_A)
         second = await fetch(URL_B)
@@ -1249,7 +1257,7 @@ async def test_browser_fetch_exit_closes_replacement_crawler(monkeypatch):
     replacement = _ok_crawler()
 
     async with _open_browser(
-        monkeypatch, _lost_crawler(), replacement, browser_fetch_retries=1
+        monkeypatch, _lost_crawler(), replacement, fetch_retries=1
     ) as fetch:
         result = await fetch(TARGET)
 
@@ -1283,8 +1291,8 @@ async def test_browser_fetch_drops_shared_connection_when_teardown_fails(
         monkeypatch,
         _lost_crawler(**faults),
         _ok_crawler(),
-        browser_fetch_retries=1,
-        browser_cleanup_timeout_seconds=0.05,
+        fetch_retries=1,
+        cleanup_timeout_seconds=0.05,
     ) as fetch:
         result = await fetch(TARGET)
 
@@ -1296,7 +1304,7 @@ async def test_browser_fetch_keeps_shared_connection_when_teardown_succeeds(
     monkeypatch, drops: list[str]
 ):
     async with _open_browser(
-        monkeypatch, _lost_crawler(), _ok_crawler(), browser_fetch_retries=1
+        monkeypatch, _lost_crawler(), _ok_crawler(), fetch_retries=1
     ) as fetch:
         result = await fetch(TARGET)
 
@@ -1312,7 +1320,7 @@ async def test_invalidate_during_recovery_leaves_teardown_to_the_recovery(
     _script_crawlers(monkeypatch, old, replacement)
     connection = browser_module.CrawlerConnection(
         lambda: browser_module._new_crawler("ws://cdp"),
-        browser_module.BrowserSettings.from_config(_browser_config()),
+        _browser_config().browser,
     )
     await connection.open()
     lease = await connection.acquire()
@@ -1343,9 +1351,9 @@ async def test_browser_fetch_arriving_during_failed_recovery_shares_the_failure(
         _lost_crawler(),
         failing,
         _ok_crawler(),
-        browser_pool_size=2,
-        browser_fetch_retries=1,
-        browser_reconnect_attempts=1,
+        pool_size=2,
+        fetch_retries=1,
+        reconnect_attempts=1,
     ) as fetch:
         first = asyncio.ensure_future(fetch(URL_A))
         second = None
@@ -1369,7 +1377,7 @@ async def test_exit_does_not_hang_on_a_stalled_close(monkeypatch):
 
     async with asyncio.timeout(5):
         async with _open_browser(
-            monkeypatch, crawler, browser_cleanup_timeout_seconds=0.05
+            monkeypatch, crawler, cleanup_timeout_seconds=0.05
         ) as fetch:
             await fetch(URL_A)
 
@@ -1513,7 +1521,8 @@ async def test_fetch_tool_escalates_blocked_page_to_configured_provider(
         text="<html><body><h1>Unblocked</h1></body></html>",
     )
     config = ServerConfig(
-        scraper_provider="scrape_do", scrape_do_token="t", browser_cdp_url=""
+        scraper=ScraperSettings(SCRAPER_PROVIDER="scrape_do", SCRAPE_DO_TOKEN="t"),
+        browser=BrowserSettings(cdp_url=""),
     )
 
     async with build_fetch_tool(config, client) as fetch:
@@ -1536,10 +1545,12 @@ async def test_fetch_tool_escalates_blocked_page_to_bright_data(
         },
     )
     config = ServerConfig(
-        scraper_provider="bright_data",
-        bright_data_api_key="key",
-        bright_data_zone="unlocker",
-        browser_cdp_url="",
+        scraper=ScraperSettings(
+            SCRAPER_PROVIDER="bright_data",
+            BRIGHT_DATA_API_KEY="key",
+            BRIGHT_DATA_ZONE="unlocker",
+        ),
+        browser=BrowserSettings(cdp_url=""),
     )
 
     async with build_fetch_tool(config, client) as fetch:
@@ -1550,32 +1561,13 @@ async def test_fetch_tool_escalates_blocked_page_to_bright_data(
     assert result.content == "# Unblocked"
 
 
-@pytest.mark.parametrize(
-    "config_kwargs",
-    [
-        pytest.param({}, id="unset"),
-        pytest.param(
-            {"scraper_provider": "unknown", "scrape_do_token": "t"}, id="unknown"
-        ),
-        pytest.param({"scraper_provider": "scrape_do"}, id="scrape-do-no-token"),
-        pytest.param(
-            {"scraper_provider": "bright_data", "bright_data_api_key": "k"},
-            id="bright-data-no-zone",
-        ),
-        pytest.param(
-            {"scraper_provider": "bright_data", "bright_data_zone": "z"},
-            id="bright-data-no-key",
-        ),
-    ],
-)
-async def test_unusable_provider_config_keeps_target_failure(
+async def test_unconfigured_provider_keeps_target_failure(
     monkeypatch,
     httpx_mock: HTTPXMock,
     client: httpx.AsyncClient,
-    config_kwargs: dict[str, Any],
 ):
     httpx_mock.add_response(url=TARGET, status_code=403)
-    config = ServerConfig(browser_cdp_url="", **config_kwargs)
+    config = ServerConfig(browser=BrowserSettings(cdp_url=""))
 
     async with build_fetch_tool(config, client) as fetch:
         assert fetch is not None
@@ -1588,29 +1580,29 @@ ROUTER = "http://router/v1"
 
 
 @pytest.mark.parametrize(
-    ("config_kwargs", "router_path", "warns"),
+    ("make_config", "router_path", "warns"),
     [
-        pytest.param({}, None, (), id="unset"),
+        pytest.param(ServerConfig, None, (), id="unset"),
         pytest.param(
-            {"rag_embedding_model": "e", "router_api_base": ROUTER},
+            lambda: ServerConfig(
+                rag=RagSettings(embedding_model="e", embedding_dimensions=8),
+                router=RouterSettings(api_base=ROUTER),
+            ),
             None,
             (),
             id="unrelated-rag-config-falls-to-bm25",
         ),
         pytest.param(
-            {"decision_model": "jev", "router_api_base": ROUTER},
+            lambda: ServerConfig(
+                fetch=FetchSettings(DECISION_MODEL="jev"),
+                router=RouterSettings(api_base=ROUTER),
+            ),
             "/v1/systemone",
             (),
             id="decision-configured",
         ),
         pytest.param(
-            {"decision_model": "jev", "router_api_base": "ftp://router"},
-            None,
-            ("DECISION_MODEL",),
-            id="decision-bad-router",
-        ),
-        pytest.param(
-            {"decision_model": "jev"},
+            lambda: ServerConfig(fetch=FetchSettings(DECISION_MODEL="jev")),
             None,
             ("DECISION_MODEL",),
             id="decision-empty-router",
@@ -1620,11 +1612,11 @@ ROUTER = "http://router/v1"
 async def test_create_page_filter_selects_by_config(
     caplog,
     client: httpx.AsyncClient,
-    config_kwargs: dict[str, Any],
+    make_config: Callable[[], ServerConfig],
     router_path: str | None,
     warns: tuple[str, ...],
 ):
-    caplog.set_level("WARNING", logger="mcps.research.tools.fetch")
+    caplog.set_level("WARNING", logger="mcps.config")
     router_calls: list[httpx.Request] = []
 
     def router(request: httpx.Request) -> httpx.Response:
@@ -1632,7 +1624,7 @@ async def test_create_page_filter_selects_by_config(
         return httpx.Response(500)
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(router)) as mock:
-        page_filter = create_page_filter(ServerConfig(**config_kwargs), mock)
+        page_filter = create_page_filter(make_config(), mock)
         source = FetchResult(
             "https://a.example", FetchStatus.OK, "text/plain", "alpha beta"
         )
@@ -1780,7 +1772,7 @@ async def test_browser_pdf_type_does_not_leak_into_next_fetch_of_session(monkeyp
         final_response=navigation_response(PDF_MIME),
     )
 
-    async with _open_browser(monkeypatch, crawler, browser_pool_size=1) as fetch:
+    async with _open_browser(monkeypatch, crawler, pool_size=1) as fetch:
         first = await fetch(TARGET)
         crawler.result = crawl_result(cleaned_html=OK_PAGE)
         crawler.final_response = NO_HOOK_CALL
@@ -1836,8 +1828,8 @@ async def test_browser_recovered_crawler_still_reports_pdf(monkeypatch):
         monkeypatch,
         lost,
         healthy,
-        browser_fetch_retries=1,
-        browser_reconnect_attempts=1,
+        fetch_retries=1,
+        reconnect_attempts=1,
     ) as fetch:
         result = await fetch(TARGET)
 
@@ -1852,9 +1844,9 @@ async def test_browser_connection_loss_wins_over_recorded_pdf_type(monkeypatch):
         monkeypatch,
         lost,
         healthy,
-        browser_pool_size=1,
-        browser_fetch_retries=1,
-        browser_reconnect_attempts=1,
+        pool_size=1,
+        fetch_retries=1,
+        reconnect_attempts=1,
     ) as fetch:
         retried = await fetch(TARGET)
         healthy.final_response = NO_HOOK_CALL

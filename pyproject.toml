@@ -26,6 +26,7 @@ dependencies = [
     "crawl4ai>=0.7",
     "langchain-typesafe>=0.1.0",
     "pymupdf-lite>=2.1",
+    "pydantic-settings>=2.15",
 ]
 [tool.uv]
 package = true
@@ -59,7 +60,10 @@ log_cli = true
 log_cli_level = "INFO"
 addopts = ["--import-mode=importlib","--durations=0","-m","not integration"]
 # addopts = []
-markers = ["integration: live network tests; run with `pytest -m integration`"]
+markers = [
+    "integration: live network tests; run with `pytest -m integration`",
+    "real_env: test reads the developer's real environment and .env",
+]
 # pythonpath = ["src"] # Add the src directory to Python's search path
 testpaths = ["tests"]  # Specify the directory where your tests are located
 pythonpath = ["src", "tests"]

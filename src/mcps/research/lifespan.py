@@ -33,14 +33,16 @@ def build_research_lifespan(config: ServerConfig) -> Lifespan:
                     return
                 server.enable(names=_RESEARCH_TOOLS)
                 researcher = create_researcher(
-                    research_config, implementation="deep_research"
+                    research_config,
+                    implementation="deep_research",
+                    limits=config.research_limits,
                 )
                 jobs = ResearchJobs(
                     researcher,
                     InMemoryJobStore(
-                        ttl=timedelta(seconds=config.research_job_ttl_seconds)
+                        ttl=timedelta(seconds=config.research.job_ttl_seconds)
                     ),
-                    wait=timedelta(seconds=config.research_wait_seconds),
+                    wait=timedelta(seconds=config.research.wait_seconds),
                 )
                 try:
                     yield {

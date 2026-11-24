@@ -90,8 +90,8 @@ def _create_chunker(config: ServerConfig) -> IChunker:
     """Create and configure text chunker service."""
     # return FixedSizeChunker(chunk_size=chunk_size, overlap=chunk_overlap)
     return SemanticChunker(
-        max_chunk_size=config.max_chunk_size,
-        min_chunk_size=config.min_chunk_size,
+        max_chunk_size=config.chunking.max_size,
+        min_chunk_size=config.chunking.min_size,
     )
 
 
@@ -99,60 +99,60 @@ def create_embeddings(
         config: ServerConfig,
         http_client: httpx.AsyncClient
     ) -> IEmbeddingService:
-    base_url = config.router_api_base
-    api_key = SecretStr(config.router_api_key)
+    base_url = config.router.api_base
+    api_key = SecretStr(config.router.api_key)
     embeddings = OpenAIEmbeddings(
-        model=config.rag_embedding_model,
-        dimensions=config.rag_embedding_dimensions,
+        model=config.rag.embedding_model,
+        dimensions=config.rag.embedding_dimensions,
         base_url=base_url,
         api_key=api_key,
         http_async_client=http_client,
         check_embedding_ctx_length=False
     )
     logger.info("Use embeddings with model %s and dimensions %d",
-                config.rag_embedding_model, 
-                config.rag_embedding_dimensions)
+                config.rag.embedding_model, 
+                config.rag.embedding_dimensions)
     return LangChainEmbeddingService(
                 embeddings=embeddings,
-                dimensions=config.rag_embedding_dimensions,
+                dimensions=config.rag.embedding_dimensions,
             )
 
 def create_reranker(
         config: ServerConfig,
         http_client: httpx.AsyncClient
     ) -> Reranker:
-    if config.rag_reranker_model:
-        logger.info("Use reranker API with model %s",config.rag_reranker_model)
+    if config.rag.reranker_model:
+        logger.info("Use reranker API with model %s",config.rag.reranker_model)
         return ProxyReranker(
-            model_name=config.rag_reranker_model,
-            proxy_url=config.router_api_base,
-            api_key=config.router_api_key
+            model_name=config.rag.reranker_model,
+            proxy_url=config.router.api_base,
+            api_key=config.router.api_key
         )
-    if not (config.rag_reranker_embedding_model and config.rag_reranker_embedding_dimensions):
+    if not (config.rag.reranker_embedding_model and config.rag.reranker_embedding_dimensions):
         logger.info("Use RRF reranker")
         return RRFReranker(return_score="relevance")
 
-    base_url = config.router_api_base
-    api_key = SecretStr(config.router_api_key)
+    base_url = config.router.api_base
+    api_key = SecretStr(config.router.api_key)
     embed = OpenAIEmbeddings(
-        model=config.rag_reranker_embedding_model,
-        dimensions=config.rag_reranker_embedding_dimensions,
+        model=config.rag.reranker_embedding_model,
+        dimensions=config.rag.reranker_embedding_dimensions,
         base_url=base_url,
         api_key=api_key,
         http_async_client=http_client,
         check_embedding_ctx_length=False
     )
-    if not config.rag_reranker_infer_model:
-        logger.info("Use Embeddings reranker with model %s",config.rag_reranker_embedding_model)
+    if not config.rag.reranker_infer_model:
+        logger.info("Use Embeddings reranker with model %s",config.rag.reranker_embedding_model)
         return LlmReranker(chat_model=None, embeddings=embed)
 
     infer_model = ChatOpenAI(
-        model=config.rag_reranker_infer_model,
+        model=config.rag.reranker_infer_model,
         base_url=base_url,
         api_key=api_key,
         http_async_client=http_client
     )
-    logger.info("Use LLM reranker with embeddings model %s and chat model",config.rag_reranker_embedding_model, config.rag_reranker_infer_model)
+    logger.info("Use LLM reranker with embeddings model %s and chat model",config.rag.reranker_embedding_model, config.rag.reranker_infer_model)
     return LlmReranker(infer_model, embed)
 
 @asynccontextmanager
@@ -163,9 +163,9 @@ async def _create_vector_store(
 ) -> AsyncIterator[IVectorStore]:
     """Create and configure vector store service."""
     store = LanceDBStore(
-        db_path=config.vault_dir / ".vault_db",  # type: ignore
+        db_path=config.vault.dir / ".vault_db",  # type: ignore
         embedding_service=embedding_service,
-        table_name=config.table_name,
+        table_name=config.vault.table_name,
         reranker=reranker,
     )
     try:
@@ -181,25 +181,25 @@ def _create_search_engine(
     http_client: httpx.AsyncClient,
 ) -> ISearchEngine:
     """Create and configure search engine service."""
-    if not config.rag_infer_model:
+    if not config.rag.infer_model:
         logger.info("Use plain search engine")
         return SemanticSearchEngine(
             vector_store,
-            limit=config.search_limit,
-            min_score=config.min_score,
+            limit=config.search.limit,
+            min_score=config.search.min_score,
         )
 
     search_model = ChatOpenAI(
-        model=config.rag_infer_model,
-        base_url=config.router_api_base,
-        api_key=SecretStr(config.router_api_key),
+        model=config.rag.infer_model,
+        base_url=config.router.api_base,
+        api_key=SecretStr(config.router.api_key),
         http_async_client=http_client,
     )
-    logger.info("Use semantic search engine with model %s",config.rag_infer_model)
+    logger.info("Use semantic search engine with model %s",config.rag.infer_model)
     return SemanticSearchEngine(
         vector_store,
-        limit=config.search_limit,
-        min_score=config.min_score,
+        limit=config.search.limit,
+        min_score=config.search.min_score,
         hypothetical_document_generator=HypotheticalDocumentGenerator(search_model),
         reranker=LangChainReranker(search_model),
     )
@@ -209,13 +209,13 @@ def _create_document_summary_generator(
     config: ServerConfig,
     http_client: httpx.AsyncClient,
 ) -> IDocumentSummaryGenerator | None:
-    if not config.rag_summary_model:
+    if not config.rag.summary_model:
         return None
 
     summary_model = ChatOpenAI(
-        model=config.rag_summary_model,
-        base_url=config.router_api_base,
-        api_key=SecretStr(config.router_api_key),
+        model=config.rag.summary_model,
+        base_url=config.router.api_base,
+        api_key=SecretStr(config.router.api_key),
         http_async_client=http_client,
         max_retries=2,
     )
@@ -852,7 +852,7 @@ async def create_vault(
         RuntimeError: If service creation fails
     """
     try:
-        vault_path : Path = config.vault_dir # type: ignore checked in server.py
+        vault_path : Path = config.vault.dir # type: ignore checked in server.py
         logger.info(f"Creating Vault for path: {vault_path}")
         
         # Create all services using factory methods

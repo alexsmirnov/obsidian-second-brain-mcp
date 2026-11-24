@@ -358,16 +358,18 @@ Returned string values have a combined 25,000-character budget. If the response 
 
 | Setting | Default | Purpose |
 |---------|---------|---------|
-| `vault_dir` | — | Path to the Obsidian vault |
-| `table_name` | `"documents"` | LanceDB table name |
-| `min_chunk_size` | `1000` | Minimum section size in characters before merging (250 tokens) |
-| `max_chunk_size` | `2000` | Maximum chunk size in characters (500 tokens) |
-| `search_limit` | `30` | Maximum candidate chunks retrieved before document consolidation and response budgeting |
-| `rag_embedding_model` | `""` | Model-router embedding model |
-| `rag_embedding_dimensions` | `0` | LanceDB vector dimension |
-| `rag_infer_model` | `""` | Optional search-level HyDE and structured-reranking model |
-| `rag_reranker_model` | `""` | Optional LanceDB reranker model |
-| `rag_summary_model` | `""` | Optional whole-document summary model |
+| `vault.dir` | none | Path to the Obsidian vault |
+| `vault.table_name` | `"documents"` | LanceDB table name |
+| `chunking.min_size` | `500` | Minimum section size in characters before merging |
+| `chunking.max_size` | `1000` | Maximum chunk size in characters |
+| `search.limit` | `30` | Maximum candidate chunks retrieved before document consolidation and response budgeting |
+| `rag.embedding_model` | `""` | Model-router embedding model |
+| `rag.embedding_dimensions` | `0` | LanceDB vector dimension |
+| `rag.infer_model` | `""` | Optional search-level HyDE and structured-reranking model |
+| `rag.reranker_model` | `""` | Optional LanceDB reranker model |
+| `rag.summary_model` | `""` | Optional whole-document summary model |
+
+[Configuration and Environment](config_environment.md) lists the environment variable for each setting.
 
 ## Code References
 

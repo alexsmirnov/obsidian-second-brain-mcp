@@ -15,6 +15,8 @@ from mcps.rag.vault import create_reranker
 
 logger = logging.getLogger(__name__)
 
+pytestmark = pytest.mark.real_env
+
 MODEL_CASES: list[str] = ["rerank", "rerank-lite"]
 
 
@@ -32,7 +34,7 @@ async def async_client() -> AsyncIterator[httpx.AsyncClient]:
 @pytest.fixture
 def server_config() -> ServerConfig:
     config = create_config()
-    if not config.router_api_base or not config.router_api_key:
+    if not config.router.api_base or not config.router.api_key:
         pytest.skip(
             "ROUTER_API_BASE / ROUTER_API_KEY are not set; "
             "proxy reranker tests need them to call the model router."
@@ -46,13 +48,15 @@ def reranker(
     server_config: ServerConfig,
     async_client: httpx.AsyncClient,
 ) -> Reranker:
-    config = replace(
-        server_config,
-        rag_reranker_model=str(request.param),
-        rag_reranker_infer_model="",
-        rag_embedding_model="",
-        rag_embedding_dimensions=0,
+    rag = server_config.rag.model_copy(
+        update={
+            "reranker_model": str(request.param),
+            "reranker_infer_model": "",
+            "embedding_model": "",
+            "embedding_dimensions": 0,
+        }
     )
+    config = server_config.model_copy(update={"rag": rag})
     return create_reranker(config, async_client)
 
 

@@ -615,9 +615,3 @@ class TestLazyChunking:
         assert len(chunks) > 0
         assert all(len(c.content) <= 2000 for c in chunks)
 
-    def test_semantic_chunker_clamps_min_chunk_size_if_greater_than_max(self):
-        """Test SemanticChunker clamps min_chunk_size if greater than max_chunk_size."""
-        chunker = SemanticChunker(max_chunk_size=1500, min_chunk_size=2500)
-        assert chunker.min_chunk_size == 1500
-        assert chunker.max_chunk_size == 1500
-

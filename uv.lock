@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.13"
 resolution-markers = [
     "python_full_version >= '3.15' and sys_platform == 'win32'",
@@ -2176,6 +2176,7 @@ dependencies = [
     { name = "lxml" },
     { name = "markdown" },
     { name = "pandas" },
+    { name = "pydantic-settings" },
     { name = "pymupdf-lite" },
     { name = "python-dotenv" },
     { name = "python-frontmatter" },
@@ -2211,6 +2212,7 @@ requires-dist = [
     { name = "lxml", specifier = ">=5.0.0" },
     { name = "markdown", specifier = ">=3.10.0" },
     { name = "pandas", specifier = ">=3.0.3" },
+    { name = "pydantic-settings", specifier = ">=2.15" },
     { name = "pymupdf-lite", specifier = ">=2.1" },
     { name = "python-dotenv", specifier = ">=1.2.2" },
     { name = "python-frontmatter", specifier = ">=1.3.0" },

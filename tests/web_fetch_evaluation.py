@@ -128,7 +128,7 @@ async def _raw_fetch_tool(
             browser=browser,
             provider=_create_provider_fallback(config, http_client),
             page_filter=_passthrough,
-            restricted_domains=config.fetch_restricted_domains,
+            restricted_domains=config.fetch.restricted_domains,
             max_chars=sys.maxsize,
         )
 
@@ -301,13 +301,13 @@ async def main(argv: list[str] | None = None) -> None:
     load_dotenv()
     server_config = create_config()
     cases = load_cases(args.cases)
-    batch_size = args.batch_size or server_config.browser_pool_size
+    batch_size = args.batch_size or server_config.browser.pool_size
     logger.info(
         "Replaying %d cases from %s in batches of %d (browser pool size %d)",
         len(cases),
         args.cases,
         batch_size,
-        server_config.browser_pool_size,
+        server_config.browser.pool_size,
     )
     if args.save:
         args.save.mkdir(parents=True, exist_ok=True)

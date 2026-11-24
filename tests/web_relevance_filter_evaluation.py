@@ -43,7 +43,6 @@ from mcps.config import ServerConfig, create_config
 from mcps.research.config import _create_chat_model
 from mcps.research.deep_research import FETCH_QUERY_INSTRUCTIONS, FetchQuery
 from mcps.research.tools.bm25_ranker import Bm25Ranker
-from mcps.research.tools.common import valid_router_url
 from mcps.research.tools.decision_ranker import RELEVANCE_QUESTION, DecisionRanker
 from mcps.research.tools.fetch import (
     BM25_RELATIVE_CUTOFF,
@@ -157,7 +156,7 @@ def bm25_ranker(
 def decision_ranker(
     config: ServerConfig, http_client: httpx.AsyncClient, tuning: RankerTuning
 ) -> DecisionRanker:
-    if not (config.decision_model and valid_router_url(config.router_api_base)):
+    if not (config.fetch.decision_model and bool(config.router.api_base)):
         raise RuntimeError("DECISION_MODEL or router settings not set")
     options = _DecisionOptions()
     if tuning.threshold is not None:
@@ -167,9 +166,9 @@ def decision_ranker(
     return DecisionRanker(
         DecisionClient(
             http_client,
-            router_url=config.router_api_base,
-            router_key=config.router_api_key,
-            model=config.decision_model,
+            router_url=config.router.api_base,
+            router_key=config.router.api_key,
+            model=config.fetch.decision_model,
         ),
         **options,
     )
@@ -389,10 +388,10 @@ async def generate_fetch_query(
 ) -> str:
     """Generate one fetch query for a case via the shared production fragment."""
     if not (
-        config.research_fast_model
-        and config.research_infer_model
-        and config.router_api_key
-        and valid_router_url(config.router_api_base)
+        config.research.fast_model
+        and config.research.infer_model
+        and config.router.api_key
+        and bool(config.router.api_base)
     ):
         raise RuntimeError(
             "RESEARCH_FAST_MODEL, RESEARCH_INFER_MODEL or router settings not set"
@@ -400,14 +399,14 @@ async def generate_fetch_query(
     inp = fetch_query_input(case, cases)
     # Round 0/unknown uses the fast model; later rounds use the infer model.
     model_name = (
-        config.research_fast_model
+        config.research.fast_model
         if case.research_round in (None, 0)
-        else config.research_infer_model
+        else config.research.infer_model
     )
     model = _create_chat_model(
         model_name=model_name,
-        router_url=config.router_api_base,
-        router_key=config.router_api_key,
+        router_url=config.router.api_base,
+        router_key=config.router.api_key,
         http_client=http_client,
     )
     parsed = cast(

@@ -36,16 +36,14 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.types import Command, Send
 from web_fetch_evaluation import CASES_DIR
 
-from mcps.config import ServerConfig, create_config
+from mcps.config import ResearchLimits, ServerConfig, create_config
 from mcps.research.config import ResearchConfig, _create_chat_model
 from mcps.research.deep_research import (
     OverallState,
     ResearchAgent,
-    ResearchLimits,
     SearchRun,
     _normalize_url,
 )
-from mcps.research.tools.common import valid_router_url
 from mcps.research.tools.models import SearchResult
 
 DATASET_PATH = CASES_DIR / "select-urls-cases.json"
@@ -216,14 +214,14 @@ def create_agent(
     """Agent whose fast model is real; search and fetch must never be called."""
     if not (
         model_name
-        and server_config.router_api_key
-        and valid_router_url(server_config.router_api_base)
+        and server_config.router.api_key
+        and bool(server_config.router.api_base)
     ):
         raise RuntimeError("RESEARCH_FAST_MODEL or router settings not set")
     model = _create_chat_model(
         model_name=model_name,
-        router_url=server_config.router_api_base,
-        router_key=server_config.router_api_key,
+        router_url=server_config.router.api_base,
+        router_key=server_config.router.api_key,
         http_client=http_client,
     )
     research_config = ResearchConfig(
@@ -342,7 +340,7 @@ async def main(argv: list[str] | None = None) -> None:
 
     load_dotenv(find_dotenv(usecwd=True))
     server_config = create_config()
-    model_name = args.model or server_config.research_fast_model
+    model_name = args.model or server_config.research.fast_model
     cases = load_cases(args.dataset)[: args.limit]
     settings: dict[str, object] = {
         "model": model_name,

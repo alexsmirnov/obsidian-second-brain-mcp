@@ -16,7 +16,7 @@ import os
 
 import pytest
 
-from mcps.config import ServerConfig
+from mcps.config import BrowserSettings, ServerConfig
 from mcps.research.tools import browser as browser_module
 from mcps.research.tools.browser import create_browser_fetch
 
@@ -28,7 +28,9 @@ pytestmark = pytest.mark.skipif(
 
 
 async def test_live_session_reuse_and_reset():
-    config = ServerConfig(browser_cdp_url=LIVE_URL, browser_pool_size=1)
+    config = ServerConfig(
+        browser=BrowserSettings(cdp_url=LIVE_URL, pool_size=1),
+    )
 
     async with create_browser_fetch(config) as fetch:
         assert fetch is not None

@@ -7,7 +7,7 @@ from typing import Any, ClassVar
 
 from fastmcp import Client
 
-from mcps.config import ServerConfig, create_config
+from mcps.config import BrowserSettings, ServerConfig, create_config
 from mcps.research.lifespan import build_research_lifespan
 from mcps.research.tools.browser import create_browser_fetch
 from mcps.research.tools.models import FetchStatus
@@ -94,7 +94,9 @@ async def test_configured_endpoint_is_used(monkeypatch):
     _install_crawler(monkeypatch, reachable={"ws://remote:9222"})
 
     async with create_browser_fetch(
-        ServerConfig(browser_cdp_url="ws://remote:9222")
+        ServerConfig(
+            browser=BrowserSettings(cdp_url="ws://remote:9222"),
+        )
     ) as browser:
         assert browser is not None
 
@@ -104,7 +106,7 @@ async def test_configured_endpoint_is_used(monkeypatch):
 async def test_no_browser_when_endpoint_unset(monkeypatch):
     _install_crawler(monkeypatch, reachable=set())
 
-    async with create_browser_fetch(ServerConfig(browser_cdp_url="")) as browser:
+    async with create_browser_fetch(ServerConfig(browser=BrowserSettings(cdp_url=""))) as browser:
         assert browser is None
 
     assert FakeAsyncWebCrawler.started == []
@@ -114,7 +116,9 @@ async def test_no_browser_when_endpoint_unreachable(monkeypatch):
     _install_crawler(monkeypatch, reachable=set())
 
     async with create_browser_fetch(
-        ServerConfig(browser_cdp_url="ws://remote:9222")
+        ServerConfig(
+            browser=BrowserSettings(cdp_url="ws://remote:9222"),
+        )
     ) as browser:
         assert browser is None
 

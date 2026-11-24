@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 from fastmcp.exceptions import NotFoundError
 
-from mcps.config import ServerConfig
+from mcps.config import ServerConfig, VaultSettings
 from mcps.server import create_server
 from mcps.tools.vault_skills import is_exposed
 
@@ -21,7 +21,7 @@ def write_skill(vault: Path, name: str, frontmatter_lines: str) -> Path:
 
 
 async def skill_uris(vault: Path) -> set[str]:
-    server = create_server(ServerConfig(vault_dir=vault))
+    server = create_server(ServerConfig(vault=VaultSettings(VAULT=vault)))
     return {
         str(resource.uri)
         for resource in await server.mcp.list_resources()
@@ -72,7 +72,7 @@ class TestExposedSkillsProvider:
 
     async def test_flag_change_applies_without_restart(self, tmp_path: Path):
         write_skill(tmp_path, "b", "")
-        server = create_server(ServerConfig(vault_dir=tmp_path))
+        server = create_server(ServerConfig(vault=VaultSettings(VAULT=tmp_path)))
         before = {str(r.uri) for r in await server.mcp.list_resources()}
 
         write_skill(tmp_path, "b", "exposed: true\n")
@@ -94,7 +94,7 @@ class TestExposedSkillsProvider:
 
     async def test_revoked_flag_hides_skill_on_next_read(self, tmp_path: Path):
         write_skill(tmp_path, "a", "exposed: true\n")
-        server = create_server(ServerConfig(vault_dir=tmp_path))
+        server = create_server(ServerConfig(vault=VaultSettings(VAULT=tmp_path)))
         assert await server.mcp.read_resource("skill://a/SKILL.md")
 
         write_skill(tmp_path, "a", "exposed: false\n")
@@ -107,7 +107,7 @@ class TestExposedSkillsProvider:
 
     async def test_exposed_skill_can_be_read(self, tmp_path: Path):
         write_skill(tmp_path, "a", "exposed: true\n")
-        server = create_server(ServerConfig(vault_dir=tmp_path))
+        server = create_server(ServerConfig(vault=VaultSettings(VAULT=tmp_path)))
 
         result = await server.mcp.read_resource("skill://a/SKILL.md")
 
@@ -116,14 +116,14 @@ class TestExposedSkillsProvider:
     async def test_unexposed_skill_cannot_be_read(self, tmp_path: Path):
         write_skill(tmp_path, "a", "exposed: true\n")
         write_skill(tmp_path, "b", "")
-        server = create_server(ServerConfig(vault_dir=tmp_path))
+        server = create_server(ServerConfig(vault=VaultSettings(VAULT=tmp_path)))
 
         assert await server.mcp.read_resource("skill://a/SKILL.md")
         with pytest.raises(NotFoundError):
             await server.mcp.read_resource("skill://b/SKILL.md")
 
     async def test_skills_are_absent_without_vault(self):
-        server = create_server(ServerConfig(vault_dir=None))
+        server = create_server(ServerConfig(vault=VaultSettings(VAULT=None)))
 
         uris = {str(r.uri) for r in await server.mcp.list_resources()}
 

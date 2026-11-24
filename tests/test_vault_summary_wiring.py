@@ -1,14 +1,15 @@
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from mcps.config import ServerConfig
+from mcps.config import RagSettings, RouterSettings, ServerConfig, VaultSettings
 from mcps.rag.summarization import LangChainDocumentSummaryGenerator
 from mcps.rag.vault import _create_document_summary_generator, create_vault
 
 
 def test_create_summary_generator_without_rag_infer_model_returns_none() -> None:
-    config = ServerConfig(rag_infer_model="")
+    config = ServerConfig(rag=RagSettings(infer_model=""))
     http_client = MagicMock()
 
     with patch("mcps.rag.vault.ChatOpenAI") as chat_model:
@@ -20,9 +21,8 @@ def test_create_summary_generator_without_rag_infer_model_returns_none() -> None
 
 def test_create_summary_generator_with_rag_infer_model_wires_chat_model() -> None:
     config = ServerConfig(
-        rag_summary_model="summary-model",
-        router_api_base="http://router",
-        router_api_key="token",
+        rag=RagSettings(summary_model="summary-model"),
+        router=RouterSettings(api_base="http://router", api_key="token"),
     )
     http_client = MagicMock()
     chat_instance = MagicMock()
@@ -41,8 +41,9 @@ def test_create_summary_generator_with_rag_infer_model_wires_chat_model() -> Non
 @pytest.mark.parametrize("summary_generator", [None, MagicMock()])
 async def test_create_vault_passes_document_summary_generator_to_vault(
     summary_generator: object | None,
+    tmp_path: Path,
 ) -> None:
-    config = ServerConfig(vault_dir=MagicMock())
+    config = ServerConfig(vault=VaultSettings(VAULT=tmp_path))
     http_client = MagicMock()
     vector_store = AsyncMock()
 

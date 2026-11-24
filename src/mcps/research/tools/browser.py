@@ -25,7 +25,7 @@ from crawl4ai import (
 )
 from lxml import html as lxml_html
 
-from mcps.config import ServerConfig
+from mcps.config import BrowserSettings, ServerConfig
 from mcps.research.tools.common import (
     MIME_HTML,
     MIME_MARKDOWN,
@@ -39,7 +39,6 @@ from mcps.research.tools.models import FetchResult, FetchStatus
 
 __all__ = [
     "BrowserFetch",
-    "BrowserSettings",
     "SessionPool",
     "create_browser_fetch",
 ]
@@ -47,41 +46,6 @@ __all__ = [
 logger = logging.getLogger(__name__)
 
 _BLANK_PAGE = "about:blank"
-
-
-def _positive(value: float, fallback: float) -> float:
-    return value if value > 0 else fallback
-
-
-@dataclass(frozen=True)
-class BrowserSettings:
-    """Validated browser pool, reconnect and cleanup settings."""
-
-    pool_size: int
-    reconnect_attempts: int
-    reconnect_delay_seconds: float
-    connect_timeout_seconds: float
-    fetch_retries: int
-    cleanup_timeout_seconds: float
-
-    @classmethod
-    def from_config(cls, config: ServerConfig) -> BrowserSettings:
-        """Clamp the configured values; non-positive timeouts use the default."""
-        defaults = ServerConfig()
-        return cls(
-            pool_size=max(1, config.browser_pool_size),
-            reconnect_attempts=max(1, config.browser_reconnect_attempts),
-            reconnect_delay_seconds=max(0.0, config.browser_reconnect_delay_seconds),
-            connect_timeout_seconds=_positive(
-                config.browser_connect_timeout_seconds,
-                defaults.browser_connect_timeout_seconds,
-            ),
-            fetch_retries=max(0, config.browser_fetch_retries),
-            cleanup_timeout_seconds=_positive(
-                config.browser_cleanup_timeout_seconds,
-                defaults.browser_cleanup_timeout_seconds,
-            ),
-        )
 
 
 class SessionPool:
@@ -654,16 +618,16 @@ async def create_browser_fetch(
 ) -> AsyncGenerator[BrowserFetch | None]:
     """Yield a browser fetcher on one persistent crawler, or ``None``.
 
-    Yields ``None`` when ``config.browser_cdp_url`` is unset, the crawler
+    Yields ``None`` when ``config.browser.cdp_url`` is unset, the crawler
     cannot connect to it, or crawl4ai lacks an internal the fetcher needs. On
     exit it waits for pending tab cleanups, then closes the crawler. An
     exception from the body propagates, and a failing close is only logged.
     """
-    cdp_url = config.browser_cdp_url
+    cdp_url = config.browser.cdp_url
     if not cdp_url:
         yield None
         return
-    settings = BrowserSettings.from_config(config)
+    settings = config.browser
     navigation = NavigationTypes()
     connection = CrawlerConnection(
         lambda: _new_crawler(cdp_url),

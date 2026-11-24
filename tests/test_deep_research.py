@@ -23,7 +23,14 @@ from langchain_openai import ChatOpenAI
 from langgraph.types import Command, Send
 from pydantic import BaseModel, SecretStr
 
-from mcps.config import ServerConfig, create_config
+from mcps.config import (
+    BrowserSettings,
+    ResearchLimits,
+    ResearchSettings,
+    RouterSettings,
+    ServerConfig,
+    create_config,
+)
 from mcps.research.agent import create_researcher
 from mcps.research.config import ResearchConfig, build_research_config
 from mcps.research.deep_research import (
@@ -31,7 +38,6 @@ from mcps.research.deep_research import (
     FinalAnswer,
     Reflection,
     ResearchAgent,
-    ResearchLimits,
     ResearchPlan,
     SearchRun,
     SelectedPages,
@@ -54,7 +60,6 @@ _SEARCH_RESULTS = [
 _FAILED = FetchResult("", FetchStatus.HTTP_ERROR, "", http_status=403)
 _PAGE = "alpha\nbeta\ngamma\ndelta\nepsilon"
 _TRACE_PAGE = "unique-page-line\nother"
-_DEFAULT_LIMITS = ResearchLimits()
 
 
 def _fetched(content: str) -> FetchResult:
@@ -132,7 +137,7 @@ def _make_agent(
     select: Any = None,
     search_results: list[SearchResult] = _SEARCH_RESULTS,
     search_by_query: Callable[[str], list[SearchResult]] | None = None,
-    limits: ResearchLimits = _DEFAULT_LIMITS,
+    limits: ResearchLimits | None = None,
     clock: Callable[[], float] = time.monotonic,
 ) -> tuple[
     ResearchAgent,
@@ -171,7 +176,7 @@ def _make_agent(
             search=fake_search,
             fetch=fake_fetch,
         ),
-        limits=limits,
+        limits=limits or ResearchLimits(),
         clock=clock,
     )
     return agent, fast, small, fetch_calls
@@ -210,8 +215,8 @@ def _final_state(**overrides: Any) -> Any:
 class TestServerConfigContract:
     def test_default_router_fields_and_perplexity_removed(self):
         config = ServerConfig()
-        assert config.router_api_base == ""
-        assert config.router_api_key == ""
+        assert config.router.api_base == ""
+        assert config.router.api_key == ""
         assert not hasattr(config, "perplexity_api_key")
 
     def test_create_config_reads_router_env_vars(self, monkeypatch):
@@ -219,27 +224,29 @@ class TestServerConfigContract:
         monkeypatch.setenv("ROUTER_DOCKER_API_BASE", "http://localhost:4000")
         monkeypatch.setenv("ROUTER_API_KEY", "sk-test123")
         config = create_config()
-        assert config.router_api_base == "http://localhost:4000"
-        assert config.router_api_key == "sk-test123"
+        assert config.router.api_base == "http://localhost:4000"
+        assert config.router.api_key == "sk-test123"
 
 
 class TestResearchConfigContract:
     def test_create_researcher_validates_implementation(self):
         config = _make_agent()[0].config
-        assert callable(create_researcher(config, implementation="deep_research"))
+        assert callable(create_researcher(
+            config, implementation="deep_research", limits=ResearchLimits()
+        ))
         with pytest.raises(ValueError, match="Unknown implementation"):
-            create_researcher(config, implementation=cast(Any, "bogus"))
+            create_researcher(
+                config, implementation=cast(Any, "bogus"), limits=ResearchLimits()
+            )
 
     async def test_build_research_config_returns_valid_config(self, monkeypatch):
         monkeypatch.setattr(
             "mcps.research.tools.browser.AsyncWebCrawler", _ReachableCrawler
         )
         browser_config = ServerConfig(
-            router_api_base="http://localhost:4000",
-            router_api_key="sk-test",
-            research_fast_model="fast-model",
-            research_infer_model="small-model",
-            browser_cdp_url="ws://127.0.0.1:9222",
+            router=RouterSettings(api_base="http://localhost:4000", api_key="sk-test"),
+            research=ResearchSettings(fast_model="fast-model", infer_model="small-model"),
+            browser=BrowserSettings(cdp_url="ws://127.0.0.1:9222"),
         )
         async with (
             httpx.AsyncClient() as http_client,
@@ -256,7 +263,7 @@ class TestResearchConfigContract:
         monkeypatch.setattr(
             "mcps.research.tools.browser.AsyncWebCrawler", _ReachableCrawler
         )
-        server_config = ServerConfig(browser_cdp_url="")
+        server_config = ServerConfig(browser=BrowserSettings(cdp_url=""))
 
         async with (
             httpx.AsyncClient() as http_client,
@@ -269,7 +276,9 @@ class TestAgentAndProgressContract:
     @pytest.fixture
     def researcher(self):
         config = _make_agent()[0].config
-        return create_researcher(config, implementation="deep_research")
+        return create_researcher(
+            config, implementation="deep_research", limits=ResearchLimits()
+        )
 
     async def test_agent_returns_research_response_contract(self, researcher):
         """Response follows ResearchResponse TypedDict shape and values."""
@@ -1174,7 +1183,8 @@ class TestParseErrorRecovery:
                     small=small,
                     search=_unused_search,
                     fetch=_unused_fetch,
-                )
+                ),
+                limits=ResearchLimits(),
             )
 
             out = await agent.reflection(_state(searches=[], visits=[], pages=[]), {})

@@ -24,9 +24,9 @@ def create_judge_model(
 ) -> BaseChatModel:
     """Build the judge model: RESEARCH_EVAL_MODEL, else RESEARCH_INFER_MODEL."""
     return _create_chat_model(
-        model_name=os.getenv("RESEARCH_EVAL_MODEL") or config.research_infer_model,
-        router_url=config.router_api_base,
-        router_key=config.router_api_key,
+        model_name=os.getenv("RESEARCH_EVAL_MODEL") or config.research.infer_model,
+        router_url=config.router.api_base,
+        router_key=config.router.api_key,
         http_client=http_client,
     )
 

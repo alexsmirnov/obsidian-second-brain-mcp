@@ -1,7 +1,5 @@
 """Integration tests for model-backed RAG embeddings."""
 
-from dataclasses import replace
-
 from typing import AsyncIterator
 
 import httpx
@@ -10,6 +8,8 @@ import pytest
 from mcps.config import ServerConfig, create_config
 from mcps.rag.interfaces import IEmbeddingService
 from mcps.rag.vault import create_embeddings
+
+pytestmark = pytest.mark.real_env
 
 MODEL_CASES: list[tuple[str, int]] = [
     ("text-embedding-3-small", 1536),
@@ -30,7 +30,7 @@ async def async_client() -> AsyncIterator[httpx.AsyncClient]:
 @pytest.fixture
 def server_config() -> ServerConfig:
     server_config = create_config()
-    if not server_config.router_api_base or not server_config.router_api_key:
+    if not server_config.router.api_base or not server_config.router.api_key:
         pytest.skip("ROUTER_API_BASE / ROUTER_API_KEY are not configured")
     return server_config
 
@@ -42,10 +42,10 @@ def embedding_service(
     async_client: httpx.AsyncClient,
 ) -> IEmbeddingService:
     (model, dimensions) = request.param
-    config = replace(server_config,
-    rag_embedding_model = model,
-    rag_embedding_dimensions = dimensions
+    rag = server_config.rag.model_copy(
+        update={"embedding_model": model, "embedding_dimensions": dimensions}
     )
+    config = server_config.model_copy(update={"rag": rag})
     return create_embeddings(config, async_client)
 
 

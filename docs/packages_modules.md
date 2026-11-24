@@ -151,7 +151,7 @@ Async web search and content fetching. The fetch tool is a chain of small classe
 |---|---|
 | `result.py`, `combinators.py` | Contracts and combinators above |
 | `models.py` | `SearchResult` |
-| `common.py` | `MIME_HTML`/`MIME_MARKDOWN`/`MIME_PLAIN`/`MIME_PDF` constants, `normalize_mime`/`textual_mime` classifiers, the `failure` result builder, `extract_hostname`, and `valid_router_url` |
+| `common.py` | `MIME_HTML`/`MIME_MARKDOWN`/`MIME_PLAIN`/`MIME_PDF` constants, `normalize_mime`/`textual_mime` classifiers, the `failure` result builder, and `extract_hostname` |
 | `google.py`, `yahoo.py` | `Search` factories |
 | `default.py` | `HttpFetch`: the single owner of page GETs (shared or owned client, browser-like Chrome headers) and of content-type extraction; HTML stays `text/html`, Markdown stays `text/markdown`, every other supported textual type and the text of a binary document is `text/plain`. It reads binary documents through the `extractors.py` registry. |
 | `extractors.py` | The registry of binary document formats. A `BinaryExtractor` holds a media type, a byte signature, URL extensions, and a `to_text` function. `BINARY_EXTRACTORS` lists the formats, and PDF (PyMuPDF) is the first entry. `extractor_for_mime`, `extractor_for_content`, and `extractor_for_url` look entries up. `HttpFetch` uses the first two. `fetch.py` uses the first and the last. To add a format, write one `to_text` function and add one entry. No other module changes. |

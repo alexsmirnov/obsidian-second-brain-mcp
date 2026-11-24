@@ -105,9 +105,9 @@ def _path_segment(value: str, label: str) -> str:
 
 def _vault_and_memory_dir(ctx: Context) -> tuple[Path, str]:
     config: ServerConfig = ctx.lifespan_context["obsidian_config"]
-    if config.vault_dir is None:
+    if config.vault.dir is None:
         raise ToolError("No vault is configured")
-    return config.vault_dir, config.memory_dir
+    return config.vault.dir, config.vault.memory_dir
 
 
 def _ensure_in_memory_folder(memory_root: Path, target: Path) -> None:

@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 from datetime import timedelta
 from unittest.mock import patch
 
-from mcps.config import ServerConfig
+from mcps.config import ServerConfig, VaultSettings
 from mcps.rag.index_scheduler import IndexScheduler
 from mcps.rag.interfaces import IVault, Link, TraversalResult
 from mcps.tools.obsidian_vault import build_obsidian_lifespan
@@ -74,7 +74,7 @@ class FakeVault(IVault):
 async def test_obsidian_lifespan_starts_and_cancels_periodic_task(
     tmp_path, monkeypatch
 ) -> None:
-    config = ServerConfig(vault_dir=tmp_path)
+    config = ServerConfig(vault=VaultSettings(VAULT=tmp_path))
     fake_vault = FakeVault()
 
     @asynccontextmanager

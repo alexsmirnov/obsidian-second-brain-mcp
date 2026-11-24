@@ -11,7 +11,7 @@ from fastmcp import Client, Context, FastMCP
 from fastmcp.exceptions import ToolError
 from fastmcp.server.lifespan import lifespan
 
-from mcps.config import ServerConfig
+from mcps.config import ServerConfig, VaultSettings
 from mcps.rag.note_paths import (
     is_malformed_reference,
     pick_note,
@@ -82,7 +82,9 @@ def make_context(
     memory_dir: str = "Memory",
     search_vault: FakeSearchVault | FakeVault | None = None,
 ) -> Context:
-    config = ServerConfig(vault_dir=vault, memory_dir=memory_dir)
+    config = ServerConfig(
+        vault=VaultSettings(VAULT=vault, MEMORY_DIR=memory_dir),
+    )
     lifespan_context: dict[str, object] = {
         "obsidian_config": config,
         "obsidian_index_scheduler": FakeScheduler(),
@@ -94,7 +96,7 @@ def make_context(
 
 def make_memory_server(vault: Path) -> FastMCP:
     """Bare server with only the memory tools: no RAG lifespan, no index."""
-    config = ServerConfig(vault_dir=vault)
+    config = ServerConfig(vault=VaultSettings(VAULT=vault))
 
     @lifespan
     async def memory_lifespan(server: FastMCP):
@@ -351,7 +353,7 @@ class TestDeleteMemory:
 
 class TestRegistration:
     async def test_tools_are_registered_with_annotations(self, tmp_path: Path):
-        server = create_server(ServerConfig(vault_dir=tmp_path))
+        server = create_server(ServerConfig(vault=VaultSettings(VAULT=tmp_path)))
 
         tools = {tool.name: tool for tool in await server.mcp.list_tools()}
 
@@ -366,7 +368,7 @@ class TestRegistration:
         assert delete_tool.annotations.destructive_hint is True
 
     async def test_add_memory_takes_only_four_arguments(self, tmp_path: Path):
-        server = create_server(ServerConfig(vault_dir=tmp_path))
+        server = create_server(ServerConfig(vault=VaultSettings(VAULT=tmp_path)))
 
         tools = {tool.name: tool for tool in await server.mcp.list_tools()}
 
@@ -381,7 +383,7 @@ class TestRegistration:
         assert schema["properties"]["project"]["default"] == "general"
 
     async def test_delete_memory_takes_a_note_reference(self, tmp_path: Path):
-        server = create_server(ServerConfig(vault_dir=tmp_path))
+        server = create_server(ServerConfig(vault=VaultSettings(VAULT=tmp_path)))
 
         tools = {tool.name: tool for tool in await server.mcp.list_tools()}
 
@@ -390,7 +392,7 @@ class TestRegistration:
         assert "partial path" in schema["properties"]["note"]["description"]
 
     async def test_tools_are_absent_without_vault(self):
-        server = create_server(ServerConfig(vault_dir=None))
+        server = create_server(ServerConfig(vault=VaultSettings(VAULT=None)))
 
         names = {tool.name for tool in await server.mcp.list_tools()}
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-from mcps.config import ServerConfig
+from mcps.config import RagSettings, RouterSettings, SearchSettings, ServerConfig
 from mcps.rag.reranking import LangChainReranker
 from mcps.rag.search import HypotheticalDocumentGenerator, SemanticSearchEngine
 from mcps.rag.vault import _create_search_engine
@@ -10,9 +10,8 @@ from mcps.rag.vault import _create_search_engine
 
 def test_create_search_engine_without_rag_infer_model_uses_vector_only() -> None:
     config = ServerConfig(
-        rag_infer_model="",
-        search_limit=7,
-        min_score=0.25,
+        rag=RagSettings(infer_model=""),
+        search=SearchSettings(limit=7, MIN_SCORE=0.25),
     )
     vector_store = MagicMock()
     http_client = MagicMock()
@@ -31,11 +30,9 @@ def test_create_search_engine_without_rag_infer_model_uses_vector_only() -> None
 
 def test_create_search_engine_with_rag_infer_model_wires_hyde_and_reranker() -> None:
     config = ServerConfig(
-        rag_infer_model="search-model",
-        router_api_base="http://router",
-        router_api_key="token",
-        search_limit=3,
-        min_score=0.4,
+        rag=RagSettings(infer_model="search-model"),
+        router=RouterSettings(api_base="http://router", api_key="token"),
+        search=SearchSettings(limit=3, MIN_SCORE=0.4),
     )
     vector_store = MagicMock()
     http_client = MagicMock()

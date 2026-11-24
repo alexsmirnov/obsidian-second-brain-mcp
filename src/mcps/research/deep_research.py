@@ -8,7 +8,6 @@ import logging
 import re
 import time
 from collections.abc import Awaitable, Callable, Iterable, Sequence
-from dataclasses import dataclass
 from datetime import datetime
 from operator import add
 from typing import TYPE_CHECKING, Annotated, Any, Literal, TypedDict, cast
@@ -21,6 +20,7 @@ from langgraph.graph import END, START, MessagesState, StateGraph
 from langgraph.types import Command, Overwrite, Send
 from pydantic import BaseModel, Field, ValidationError, model_validator
 
+from mcps.config import ResearchLimits
 from mcps.research.tools import SearchResult
 
 if TYPE_CHECKING:
@@ -120,19 +120,6 @@ _PARSE_ERRORS: tuple[type[Exception], ...] = (ValidationError, OutputParserExcep
 # ---------------------------------------------------------------------------
 # Pydantic models (structured LLM output)
 # ---------------------------------------------------------------------------
-
-
-@dataclass(frozen=True, slots=True)
-class ResearchLimits:
-    """Tunable bounds for one research run."""
-
-    round_start_budget: float = 180.0  # seconds since start; no new round after it
-    max_pages_per_round: int = 10
-    max_initial_queries: int = 3
-    max_follow_ups: int = 5  # independent limit for search_queries and for links
-    max_parse_attempts: int = 3  # first call + re-prompts on invalid structured output
-
-_DEFAULT_LIMITS = ResearchLimits()
 
 
 class Page(TypedDict):
@@ -505,7 +492,7 @@ class ResearchAgent:
         self,
         config: ResearchConfig,
         *,
-        limits: ResearchLimits = _DEFAULT_LIMITS,
+        limits: ResearchLimits,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.config = config

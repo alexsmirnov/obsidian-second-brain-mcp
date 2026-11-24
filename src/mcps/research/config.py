@@ -10,10 +10,9 @@ browser is available.
 from __future__ import annotations
 
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import AsyncGenerator
 
 import httpx
 from langchain_core.language_models import BaseChatModel
@@ -52,7 +51,7 @@ class ResearchConfig:
 
 def _is_google_cse_configured(config: ServerConfig) -> bool:
     """Return True when Google Custom Search credentials are present."""
-    return bool(config.google_api_key and config.google_search_id)
+    return bool(config.google.api_key and config.google.search_id)
 
 
 def _create_chat_model(
@@ -93,8 +92,8 @@ def create_search_tool(
     """Return the Google search when configured, else Yahoo."""
     if _is_google_cse_configured(config):
         return create_google_search(
-            config.google_api_key,
-            config.google_search_id,
+            config.google.api_key,
+            config.google.search_id,
             http_client=http_client,
         )
     return create_yahoo_search(http_client=http_client)
@@ -121,15 +120,15 @@ async def build_research_config(
             return
         yield ResearchConfig(
             fast=_create_chat_model(
-                model_name=config.research_fast_model,
-                router_url=config.router_api_base,
-                router_key=config.router_api_key,
+                model_name=config.research.fast_model,
+                router_url=config.router.api_base,
+                router_key=config.router.api_key,
                 http_client=http_client,
             ),
             small=_create_chat_model(
-                model_name=config.research_infer_model,
-                router_url=config.router_api_base,
-                router_key=config.router_api_key,
+                model_name=config.research.infer_model,
+                router_url=config.router.api_base,
+                router_key=config.router.api_key,
                 http_client=http_client,
             ),
             search=create_search_tool(config=config, http_client=http_client),

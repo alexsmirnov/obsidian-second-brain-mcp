@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from mcps.config import ServerConfig
+from mcps.config import ChunkingSettings, ServerConfig
 from mcps.rag.document_processing import SemanticChunker
 from mcps.rag.interfaces import (
     Chunk,
@@ -438,7 +438,9 @@ async def test_search_returns_immediately_when_index_update_is_slow(
 
 
 def test_create_chunker_with_config_passes_bounds() -> None:
-    config = ServerConfig(min_chunk_size=800, max_chunk_size=1600)
+    config = ServerConfig(
+        chunking=ChunkingSettings(MIN_CHUNK_SIZE=800, MAX_CHUNK_SIZE=1600),
+    )
     chunker = _create_chunker(config)
     assert isinstance(chunker, SemanticChunker)
     assert chunker.min_chunk_size == 800

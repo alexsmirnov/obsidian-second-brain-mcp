@@ -221,16 +221,16 @@ DROPPED_CONTENT = "<<Dropped: content is too big>>"
 
 
 def build_obsidian_lifespan(config: ServerConfig) -> Lifespan:
-    assert config.vault_dir is not None
+    assert config.vault.dir is not None
 
-    if not config.vault_dir.exists():
+    if not config.vault.dir.exists():
         raise FileNotFoundError(
-            f"Vault dir does not exist: {config.vault_dir}"
+            f"Vault dir does not exist: {config.vault.dir}"
         )
 
-    if not config.vault_dir.is_dir():
+    if not config.vault.dir.is_dir():
         raise ValueError(
-            f"Vault dir is not a directory: {config.vault_dir}"
+            f"Vault dir is not a directory: {config.vault.dir}"
                     )
     @lifespan
     async def obsidian_lifespan(server: FastMCP) -> AsyncIterator[dict[str, Any]]:
@@ -402,12 +402,12 @@ async def rename_move_note(
         logger.info(f"Renaming/moving Obsidian note from {old_path} to {new_path}")
         config = _config_from_context(ctx)
 
-        if config.vault_dir is None:
+        if config.vault.dir is None:
             error_msg = "Vault directory is not configured"
             logger.error(error_msg)
             return error_msg
 
-        vault_path = Path(config.vault_dir).resolve()
+        vault_path = Path(config.vault.dir).resolve()
         old_full_path = (vault_path / old_path).resolve()
         new_full_path = (vault_path / new_path).resolve()
 

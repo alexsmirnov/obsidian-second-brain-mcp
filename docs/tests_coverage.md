@@ -83,7 +83,7 @@ Tests for provider-neutral async LangChain reranking.
 - Invalid score handling
 
 ### [tests/test_config.py](../tests/test_config.py)
-Tests for `ServerConfig` creation, environment variable precedence, CLI overrides, and validation warnings.
+Tests for `ServerConfig` creation, environment variable reading, defaults, empty values, `.env` precedence, CLI overrides, invalid values that raise `ValidationError`, and the router warnings.
 
 ### [tests/test_deep_research.py](../tests/test_deep_research.py)
 Contract tests for the LangGraph deep research agent with mocked models and HTTP calls.
