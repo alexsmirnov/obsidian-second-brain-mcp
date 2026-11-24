@@ -79,7 +79,7 @@ class ServerConfig:
     fetch_restricted_domains: tuple[str, ...] = ()
     # Browser session pool: named tabs reused across fetches. The pool size is
     # also the cap on parallel browser renders across all research branches.
-    browser_pool_size: int = 2
+    browser_pool_size: int = 8
     # Attempts to start a replacement crawler after the connection is lost.
     browser_reconnect_attempts: int = 5
     # Pause before each reconnect attempt.
