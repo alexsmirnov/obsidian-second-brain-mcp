@@ -19,7 +19,7 @@ from mcps.research.tools.extractors import (
     extractor_for_url,
 )
 from mcps.research.tools.fetch import create_fetch
-from mcps.research.tools.filtering import RelevanceFilter
+from mcps.research.tools.filtering import ChunkedRelevanceFilter
 from mcps.research.tools.markdown_chunker import MarkdownChunker
 from mcps.research.tools.models import FetchResult, FetchStatus
 from tests.research_fakes import StaticFetch
@@ -123,7 +123,7 @@ async def test_new_registry_entry_serves_browser_handoff_without_other_changes(
     fetch = create_fetch(
         http_client=client,
         browser=browser,
-        page_filter=RelevanceFilter(MarkdownChunker(), Bm25Ranker()),
+        page_filter=ChunkedRelevanceFilter(MarkdownChunker(), Bm25Ranker()),
     )
 
     result = await fetch(url, None)
@@ -144,7 +144,7 @@ async def test_new_registry_extension_skips_browser(
     fetch = create_fetch(
         http_client=client,
         browser=browser,
-        page_filter=RelevanceFilter(MarkdownChunker(), Bm25Ranker()),
+        page_filter=ChunkedRelevanceFilter(MarkdownChunker(), Bm25Ranker()),
     )
 
     result = await fetch(url, None)

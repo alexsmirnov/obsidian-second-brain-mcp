@@ -9,7 +9,7 @@ from mcps.config import ResearchLimits
 from mcps.research.deep_research import ResearchAgent
 
 if TYPE_CHECKING:
-    from mcps.research.config import ResearchConfig
+    from mcps.research.research_config import ResearchConfig
 
 __all__ = [
     "ProgressReporter",
@@ -52,7 +52,6 @@ _RESEARCH_SYSTEM_PROMPT = (
 
 def create_researcher(
     config: ResearchConfig,
-    implementation: Literal["react_agent", "deep_research"] = "react_agent",
     *,
     limits: ResearchLimits,
     **kwargs: Any,
@@ -71,11 +70,4 @@ def create_researcher(
     Raises:
         ValueError: If an unsupported implementation is requested.
     """
-    match implementation:
-        case "deep_research":
-            return ResearchAgent(config, limits=limits)
-        case _:
-            raise ValueError(
-                f"Unknown implementation: {implementation!r}. "
-                "Supported: 'react_agent', 'deep_research'."
-            )
+    return ResearchAgent(config, limits=limits)

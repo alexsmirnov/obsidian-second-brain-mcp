@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from mcps.research.tools.filtering import Fragment, RelevanceFilter
+from mcps.research.tools.filtering import Fragment, ChunkedRelevanceFilter
 from mcps.research.tools.models import FetchResult, FetchStatus
 
 
@@ -72,7 +72,7 @@ async def test_relevance_filter_merges_selected_fragments_in_document_order():
     chunker = ParagraphChunker()
     ranker = PickRanker([2, 0, 2, 9])
 
-    result = await RelevanceFilter(chunker, ranker)(page("a\n\nb\n\nc"), "q")
+    result = await ChunkedRelevanceFilter(chunker, ranker)(page("a\n\nb\n\nc"), "q")
 
     assert result.status is FetchStatus.OK
     assert result.content == "a\n\nc"
@@ -82,7 +82,7 @@ async def test_relevance_filter_merges_selected_fragments_in_document_order():
 
 
 async def test_relevance_filter_content_is_what_merge_returns():
-    result = await RelevanceFilter(FixedMergeChunker(), PickRanker([0]))(
+    result = await ChunkedRelevanceFilter(FixedMergeChunker(), PickRanker([0]))(
         page("a\n\nb"), "q"
     )
 
@@ -90,7 +90,7 @@ async def test_relevance_filter_content_is_what_merge_returns():
 
 
 async def test_relevance_filter_duplicate_indices_select_once():
-    result = await RelevanceFilter(ParagraphChunker(), PickRanker([1, 1]))(
+    result = await ChunkedRelevanceFilter(ParagraphChunker(), PickRanker([1, 1]))(
         page("a\n\nb"), "q"
     )
 
@@ -101,14 +101,14 @@ async def test_relevance_filter_blank_query_returns_result_unchanged():
     ranker = PickRanker([0])
     source = page("a\n\nb")
 
-    result = await RelevanceFilter(ParagraphChunker(), ranker)(source, "   ")
+    result = await ChunkedRelevanceFilter(ParagraphChunker(), ranker)(source, "   ")
 
     assert result == source
     assert ranker.calls == []
 
 
 async def test_relevance_filter_empty_selection_is_ok_with_empty_content():
-    result = await RelevanceFilter(ParagraphChunker(), PickRanker([]))(
+    result = await ChunkedRelevanceFilter(ParagraphChunker(), PickRanker([]))(
         page("a\n\nb"), "q"
     )
 
@@ -117,7 +117,7 @@ async def test_relevance_filter_empty_selection_is_ok_with_empty_content():
 
 
 async def test_relevance_filter_ignores_out_of_range_indices():
-    result = await RelevanceFilter(ParagraphChunker(), PickRanker([5, 0]))(
+    result = await ChunkedRelevanceFilter(ParagraphChunker(), PickRanker([5, 0]))(
         page("a\n\nb"), "q"
     )
 
@@ -127,13 +127,13 @@ async def test_relevance_filter_ignores_out_of_range_indices():
 async def test_relevance_filter_passes_failed_results_through():
     failed = page("", status=FetchStatus.TIMEOUT)
 
-    filtered = await RelevanceFilter(ParagraphChunker(), PickRanker([0]))(failed, "q")
+    filtered = await ChunkedRelevanceFilter(ParagraphChunker(), PickRanker([0]))(failed, "q")
 
     assert filtered is failed
 
 
 async def test_relevance_filter_unsupported_mime_returns_unsupported():
-    result = await RelevanceFilter(ParagraphChunker(), PickRanker([0]))(
+    result = await ChunkedRelevanceFilter(ParagraphChunker(), PickRanker([0]))(
         page("\x00", mime="image/png"), "q"
     )
 
@@ -143,7 +143,7 @@ async def test_relevance_filter_unsupported_mime_returns_unsupported():
 async def test_relevance_filter_overlong_query_returns_filter_failed():
     ranker = PickRanker([0])
 
-    result = await RelevanceFilter(ParagraphChunker(), ranker, max_query_chars=5)(
+    result = await ChunkedRelevanceFilter(ParagraphChunker(), ranker, max_query_chars=5)(
         page("a"), "x" * 6
     )
 
@@ -152,7 +152,7 @@ async def test_relevance_filter_overlong_query_returns_filter_failed():
 
 
 async def test_relevance_filter_overlong_input_returns_filter_failed():
-    result = await RelevanceFilter(
+    result = await ChunkedRelevanceFilter(
         ParagraphChunker(), PickRanker([0]), max_input_chars=3
     )(page("abcd"), "q")
 
@@ -160,7 +160,7 @@ async def test_relevance_filter_overlong_input_returns_filter_failed():
 
 
 async def test_relevance_filter_ranker_error_returns_filter_failed():
-    result = await RelevanceFilter(ParagraphChunker(), BrokenRanker())(page("a"), "q")
+    result = await ChunkedRelevanceFilter(ParagraphChunker(), BrokenRanker())(page("a"), "q")
 
     assert result.status is FetchStatus.FILTER_FAILED
 
@@ -168,7 +168,7 @@ async def test_relevance_filter_ranker_error_returns_filter_failed():
 async def test_relevance_filter_chunker_error_returns_filter_failed():
     ranker = PickRanker([0])
 
-    result = await RelevanceFilter(BrokenSplitChunker(), ranker)(page("a"), "q")
+    result = await ChunkedRelevanceFilter(BrokenSplitChunker(), ranker)(page("a"), "q")
 
     assert result.status is FetchStatus.FILTER_FAILED
     assert ranker.calls == []
@@ -177,7 +177,7 @@ async def test_relevance_filter_chunker_error_returns_filter_failed():
 async def test_relevance_filter_merge_error_returns_filter_failed():
     ranker = PickRanker([0])
 
-    result = await RelevanceFilter(BrokenMergeChunker(), ranker)(page("a"), "q")
+    result = await ChunkedRelevanceFilter(BrokenMergeChunker(), ranker)(page("a"), "q")
 
     assert result.status is FetchStatus.FILTER_FAILED
     assert ranker.calls == [(["a"], "q")]
@@ -187,7 +187,7 @@ async def test_relevance_filter_no_fragments_skips_the_ranker():
     chunker = EmptySplitChunker()
     ranker = PickRanker([0])
 
-    result = await RelevanceFilter(chunker, ranker)(page("   "), "q")
+    result = await ChunkedRelevanceFilter(chunker, ranker)(page("   "), "q")
 
     assert result.status is FetchStatus.OK
     assert result.content == ""

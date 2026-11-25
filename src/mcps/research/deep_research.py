@@ -27,7 +27,7 @@ if TYPE_CHECKING:
     from langgraph.graph.state import CompiledStateGraph
 
     from mcps.research.agent import ProgressReporter, ResearchResponse
-    from mcps.research.config import ResearchConfig
+    from mcps.research.research_config import ResearchConfig
 
 __all__ = [
     "FETCH_QUERY_INSTRUCTIONS",

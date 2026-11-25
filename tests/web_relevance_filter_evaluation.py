@@ -4,6 +4,10 @@
 Run from the repository root:
 ``uv run tests/web_relevance_filter_evaluation.py --filter bm25 --limit 5``.
 
+Filters: ``bm25`` and ``decision`` chunk the page and rank the fragments;
+``llm`` sends the whole page to ``RESEARCH_FAST_MODEL`` and keeps the
+extracted text.
+
 Tuning arguments override the chunker size and overlap, the ranker threshold,
 the fetch-query prompt, the BM25 relative cutoff, smoothing and link penalty, and
 the decision ranker question, for example
@@ -16,8 +20,9 @@ per case, passages the filter must keep and boilerplate it must drop.
 
 Outputs go to ``tmp/``: ``relevance-<filter>-<timestamp>.log`` and a
 ``.jsonl`` report with one row per page. Each row lists the selected fragments
-(line range in the page and their first 30 characters), the relevant passages
-that were missed and the irrelevant ones that leaked into the result.
+(line range in the page and their first 30 characters; chunked filters only),
+the relevant passages that were missed and the irrelevant ones that leaked into
+the result.
 """
 
 from __future__ import annotations
@@ -30,18 +35,19 @@ import logging
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TypedDict, cast
+from typing import cast
 
 import httpx
 import nltk
 from dotenv import find_dotenv, load_dotenv
+from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
 from web_fetch_evaluation import CASES_DIR, FetchCase, load_cases
 
 from mcps.common.decisions import DecisionClient, Noul, NoulCriteria
 from mcps.config import ServerConfig, create_config
-from mcps.research.config import _create_chat_model
 from mcps.research.deep_research import FETCH_QUERY_INSTRUCTIONS, FetchQuery
+from mcps.research.research_config import create_chat_model
 from mcps.research.tools.bm25_ranker import Bm25Ranker
 from mcps.research.tools.decision_ranker import RELEVANCE_QUESTION, DecisionRanker
 from mcps.research.tools.fetch import (
@@ -51,7 +57,12 @@ from mcps.research.tools.fetch import (
     BM25_WINDOW,
     DECISION_WINDOW,
 )
-from mcps.research.tools.filtering import Ranker, RelevanceFilter
+from mcps.research.tools.filtering import (
+    ChunkedRelevanceFilter,
+    LlmRelevanceFilter,
+    Ranker,
+    RelevanceFilter,
+)
 from mcps.research.tools.markdown_chunker import MarkdownChunker
 from mcps.research.tools.models import FetchResult, FetchStatus
 
@@ -61,6 +72,17 @@ OUTPUT_DIR = Path(__file__).parent.parent / "tmp"
 PAGES_DIR = CASES_DIR / "filtering"
 PREVIEW_CHARS = 30
 QUERY_SOURCES = ("dataset", "generated")
+
+CHUNKER_OPTIONS = ("max_chars", "overlap_chars", "threshold")
+BM25_OPTIONS = ("relative_cutoff", "smoothing", "link_penalty")
+DECISION_OPTIONS = ("decision_instructions", "decision_true", "decision_false")
+# Tuning options each filter accepts; the rest must stay unset.
+FILTER_OPTIONS: dict[str, tuple[str, ...]] = {
+    "bm25": CHUNKER_OPTIONS + BM25_OPTIONS,
+    "decision": CHUNKER_OPTIONS + DECISION_OPTIONS,
+    "llm": (),
+}
+TUNING_OPTIONS = CHUNKER_OPTIONS + BM25_OPTIONS + DECISION_OPTIONS
 
 
 def _configure_logging(log_path: Path) -> None:
@@ -73,6 +95,11 @@ def _configure_logging(log_path: Path) -> None:
     )
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
+
+
+def _override[T](value: T | None, default: T) -> T:
+    """Explicit CLI value, empty strings included, else the default."""
+    return default if value is None else value
 
 
 @dataclass(frozen=True)
@@ -108,94 +135,18 @@ def fetch_query_message(inp: FetchQueryInput) -> str:
     return f"QUESTION: {inp.question}"
 
 
-@dataclass(frozen=True)
-class RankerTuning:
-    """Ranker overrides; ``None`` keeps the ranker's own default."""
-
-    threshold: float | None = None
-    decision_question: Noul | None = None
-    relative_cutoff: float | None = None
-    smoothing: float | None = None
-    link_penalty: float | None = None
-
-
-class _Bm25Options(TypedDict, total=False):
-    threshold: float
-    relative_cutoff: float
-    smoothing: float
-    link_penalty: float
-
-
-class _DecisionOptions(TypedDict, total=False):
-    threshold: float
-    question: Noul
-
-
-RankerBuilder = Callable[
-    [ServerConfig, httpx.AsyncClient, RankerTuning], Bm25Ranker | DecisionRanker
-]
-
-
-def bm25_ranker(
-    _config: ServerConfig, _http_client: httpx.AsyncClient, tuning: RankerTuning
-) -> Bm25Ranker:
-    options = _Bm25Options(
-        threshold=BM25_THRESHOLD if tuning.threshold is None else tuning.threshold,
-        relative_cutoff=(
-            BM25_RELATIVE_CUTOFF
-            if tuning.relative_cutoff is None
-            else tuning.relative_cutoff
-        ),
-        smoothing=BM25_SMOOTHING if tuning.smoothing is None else tuning.smoothing,
+def router_chat_model(
+    config: ServerConfig, model_name: str | None, http_client: httpx.AsyncClient
+) -> BaseChatModel:
+    """Router-backed chat model; fail fast when the model or router is unset."""
+    if not (model_name and config.router.api_key and config.router.api_base):
+        raise RuntimeError("research model or router settings not set")
+    return create_chat_model(
+        model_name=model_name,
+        router_url=config.router.api_base,
+        router_key=config.router.api_key,
+        http_client=http_client,
     )
-    if tuning.link_penalty is not None:
-        options["link_penalty"] = tuning.link_penalty
-    return Bm25Ranker(**options)
-
-
-def decision_ranker(
-    config: ServerConfig, http_client: httpx.AsyncClient, tuning: RankerTuning
-) -> DecisionRanker:
-    if not (config.fetch.decision_model and bool(config.router.api_base)):
-        raise RuntimeError("DECISION_MODEL or router settings not set")
-    options = _DecisionOptions()
-    if tuning.threshold is not None:
-        options["threshold"] = tuning.threshold
-    if tuning.decision_question is not None:
-        options["question"] = tuning.decision_question
-    return DecisionRanker(
-        DecisionClient(
-            http_client,
-            router_url=config.router.api_base,
-            router_key=config.router.api_key,
-            model=config.fetch.decision_model,
-        ),
-        **options,
-    )
-
-
-def ranker_settings(ranker: Bm25Ranker | DecisionRanker) -> dict[str, object]:
-    """Effective ranker settings recorded with every report row."""
-    settings: dict[str, object] = {"threshold": ranker.threshold}
-    if isinstance(ranker, Bm25Ranker):
-        settings["relative_cutoff"] = ranker.relative_cutoff
-        settings["smoothing"] = ranker.smoothing
-        settings["link_penalty"] = ranker.link_penalty
-    if isinstance(ranker, DecisionRanker):
-        criteria = ranker.question.criteria or NoulCriteria()
-        settings["decision_question"] = {
-            "instructions": ranker.question.instructions,
-            "true": criteria.true,
-            "false": criteria.false,
-        }
-    return settings
-
-
-# Append an entry to compare another filter implementation on the same pages.
-FILTERS: dict[str, RankerBuilder] = {
-    "bm25": bm25_ranker,
-    "decision": decision_ranker,
-}
 
 
 class RecordingRanker:
@@ -210,6 +161,131 @@ class RecordingRanker:
         self.fragments = fragments
         self.selected = await self._ranker(fragments, query)
         return self.selected
+
+
+@dataclass(frozen=True)
+class FilterSetup:
+    """Filter under evaluation, its effective settings and optional recorder."""
+
+    page_filter: RelevanceFilter
+    settings: dict[str, object]
+    recorder: RecordingRanker | None = None
+
+
+def chunked_setup(
+    args: argparse.Namespace,
+    window: tuple[int, int],
+    ranker: Ranker,
+    ranker_settings: dict[str, object],
+) -> FilterSetup:
+    """Wrap a ranker into a recorded chunked filter with CLI window overrides."""
+    max_chars = _override(args.max_chars, window[0])
+    overlap_chars = _override(args.overlap_chars, window[1])
+    recorder = RecordingRanker(ranker)
+    return FilterSetup(
+        page_filter=ChunkedRelevanceFilter(
+            MarkdownChunker(max_chars=max_chars, overlap_chars=overlap_chars),
+            recorder,
+        ),
+        settings={
+            "max_chars": max_chars,
+            "overlap_chars": overlap_chars,
+            **ranker_settings,
+        },
+        recorder=recorder,
+    )
+
+
+def bm25_filter(
+    args: argparse.Namespace, _config: ServerConfig, _http_client: httpx.AsyncClient
+) -> FilterSetup:
+    ranker = Bm25Ranker(
+        threshold=_override(args.threshold, BM25_THRESHOLD),
+        relative_cutoff=_override(args.relative_cutoff, BM25_RELATIVE_CUTOFF),
+        smoothing=_override(args.smoothing, BM25_SMOOTHING),
+        link_penalty=_override(args.link_penalty, 0.0),
+    )
+    return chunked_setup(
+        args,
+        BM25_WINDOW,
+        ranker,
+        {
+            "threshold": ranker.threshold,
+            "relative_cutoff": ranker.relative_cutoff,
+            "smoothing": ranker.smoothing,
+            "link_penalty": ranker.link_penalty,
+        },
+    )
+
+
+def decision_question(args: argparse.Namespace) -> Noul:
+    """Relevance question with CLI overrides applied field by field."""
+    criteria = RELEVANCE_QUESTION.criteria or NoulCriteria()
+    return Noul(
+        instructions=_override(
+            args.decision_instructions, RELEVANCE_QUESTION.instructions
+        ),
+        criteria=NoulCriteria(
+            true=_override(args.decision_true, criteria.true),
+            false=_override(args.decision_false, criteria.false),
+        ),
+    )
+
+
+def decision_filter(
+    args: argparse.Namespace, config: ServerConfig, http_client: httpx.AsyncClient
+) -> FilterSetup:
+    if not (config.fetch.decision_model and config.router.api_base):
+        raise RuntimeError("DECISION_MODEL or router settings not set")
+    threshold = {} if args.threshold is None else {"threshold": args.threshold}
+    question = decision_question(args)
+    ranker = DecisionRanker(
+        DecisionClient(
+            http_client,
+            router_url=config.router.api_base,
+            router_key=config.router.api_key,
+            model=config.fetch.decision_model,
+        ),
+        question=question,
+        **threshold,
+    )
+    criteria = question.criteria or NoulCriteria()
+    return chunked_setup(
+        args,
+        DECISION_WINDOW,
+        ranker,
+        {
+            "threshold": ranker.threshold,
+            "decision_question": {
+                "instructions": question.instructions,
+                "true": criteria.true,
+                "false": criteria.false,
+            },
+        },
+    )
+
+
+def llm_filter(
+    _args: argparse.Namespace, config: ServerConfig, http_client: httpx.AsyncClient
+) -> FilterSetup:
+    model_name = config.research.fast_model
+    return FilterSetup(
+        page_filter=LlmRelevanceFilter(
+            router_chat_model(config, model_name, http_client)
+        ),
+        settings={"model": model_name},
+    )
+
+
+# Append an entry to compare another filter implementation on the same pages.
+FILTERS: dict[
+    str,
+    Callable[[argparse.Namespace, ServerConfig, httpx.AsyncClient], FilterSetup],
+] = {
+    "bm25": bm25_filter,
+    "decision": decision_filter,
+    "llm": llm_filter,
+}
 
 
 def calculate_precision(tp: int, fp: int) -> float:
@@ -340,7 +416,7 @@ def fragment_rows(
     content: str, fragments: list[str], selected: list[int]
 ) -> list[dict[str, object]]:
     """Describe selected fragments in document order with page line ranges."""
-    kept = sorted({index for index in selected if 0 <= index < len(fragments)})
+    kept = {index for index in selected if 0 <= index < len(fragments)}
     rows: list[dict[str, object]] = []
     cursor = 0
     for index, fragment in enumerate(fragments):
@@ -361,22 +437,17 @@ def fragment_rows(
     return rows
 
 
-def passage_rows(content: str, passages: list[str]) -> list[dict[str, object]]:
-    """Describe expected passages by page line range and first characters."""
-    rows: list[dict[str, object]] = []
-    for text in passages:
-        start = content.find(text)
-        start_line, end_line = (
-            line_span(content, start, start + len(text)) if start >= 0 else (None, None)
-        )
-        rows.append(
-            {
-                "start_line": start_line,
-                "end_line": end_line,
-                "preview": text[:PREVIEW_CHARS],
-            }
-        )
-    return rows
+def passage_row(content: str, text: str) -> dict[str, object]:
+    """Describe an expected passage by page line range and first characters."""
+    start = content.find(text)
+    start_line, end_line = (
+        line_span(content, start, start + len(text)) if start >= 0 else (None, None)
+    )
+    return {
+        "start_line": start_line,
+        "end_line": end_line,
+        "preview": text[:PREVIEW_CHARS],
+    }
 
 
 async def generate_fetch_query(
@@ -387,15 +458,6 @@ async def generate_fetch_query(
     instructions: str = FETCH_QUERY_INSTRUCTIONS,
 ) -> str:
     """Generate one fetch query for a case via the shared production fragment."""
-    if not (
-        config.research.fast_model
-        and config.research.infer_model
-        and config.router.api_key
-        and bool(config.router.api_base)
-    ):
-        raise RuntimeError(
-            "RESEARCH_FAST_MODEL, RESEARCH_INFER_MODEL or router settings not set"
-        )
     inp = fetch_query_input(case, cases)
     # Round 0/unknown uses the fast model; later rounds use the infer model.
     model_name = (
@@ -403,12 +465,7 @@ async def generate_fetch_query(
         if case.research_round in (None, 0)
         else config.research.infer_model
     )
-    model = _create_chat_model(
-        model_name=model_name,
-        router_url=config.router.api_base,
-        router_key=config.router.api_key,
-        http_client=http_client,
-    )
+    model = router_chat_model(config, model_name, http_client)
     parsed = cast(
         FetchQuery,
         await model.with_structured_output(FetchQuery).ainvoke(
@@ -425,17 +482,14 @@ async def evaluate_case(
     case: FetchCase,
     expected: dict,
     query: str,
-    page_filter: RelevanceFilter,
-    recorder: RecordingRanker,
-    filter_name: str,
-    query_source: str,
+    setup: FilterSetup,
 ) -> tuple[CaseMetrics, dict[str, object]]:
     """Filter one page and build its metrics and JSONL report row."""
     content = (PAGES_DIR / expected["file"]).read_text(encoding="utf-8")
     page = FetchResult(
         url=case.url, status=FetchStatus.OK, mime=expected["mime"], content=content
     )
-    result = await page_filter(page, query)
+    result = await setup.page_filter(page, query)
     if result.status is not FetchStatus.OK:
         raise RuntimeError(f"{case.case_id}: filter returned {result.status}")
     kept = result.content
@@ -443,11 +497,10 @@ async def evaluate_case(
         kept, expected["relevant"], expected["irrelevant"]
     )
     metrics = CaseMetrics(case_id=case.case_id, tp=tp, fp=fp, fn=fn, tn=tn)
+    recorder = setup.recorder
     row = {
         "case_id": case.case_id,
         "url": case.url,
-        "filter": filter_name,
-        "query_source": query_source,
         "query": query,
         "page_chars": len(content),
         "kept_chars": len(kept),
@@ -458,37 +511,19 @@ async def evaluate_case(
         "fp": fp,
         "fn": fn,
         "tn": tn,
-        "selected": fragment_rows(content, recorder.fragments, recorder.selected),
-        "missed": passage_rows(
-            content, [t for t in expected["relevant"] if t not in kept]
+        "selected": (
+            fragment_rows(content, recorder.fragments, recorder.selected)
+            if recorder
+            else None
         ),
-        "false_positives": passage_rows(
-            content, [t for t in expected["irrelevant"] if t in kept]
-        ),
+        "missed": [
+            passage_row(content, t) for t in expected["relevant"] if t not in kept
+        ],
+        "false_positives": [
+            passage_row(content, t) for t in expected["irrelevant"] if t in kept
+        ],
     }
     return metrics, row
-
-
-def decision_question(args: argparse.Namespace) -> Noul | None:
-    """Relevance question with CLI overrides, or ``None`` when none are given."""
-    overrides = (args.decision_instructions, args.decision_true, args.decision_false)
-    if all(text is None for text in overrides):
-        return None
-    default_criteria = RELEVANCE_QUESTION.criteria or NoulCriteria()
-    return Noul(
-        instructions=_override(
-            args.decision_instructions, RELEVANCE_QUESTION.instructions
-        ),
-        criteria=NoulCriteria(
-            true=_override(args.decision_true, default_criteria.true),
-            false=_override(args.decision_false, default_criteria.false),
-        ),
-    )
-
-
-def _override[T](value: T | None, default: T) -> T:
-    """Explicit CLI value, empty strings included, else the default."""
-    return default if value is None else value
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -504,28 +539,31 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="use the recorded query or generate one with the fetch-query fragment",
     )
     parser.add_argument(
+        "--fetch-query-prompt",
+        type=Path,
+        help="file replacing FETCH_QUERY_INSTRUCTIONS; "
+        "requires --query-source generated",
+    )
+    chunked = parser.add_argument_group(
+        "chunked filter tuning", "--filter bm25 or decision"
+    )
+    chunked.add_argument(
         "--max-chars",
         type=int,
         help=f"chunker fragment size (default bm25 {BM25_WINDOW[0]}, "
         f"decision {DECISION_WINDOW[0]})",
     )
-    parser.add_argument(
+    chunked.add_argument(
         "--overlap-chars",
         type=int,
         help=f"chunker fragment overlap (default bm25 {BM25_WINDOW[1]}, "
         f"decision {DECISION_WINDOW[1]})",
     )
-    parser.add_argument(
+    chunked.add_argument(
         "--threshold",
         type=float,
         help=f"BM25 score cutoff (default {BM25_THRESHOLD}) "
         "or decision probability (default 0.6)",
-    )
-    parser.add_argument(
-        "--fetch-query-prompt",
-        type=Path,
-        help="file replacing FETCH_QUERY_INSTRUCTIONS; "
-        "requires --query-source generated",
     )
     bm25 = parser.add_argument_group("bm25 tuning", "--filter bm25")
     bm25.add_argument(
@@ -558,26 +596,33 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         parser.error("--fetch-query-prompt requires --query-source generated")
     if prompt is not None and not prompt.is_file():
         parser.error(f"fetch query prompt file not found: {prompt}")
-    decision_overrides = (
-        args.decision_instructions,
-        args.decision_true,
-        args.decision_false,
-    )
-    if args.filter != "decision" and any(
-        text is not None for text in decision_overrides
-    ):
-        parser.error("--decision-* arguments require --filter decision")
-    bm25_overrides = (args.relative_cutoff, args.smoothing, args.link_penalty)
-    if args.filter != "bm25" and any(value is not None for value in bm25_overrides):
+    unsupported = [
+        f"--{name.replace('_', '-')}"
+        for name in TUNING_OPTIONS
+        if name not in FILTER_OPTIONS[args.filter] and getattr(args, name) is not None
+    ]
+    if unsupported:
         parser.error(
-            "--relative-cutoff, --smoothing and --link-penalty require --filter bm25"
+            f"{', '.join(unsupported)} not supported by --filter {args.filter}"
         )
-    max_chars, overlap_chars = BM25_WINDOW if args.filter == "bm25" else DECISION_WINDOW
-    if args.max_chars is None:
-        args.max_chars = max_chars
-    if args.overlap_chars is None:
-        args.overlap_chars = overlap_chars
     return args
+
+
+def ensure_nltk_data() -> None:
+    for resource in ("corpora/stopwords", "tokenizers/punkt_tab"):
+        try:
+            nltk.data.find(resource)
+        except LookupError:
+            nltk.download(resource.rsplit("/", 1)[-1], raise_on_error=True)
+
+
+def load_evaluation_cases() -> dict[str, FetchCase]:
+    """Dataset cases by id; smoke rows override baseline rows sharing an id."""
+    return {
+        case.case_id: case
+        for dataset in ("fetch-cases-baseline.jsonl", "fetch-cases-smoke.jsonl")
+        for case in load_cases(CASES_DIR / dataset)
+    }
 
 
 async def main(argv: list[str] | None = None) -> None:
@@ -592,24 +637,14 @@ async def main(argv: list[str] | None = None) -> None:
     stem = f"relevance-{args.filter}-{args.query_source}-{stamp}"
     report_path = OUTPUT_DIR / f"{stem}.jsonl"
     _configure_logging(OUTPUT_DIR / f"{stem}.log")
-
-    for resource in ("corpora/stopwords", "tokenizers/punkt_tab"):
-        try:
-            nltk.data.find(resource)
-        except LookupError:
-            nltk.download(resource.rsplit("/", 1)[-1], raise_on_error=True)
+    ensure_nltk_data()
 
     load_dotenv(find_dotenv(usecwd=True))
     config = create_config()
     expectations: dict[str, dict] = json.loads(
         (PAGES_DIR / "expectations.json").read_text(encoding="utf-8")
     )
-    # Smoke rows override baseline rows sharing a case id.
-    cases = {
-        case.case_id: case
-        for dataset in ("fetch-cases-baseline.jsonl", "fetch-cases-smoke.jsonl")
-        for case in load_cases(CASES_DIR / dataset)
-    }
+    cases = load_evaluation_cases()
     case_ids = sorted(expectations)[: args.limit]
     logger.info(
         "Evaluating filter=%s query_source=%s on %d cases",
@@ -620,35 +655,14 @@ async def main(argv: list[str] | None = None) -> None:
 
     evaluation = FilterEvaluation(filter_name=f"{args.filter}/{args.query_source}")
     async with httpx.AsyncClient(timeout=120.0) as http_client:
-        ranker = FILTERS[args.filter](
-            config,
-            http_client,
-            RankerTuning(
-                args.threshold,
-                decision_question(args),
-                relative_cutoff=args.relative_cutoff,
-                smoothing=args.smoothing,
-                link_penalty=args.link_penalty,
-            ),
-        )
-        settings: dict[str, object] = {
-            "max_chars": args.max_chars,
-            "overlap_chars": args.overlap_chars,
-            **ranker_settings(ranker),
+        setup = FILTERS[args.filter](args, config, http_client)
+        settings = {
+            **setup.settings,
             "fetch_query_prompt": (
-                str(args.fetch_query_prompt)
-                if args.fetch_query_prompt is not None
-                else None
+                str(args.fetch_query_prompt) if args.fetch_query_prompt else None
             ),
         }
         logger.info("Settings: %s", json.dumps(settings))
-        recorder = RecordingRanker(ranker)
-        page_filter = RelevanceFilter(
-            MarkdownChunker(
-                max_chars=args.max_chars, overlap_chars=args.overlap_chars
-            ),
-            recorder,
-        )
         with report_path.open("w", encoding="utf-8") as report:
             for number, case_id in enumerate(case_ids, start=1):
                 case = cases[case_id]
@@ -660,16 +674,14 @@ async def main(argv: list[str] | None = None) -> None:
                     )
                 )
                 metrics, row = await evaluate_case(
-                    case,
-                    expectations[case_id],
-                    query,
-                    page_filter,
-                    recorder,
-                    args.filter,
-                    args.query_source,
+                    case, expectations[case_id], query, setup
                 )
-                row["settings"] = settings
                 evaluation.cases.append(metrics)
+                row |= {
+                    "filter": args.filter,
+                    "query_source": args.query_source,
+                    "settings": settings,
+                }
                 report.write(json.dumps(row) + "\n")
                 report.flush()
                 logger.info(

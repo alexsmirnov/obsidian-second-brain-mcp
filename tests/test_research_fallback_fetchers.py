@@ -30,7 +30,7 @@ from mcps.research.tools.bright_data import BrightDataFetch
 from mcps.research.tools.browser import SessionPool, create_browser_fetch
 from mcps.research.tools.default import HttpFetch
 from mcps.research.tools.fetch import build_fetch_tool, create_page_filter
-from mcps.research.tools.filtering import RelevanceFilter
+from mcps.research.tools.filtering import ChunkedRelevanceFilter
 from mcps.research.tools.github import GitHubBlobFetch
 from mcps.research.tools.models import FetchResult, FetchStatus
 from mcps.research.tools.scrape_do import ScrapeDoFetch
@@ -1631,7 +1631,7 @@ async def test_create_page_filter_selects_by_config(
 
         result = await page_filter(source, "alpha")
 
-    assert isinstance(page_filter, RelevanceFilter)
+    assert isinstance(page_filter, ChunkedRelevanceFilter)
     if router_path is None:
         assert router_calls == []
         assert result.status is not FetchStatus.FILTER_FAILED

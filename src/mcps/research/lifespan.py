@@ -8,7 +8,7 @@ from fastmcp.server.lifespan import Lifespan, lifespan
 
 from mcps.config import ServerConfig
 from mcps.research.agent import create_researcher
-from mcps.research.config import build_research_config
+from mcps.research.research_config import build_research_config
 from mcps.research.jobs import InMemoryJobStore, ResearchJobs
 
 _RESEARCH_TOOLS = {"web_research", "web_research_status"}
@@ -34,7 +34,6 @@ def build_research_lifespan(config: ServerConfig) -> Lifespan:
                 server.enable(names=_RESEARCH_TOOLS)
                 researcher = create_researcher(
                     research_config,
-                    implementation="deep_research",
                     limits=config.research_limits,
                 )
                 jobs = ResearchJobs(

@@ -27,7 +27,7 @@ from mcps.research.tools.combinators import (
 from mcps.research.tools.decision_ranker import DecisionRanker
 from mcps.research.tools.default import HttpFetch
 from mcps.research.tools.extractors import extractor_for_mime, extractor_for_url
-from mcps.research.tools.filtering import Ranker, RelevanceFilter
+from mcps.research.tools.filtering import Ranker, RelevanceFilter, ChunkedRelevanceFilter
 from mcps.research.tools.github import (
     GitHubBlobFetch,
     GitHubRepoFetch,
@@ -197,7 +197,7 @@ def create_page_filter(
     """Build the first ranker whose predicate holds for ``config`` and its chunker."""
     for is_configured, build, (max_chars, overlap_chars) in _RANKERS:
         if is_configured(config):
-            return RelevanceFilter(
+            return ChunkedRelevanceFilter(
                 MarkdownChunker(max_chars=max_chars, overlap_chars=overlap_chars),
                 build(config, http_client),
             )

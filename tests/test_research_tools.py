@@ -16,7 +16,7 @@ import pytest
 from pytest_httpx import HTTPXMock
 
 from mcps.config import GoogleSettings, ServerConfig
-from mcps.research.config import create_search_tool
+from mcps.research.research_config import create_search_tool
 from mcps.research.tools import (
     create_fetch,
     create_google_search,
@@ -25,7 +25,7 @@ from mcps.research.tools import (
 from mcps.research.tools.arxiv import ArxivFetch
 from mcps.research.tools.bm25_ranker import Bm25Ranker
 from mcps.research.tools.default import HttpFetch
-from mcps.research.tools.filtering import RelevanceFilter
+from mcps.research.tools.filtering import ChunkedRelevanceFilter
 from mcps.research.tools.github import GitHubBlobFetch, GitHubRepoFetch
 from mcps.research.tools.google import GOOGLE_CSE_URL
 from mcps.research.tools.markdown_chunker import MarkdownChunker
@@ -126,13 +126,13 @@ async def client() -> AsyncIterator[httpx.AsyncClient]:
 
 @pytest.fixture
 def bm25():
-    return RelevanceFilter(MarkdownChunker(), Bm25Ranker())
+    return ChunkedRelevanceFilter(MarkdownChunker(), Bm25Ranker())
 
 
 @pytest.fixture
 def keep_all_overlap():
     """Filter that keeps every fragment sharing a term with the query."""
-    return RelevanceFilter(MarkdownChunker(), Bm25Ranker(threshold=0.0))
+    return ChunkedRelevanceFilter(MarkdownChunker(), Bm25Ranker(threshold=0.0))
 
 
 def _pdf_bytes(text: str) -> bytes:

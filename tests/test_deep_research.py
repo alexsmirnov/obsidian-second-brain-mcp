@@ -32,7 +32,7 @@ from mcps.config import (
     create_config,
 )
 from mcps.research.agent import create_researcher
-from mcps.research.config import ResearchConfig, build_research_config
+from mcps.research.research_config import ResearchConfig, build_research_config
 from mcps.research.deep_research import (
     _FINALIZE_PROMPT,
     FinalAnswer,
@@ -229,15 +229,6 @@ class TestServerConfigContract:
 
 
 class TestResearchConfigContract:
-    def test_create_researcher_validates_implementation(self):
-        config = _make_agent()[0].config
-        assert callable(create_researcher(
-            config, implementation="deep_research", limits=ResearchLimits()
-        ))
-        with pytest.raises(ValueError, match="Unknown implementation"):
-            create_researcher(
-                config, implementation=cast(Any, "bogus"), limits=ResearchLimits()
-            )
 
     async def test_build_research_config_returns_valid_config(self, monkeypatch):
         monkeypatch.setattr(
@@ -277,7 +268,7 @@ class TestAgentAndProgressContract:
     def researcher(self):
         config = _make_agent()[0].config
         return create_researcher(
-            config, implementation="deep_research", limits=ResearchLimits()
+            config, limits=ResearchLimits()
         )
 
     async def test_agent_returns_research_response_contract(self, researcher):

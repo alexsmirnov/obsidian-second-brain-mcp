@@ -11,7 +11,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel, Field
 
 from mcps.config import ServerConfig
-from mcps.research.config import _create_chat_model
+from mcps.research.research_config import create_chat_model
 
 from .dataset import RubricCriterion
 from .scoring import CriterionVerdict
@@ -23,7 +23,7 @@ def create_judge_model(
     config: ServerConfig, *, http_client: httpx.AsyncClient
 ) -> BaseChatModel:
     """Build the judge model: RESEARCH_EVAL_MODEL, else RESEARCH_INFER_MODEL."""
-    return _create_chat_model(
+    return create_chat_model(
         model_name=os.getenv("RESEARCH_EVAL_MODEL") or config.research.infer_model,
         router_url=config.router.api_base,
         router_key=config.router.api_key,

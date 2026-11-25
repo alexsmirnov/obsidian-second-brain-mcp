@@ -8,10 +8,14 @@ from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from typing import Protocol
 
+from langchain_core.language_models import BaseChatModel
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_openai import ChatOpenAI
 from mcps.research.tools.common import failure, textual_mime
 from mcps.research.tools.models import FetchResult, FetchStatus
 
-__all__ = ["Chunker", "FilterModelError", "Fragment", "Ranker", "RelevanceFilter"]
+__all__ = ["Chunker", "FilterModelError", "Fragment", "Ranker", "RelevanceFilter", "ChunkedRelevanceFilter"]
 
 logger = logging.getLogger(__name__)
 
@@ -58,8 +62,13 @@ class Ranker(Protocol):
 
     async def __call__(self, fragments: list[str], query: str) -> list[int]: ...
 
+class RelevanceFilter(Protocol):
+    """Keep the query-relevant fragments of a textual result.  """
+    async def __call__(
+        self, result: FetchResult, query: str | None = None, /
+    ) -> FetchResult: ...
 
-class RelevanceFilter:
+class ChunkedRelevanceFilter:
     """Keep the query-relevant fragments of a textual result, merged in document order.
 
     Non-textual media give ``UNSUPPORTED`` and oversized input or query give
@@ -111,3 +120,30 @@ class RelevanceFilter:
             )
             return failure(result.url, FetchStatus.FILTER_FAILED)
         return replace(result, content=content)
+
+_FILTER_PROMPT="""Extract text from document downloaded from internet,
+relevant to user QUERY. Keep surrounding text that may help to answer follow-up questions.
+If query is not provided, keep all that seems as a main page content,
+remove navigation, advertisizing, and other content unrelated to main body.
+Return only text from document, without any preface sentences. Keep original text from selected paragraphs, preserve formattings and markdown 
+"""
+class LlmRelevanceFilter:
+
+    def __init__(self, model: BaseChatModel) -> None:
+        self.model = model
+
+    async def __call__(
+        self, result: FetchResult, query: str | None = None, 
+    ) -> FetchResult:
+        extract_message=f"""<QUERY>{query}</QUERY>\n\n\n<DOCUMENT>{result.content}<DOCUMENT>"""
+        try:
+            response = await self.model.ainvoke(input=[SystemMessage(_FILTER_PROMPT),HumanMessage(extract_message)])
+            text = response.text
+            logger.info("llm filter returned %d chars",len(text))
+            return replace(result, content=text)
+        except Exception as error:
+            logger.warning(
+                "LLM filtering failed for %s: %r", result.url, error
+            )
+            return failure(result.url, FetchStatus.FILTER_FAILED)
+        pass

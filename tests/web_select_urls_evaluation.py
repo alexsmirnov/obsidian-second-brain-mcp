@@ -37,7 +37,7 @@ from langgraph.types import Command, Send
 from web_fetch_evaluation import CASES_DIR
 
 from mcps.config import ResearchLimits, ServerConfig, create_config
-from mcps.research.config import ResearchConfig, _create_chat_model
+from mcps.research.research_config import ResearchConfig, create_chat_model
 from mcps.research.deep_research import (
     OverallState,
     ResearchAgent,
@@ -218,7 +218,7 @@ def create_agent(
         and bool(server_config.router.api_base)
     ):
         raise RuntimeError("RESEARCH_FAST_MODEL or router settings not set")
-    model = _create_chat_model(
+    model = create_chat_model(
         model_name=model_name,
         router_url=server_config.router.api_base,
         router_key=server_config.router.api_key,

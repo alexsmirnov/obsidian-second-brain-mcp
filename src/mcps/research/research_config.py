@@ -33,6 +33,7 @@ from mcps.research.tools.fetch import build_fetch_tool
 __all__ = [
     "ResearchConfig",
     "SearchResult",
+    "create_chat_model",
     "build_research_config",
 ]
 
@@ -54,7 +55,7 @@ def _is_google_cse_configured(config: ServerConfig) -> bool:
     return bool(config.google.api_key and config.google.search_id)
 
 
-def _create_chat_model(
+def create_chat_model(
     *,
     model_name: str,
     router_url: str,
@@ -119,13 +120,13 @@ async def build_research_config(
             yield None
             return
         yield ResearchConfig(
-            fast=_create_chat_model(
+            fast=create_chat_model(
                 model_name=config.research.fast_model,
                 router_url=config.router.api_base,
                 router_key=config.router.api_key,
                 http_client=http_client,
             ),
-            small=_create_chat_model(
+            small=create_chat_model(
                 model_name=config.research.infer_model,
                 router_url=config.router.api_base,
                 router_key=config.router.api_key,

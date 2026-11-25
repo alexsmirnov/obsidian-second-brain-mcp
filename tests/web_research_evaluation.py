@@ -22,7 +22,7 @@ from evaluation.report import REPORT_DIR, generate_html_report, save_report
 
 from mcps.config import create_config
 from mcps.research.agent import create_researcher
-from mcps.research.config import build_research_config
+from mcps.research.research_config import build_research_config
 
 timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 REPORT_DIR.mkdir(exist_ok=True)
@@ -60,7 +60,6 @@ async def main():
             logger.info("Creating research agent...")
             agent = create_researcher(
                 config,
-                implementation="deep_research",
                 limits=server_config.research_limits,
             )
 
