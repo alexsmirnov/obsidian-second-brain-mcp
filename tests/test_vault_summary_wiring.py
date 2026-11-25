@@ -12,7 +12,7 @@ def test_create_summary_generator_without_rag_infer_model_returns_none() -> None
     config = ServerConfig(rag=RagSettings(infer_model=""))
     http_client = MagicMock()
 
-    with patch("mcps.rag.vault.ChatOpenAI") as chat_model:
+    with patch("mcps.rag.vault.create_chat_model") as chat_model:
         generator = _create_document_summary_generator(config, http_client)
 
     assert generator is None
@@ -27,15 +27,14 @@ def test_create_summary_generator_with_rag_infer_model_wires_chat_model() -> Non
     http_client = MagicMock()
     chat_instance = MagicMock()
 
-    with patch("mcps.rag.vault.ChatOpenAI", return_value=chat_instance) as chat_model:
+    with patch(
+        "mcps.rag.vault.create_chat_model", return_value=chat_instance
+    ) as chat_model:
         generator = _create_document_summary_generator(config, http_client)
 
     assert isinstance(generator, LangChainDocumentSummaryGenerator)
     assert generator.model is chat_instance
-    chat_model.assert_called_once()
-    assert chat_model.call_args.kwargs["model"] == "summary-model"
-    assert chat_model.call_args.kwargs["base_url"] == "http://router"
-    assert chat_model.call_args.kwargs["http_async_client"] is http_client
+    chat_model.assert_called_once_with("summary-model", config.router, http_client)
 
 
 @pytest.mark.parametrize("summary_generator", [None, MagicMock()])

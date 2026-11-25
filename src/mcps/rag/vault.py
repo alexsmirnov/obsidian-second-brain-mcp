@@ -13,9 +13,8 @@ from typing import NamedTuple
 
 import httpx
 from lancedb.rerankers import Reranker, RRFReranker
-from langchain_openai import ChatOpenAI, OpenAIEmbeddings
-from pydantic import SecretStr
 
+from mcps.common.ai_models import create_chat_model, create_embeddings_model
 from mcps.config import ServerConfig
 from mcps.rag.embeddings import LangChainEmbeddingService
 from mcps.rag.llm_reranker import LlmReranker
@@ -99,15 +98,11 @@ def create_embeddings(
         config: ServerConfig,
         http_client: httpx.AsyncClient
     ) -> IEmbeddingService:
-    base_url = config.router.api_base
-    api_key = SecretStr(config.router.api_key)
-    embeddings = OpenAIEmbeddings(
-        model=config.rag.embedding_model,
-        dimensions=config.rag.embedding_dimensions,
-        base_url=base_url,
-        api_key=api_key,
-        http_async_client=http_client,
-        check_embedding_ctx_length=False
+    embeddings = create_embeddings_model(
+        config.rag.embedding_model,
+        config.rag.embedding_dimensions,
+        config.router,
+        http_client,
     )
     logger.info("Use embeddings with model %s and dimensions %d",
                 config.rag.embedding_model, 
@@ -132,27 +127,24 @@ def create_reranker(
         logger.info("Use RRF reranker")
         return RRFReranker(return_score="relevance")
 
-    base_url = config.router.api_base
-    api_key = SecretStr(config.router.api_key)
-    embed = OpenAIEmbeddings(
-        model=config.rag.reranker_embedding_model,
-        dimensions=config.rag.reranker_embedding_dimensions,
-        base_url=base_url,
-        api_key=api_key,
-        http_async_client=http_client,
-        check_embedding_ctx_length=False
+    embed = create_embeddings_model(
+        config.rag.reranker_embedding_model,
+        config.rag.reranker_embedding_dimensions,
+        config.router,
+        http_client,
     )
     if not config.rag.reranker_infer_model:
         logger.info("Use Embeddings reranker with model %s",config.rag.reranker_embedding_model)
         return LlmReranker(chat_model=None, embeddings=embed)
 
-    infer_model = ChatOpenAI(
-        model=config.rag.reranker_infer_model,
-        base_url=base_url,
-        api_key=api_key,
-        http_async_client=http_client
+    infer_model = create_chat_model(
+        config.rag.reranker_infer_model, config.router, http_client
     )
-    logger.info("Use LLM reranker with embeddings model %s and chat model",config.rag.reranker_embedding_model, config.rag.reranker_infer_model)
+    logger.info(
+        "Use LLM reranker with embeddings model %s and chat model %s",
+        config.rag.reranker_embedding_model,
+        config.rag.reranker_infer_model,
+    )
     return LlmReranker(infer_model, embed)
 
 @asynccontextmanager
@@ -189,12 +181,7 @@ def _create_search_engine(
             min_score=config.search.min_score,
         )
 
-    search_model = ChatOpenAI(
-        model=config.rag.infer_model,
-        base_url=config.router.api_base,
-        api_key=SecretStr(config.router.api_key),
-        http_async_client=http_client,
-    )
+    search_model = create_chat_model(config.rag.infer_model, config.router, http_client)
     logger.info("Use semantic search engine with model %s",config.rag.infer_model)
     return SemanticSearchEngine(
         vector_store,
@@ -212,12 +199,8 @@ def _create_document_summary_generator(
     if not config.rag.summary_model:
         return None
 
-    summary_model = ChatOpenAI(
-        model=config.rag.summary_model,
-        base_url=config.router.api_base,
-        api_key=SecretStr(config.router.api_key),
-        http_async_client=http_client,
-        max_retries=2,
+    summary_model = create_chat_model(
+        config.rag.summary_model, config.router, http_client
     )
     return LangChainDocumentSummaryGenerator(summary_model)
 

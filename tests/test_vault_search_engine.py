@@ -3,9 +3,10 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch
 
 from mcps.config import RagSettings, RouterSettings, SearchSettings, ServerConfig
+from mcps.rag.llm_reranker import LlmReranker
 from mcps.rag.reranking import LangChainReranker
 from mcps.rag.search import HypotheticalDocumentGenerator, SemanticSearchEngine
-from mcps.rag.vault import _create_search_engine
+from mcps.rag.vault import _create_search_engine, create_reranker
 
 
 def test_create_search_engine_without_rag_infer_model_uses_vector_only() -> None:
@@ -16,7 +17,7 @@ def test_create_search_engine_without_rag_infer_model_uses_vector_only() -> None
     vector_store = MagicMock()
     http_client = MagicMock()
 
-    with patch("mcps.rag.vault.ChatOpenAI") as chat_model:
+    with patch("mcps.rag.vault.create_chat_model") as chat_model:
         search_engine = _create_search_engine(vector_store, config, http_client)
 
     assert isinstance(search_engine, SemanticSearchEngine)
@@ -37,9 +38,10 @@ def test_create_search_engine_with_rag_infer_model_wires_hyde_and_reranker() -> 
     vector_store = MagicMock()
     http_client = MagicMock()
     chat_instance = MagicMock()
-    chat_instance.with_structured_output.return_value = MagicMock()
 
-    with patch("mcps.rag.vault.ChatOpenAI", return_value=chat_instance) as chat_model:
+    with patch(
+        "mcps.rag.vault.create_chat_model", return_value=chat_instance
+    ) as chat_model:
         search_engine = _create_search_engine(vector_store, config, http_client)
 
     assert isinstance(search_engine, SemanticSearchEngine)
@@ -52,4 +54,26 @@ def test_create_search_engine_with_rag_infer_model_wires_hyde_and_reranker() -> 
     assert isinstance(search_engine.reranker, LangChainReranker)
     assert search_engine.hypothetical_document_generator.model is chat_instance
     assert search_engine.reranker.model is chat_instance
-    chat_model.assert_called_once()
+    chat_model.assert_called_once_with("search-model", config.router, http_client)
+
+
+def test_create_reranker_with_infer_model_wires_factories() -> None:
+    config = ServerConfig(
+        rag=RagSettings(
+            reranker_embedding_model="emb-r",
+            reranker_embedding_dimensions=256,
+            reranker_infer_model="rerank-m",
+        ),
+        router=RouterSettings(api_base="http://router", api_key="token"),
+    )
+    http_client = MagicMock()
+
+    with (
+        patch("mcps.rag.vault.create_embeddings_model") as embeddings,
+        patch("mcps.rag.vault.create_chat_model") as chat_model,
+    ):
+        reranker = create_reranker(config, http_client)
+
+    assert isinstance(reranker, LlmReranker)
+    embeddings.assert_called_once_with("emb-r", 256, config.router, http_client)
+    chat_model.assert_called_once_with("rerank-m", config.router, http_client)

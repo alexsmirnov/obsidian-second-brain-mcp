@@ -1,10 +1,26 @@
-"""Contract tests for the router-backed chat model factory."""
+"""Contract tests for the router-backed model factory and structured invocation."""
 
+from typing import Any, cast
+
+import httpx
 import pytest
+from langchain_core.exceptions import OutputParserException
+from langchain_core.language_models import BaseChatModel
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_openai import ChatOpenAI
+from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+from pydantic import BaseModel
 
-from mcps.common.ai_models import create_chat_model, strip_thinking, tokens_for_chars
+from mcps.common.ai_models import (
+    DEFAULT_MAX_RETRIES,
+    StructuredOutputError,
+    create_chat_model,
+    create_embeddings_model,
+    invoke_structured,
+    invoke_structured_with_raw,
+    strip_thinking,
+    tokens_for_chars,
+)
 from mcps.config import RouterSettings
 
 ROUTER = RouterSettings(api_base="http://router:4000", api_key="sk-test")
@@ -168,3 +184,173 @@ class TestStripThinking:
 
     def test_keeps_text_without_thinking(self):
         assert strip_thinking("## Kept\nbody") == "## Kept\nbody"
+
+
+class TestEmbeddings:
+    def test_uses_router_and_shared_client(self):
+        client = httpx.AsyncClient()
+
+        embeddings = create_embeddings_model("embed-m", 768, ROUTER, client)
+
+        assert isinstance(embeddings, OpenAIEmbeddings)
+        assert embeddings.model == "embed-m"
+        assert embeddings.dimensions == 768
+        assert embeddings.openai_api_base == ROUTER.api_base
+        assert embeddings.http_async_client is client
+        assert embeddings.check_embedding_ctx_length is False
+
+
+class TestDefaultRetries:
+    @pytest.mark.parametrize(
+        ("name", "retries"),
+        [("gpt-5-mini", 2), ("local-qwen", 2), ("gemini-3-flash", 3)],
+    )
+    def test_sets_two_retries(self, name, retries):
+        # Gemini counts total attempts, so two retries means three attempts.
+        assert DEFAULT_MAX_RETRIES == 2
+
+        model = create_chat_model(name, ROUTER)
+
+        assert model.max_retries == retries
+
+    def test_keeps_explicit_max_retries_for_gemini(self):
+        model = create_chat_model("gemini-3-flash", ROUTER, max_retries=7)
+
+        assert model.max_retries == 7
+
+
+class Answer(BaseModel):
+    value: int
+
+
+class ScriptedChatModel:
+    """Stands in for a chat model: replays scripted replies, raising exceptions."""
+
+    def __init__(self, replies: list[object]) -> None:
+        self.replies = list(replies)
+        self.calls: list[list[Any]] = []
+        self.schema: Any = None
+        self.options: dict[str, Any] = {}
+
+    def with_structured_output(
+        self, schema: Any, **options: Any
+    ) -> "ScriptedChatModel":
+        self.schema = schema
+        self.options = options
+        return self
+
+    async def ainvoke(self, messages: list[Any]) -> Any:
+        self.calls.append(messages)
+        reply = self.replies.pop(0)
+        if isinstance(reply, Exception):
+            raise reply
+        return reply
+
+
+def scripted(*replies: object) -> ScriptedChatModel:
+    return ScriptedChatModel(list(replies))
+
+
+def as_chat_model(model: ScriptedChatModel) -> BaseChatModel:
+    return cast(BaseChatModel, model)
+
+
+def parse_error() -> OutputParserException:
+    return OutputParserException("bad json", llm_output='{"value": "x"}')
+
+
+QUESTION: list[BaseMessage] = [HumanMessage("q")]
+
+
+class TestInvokeStructured:
+    async def test_returns_parsed_reply_and_passes_output_options(self):
+        model = scripted(Answer(value=1))
+
+        result = await invoke_structured(
+            as_chat_model(model), Answer, QUESTION, label="t", strict=True
+        )
+
+        assert result == Answer(value=1)
+        assert model.schema is Answer
+        assert model.options == {"strict": True}
+        assert len(model.calls) == 1
+
+    async def test_reprompts_with_failed_reply_and_error(self):
+        model = scripted(parse_error(), Answer(value=2))
+
+        result = await invoke_structured(
+            as_chat_model(model), Answer, QUESTION, attempts=2, label="t"
+        )
+
+        assert result == Answer(value=2)
+        retry = model.calls[1]
+        assert retry[:2] == [HumanMessage("q"), AIMessage('{"value": "x"}')]
+        assert "bad json" in retry[2].content
+
+    async def test_raises_structured_output_error_after_all_attempts(self):
+        model = scripted(parse_error(), parse_error())
+
+        with pytest.raises(StructuredOutputError):
+            await invoke_structured(
+                as_chat_model(model), Answer, QUESTION, attempts=2, label="t"
+            )
+
+        assert len(model.calls) == 2
+
+    async def test_does_not_retry_other_errors(self):
+        model = scripted(RuntimeError("down"))
+
+        with pytest.raises(RuntimeError):
+            await invoke_structured(as_chat_model(model), Answer, QUESTION, label="t")
+
+        assert len(model.calls) == 1
+
+
+def raw_reply(parsed: Answer | None, raw: str, error: Exception | None = None) -> dict:
+    return {"parsed": parsed, "raw": AIMessage(raw), "parsing_error": error}
+
+
+class TestInvokeStructuredWithRaw:
+    async def test_returns_parsed_and_raw(self):
+        model = scripted(raw_reply(Answer(value=3), "r"))
+
+        result = await invoke_structured_with_raw(
+            as_chat_model(model), Answer, QUESTION, label="t"
+        )
+
+        assert result == (Answer(value=3), AIMessage("r"))
+        assert model.options["include_raw"] is True
+
+    async def test_reprompts_with_raw_reply_when_parsing_failed(self):
+        model = scripted(
+            raw_reply(None, "oops", parse_error()),
+            raw_reply(Answer(value=4), "ok"),
+        )
+
+        result = await invoke_structured_with_raw(
+            as_chat_model(model), Answer, QUESTION, attempts=2, label="t"
+        )
+
+        assert result == (Answer(value=4), AIMessage("ok"))
+        assert model.calls[1][-2] == AIMessage("oops")
+        assert "bad json" in model.calls[1][-1].content
+
+    async def test_reprompts_when_nothing_parsed_and_no_error(self):
+        model = scripted(raw_reply(None, ""), raw_reply(Answer(value=5), "ok"))
+
+        result = await invoke_structured_with_raw(
+            as_chat_model(model), Answer, QUESTION, attempts=2, label="t"
+        )
+
+        assert result == (Answer(value=5), AIMessage("ok"))
+        assert len(model.calls) == 2
+
+    async def test_raises_non_parse_parsing_error_as_is(self):
+        model = scripted(raw_reply(None, "no", RuntimeError("refused")))
+
+        with pytest.raises(RuntimeError, match="refused"):
+            await invoke_structured_with_raw(
+                as_chat_model(model), Answer, QUESTION, label="t"
+            )
+
+        assert len(model.calls) == 1

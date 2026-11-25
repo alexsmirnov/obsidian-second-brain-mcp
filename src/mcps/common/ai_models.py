@@ -1,6 +1,12 @@
-"""Router-backed chat model factory shared by research and vault tools.
+"""Router-backed model factory and structured invocation for research and vault tools.
 
-The model name picks the client:
+``create_chat_model`` and ``create_embeddings_model`` build the clients.
+``invoke_structured`` and ``invoke_structured_with_raw`` call a chat model for a
+Pydantic schema and re-prompt it when the reply cannot be parsed. Transport
+errors (rate limits, timeouts, server errors) are retried by the client itself,
+so every client gets ``DEFAULT_MAX_RETRIES``.
+
+For chat models the model name picks the client:
 
 * ``gemini-*`` uses the Google GenAI client against the router.
 * ``gpt-*`` uses OpenAI Chat Completions. Not the Responses API: the router's
@@ -15,22 +21,33 @@ log instead of failing the request.
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 import re
-from typing import Any, Literal
+from collections.abc import Awaitable, Callable
+from typing import Any, Literal, cast
 
 import httpx
+from langchain_core.embeddings import Embeddings
+from langchain_core.exceptions import OutputParserException
 from langchain_core.language_models import BaseChatModel
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_openai import ChatOpenAI
-from pydantic import SecretStr
+from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+from pydantic import BaseModel, SecretStr, ValidationError
 
 from mcps.config import RouterSettings
 
 __all__ = [
+    "DEFAULT_MAX_RETRIES",
+    "DEFAULT_PARSE_ATTEMPTS",
     "ReasoningEffort",
+    "StructuredOutputError",
     "create_chat_model",
+    "create_embeddings_model",
+    "invoke_structured",
+    "invoke_structured_with_raw",
     "strip_thinking",
     "tokens_for_chars",
 ]
@@ -38,6 +55,11 @@ __all__ = [
 logger = logging.getLogger(__name__)
 
 type ReasoningEffort = Literal["none", "minimal", "low", "medium", "high"]
+
+DEFAULT_MAX_RETRIES = 2
+DEFAULT_PARSE_ATTEMPTS = 3
+
+_PARSE_ERRORS: tuple[type[Exception], ...] = (ValidationError, OutputParserException)
 
 # Gemini 2.5 thinking budgets in tokens. Flash models accept 0 (thinking off);
 # Pro models cannot turn thinking off and accept 128 tokens at least.
@@ -92,6 +114,8 @@ def create_chat_model(
     """
     if model_name.startswith("gemini-"):
         _ignore("context_window", context_window, model_name)
+        # The Google client counts total attempts, so one more than retries.
+        kwargs.setdefault("max_retries", DEFAULT_MAX_RETRIES + 1)
         return ChatGoogleGenerativeAI(
             model=model_name,
             base_url=router.api_base,
@@ -100,6 +124,7 @@ def create_chat_model(
             **_set("max_output_tokens", max_output_tokens),
             **kwargs,
         )
+    kwargs.setdefault("max_retries", DEFAULT_MAX_RETRIES)
     if model_name.startswith("gpt-"):
         _ignore("context_window", context_window, model_name)
         return ChatOpenAI(
@@ -124,6 +149,91 @@ def create_chat_model(
         ),
         **_set("max_tokens", max_output_tokens),
         **kwargs,
+    )
+
+
+def create_embeddings_model(
+    model_name: str,
+    dimensions: int,
+    router: RouterSettings,
+    http_client: httpx.AsyncClient | None = None,
+) -> Embeddings:
+    """Instantiate a router-backed embeddings model.
+
+    Args:
+        model_name: Router embeddings model name.
+        dimensions: Size of the returned vectors.
+        router: Router URL and key.
+        http_client: Shared async client.
+    """
+    return OpenAIEmbeddings(
+        model=model_name,
+        dimensions=dimensions,
+        base_url=router.api_base,
+        api_key=SecretStr(router.api_key),
+        http_async_client=http_client,
+        check_embedding_ctx_length=False,
+    )
+
+
+class StructuredOutputError(Exception):
+    """A structured LLM call kept returning unparsable output after all re-prompts."""
+
+
+async def invoke_structured[T: BaseModel](
+    model: BaseChatModel,
+    schema: type[T],
+    messages: list[BaseMessage],
+    *,
+    attempts: int = DEFAULT_PARSE_ATTEMPTS,
+    label: str,
+    **output_options: Any,
+) -> T:
+    """Invoke a model for ``schema``, re-prompting when the reply cannot be parsed.
+
+    Args:
+        model: Chat model to call.
+        schema: Pydantic model the reply must match.
+        messages: Conversation to send.
+        attempts: Most calls to make before giving up.
+        label: Name of the call for log messages and the raised error.
+        **output_options: Passed to ``with_structured_output``.
+
+    Raises:
+        StructuredOutputError: every attempt failed to parse.
+    """
+    chain = model.with_structured_output(schema, **output_options)
+    result = await _reprompt_on_parse_error(
+        chain.ainvoke, messages, attempts=attempts, label=label
+    )
+    return cast(T, result)
+
+
+async def invoke_structured_with_raw[T: BaseModel](
+    model: BaseChatModel,
+    schema: type[T],
+    messages: list[BaseMessage],
+    *,
+    attempts: int = DEFAULT_PARSE_ATTEMPTS,
+    label: str,
+    **output_options: Any,
+) -> tuple[T, BaseMessage]:
+    """Like ``invoke_structured``, and also return the model's raw reply.
+
+    Always asks for ``include_raw``; callers must not pass it in
+    ``output_options``. A parsing error that is not a parse error, such as a
+    model refusal, is raised as is without a re-prompt.
+
+    Raises:
+        StructuredOutputError: every attempt failed to parse.
+    """
+    chain = model.with_structured_output(schema, include_raw=True, **output_options)
+
+    async def call(prompt: list[BaseMessage]) -> tuple[T, BaseMessage]:
+        return _parsed_with_raw(cast(dict[str, Any], await chain.ainvoke(prompt)))
+
+    return await _reprompt_on_parse_error(
+        call, messages, attempts=attempts, label=label
     )
 
 
@@ -210,6 +320,83 @@ def strip_thinking(text: str) -> str:
 def tokens_for_chars(chars: int) -> int:
     """Token count to reserve for ``chars`` characters of text."""
     return math.ceil(chars / CHARS_PER_TOKEN)
+
+
+def _failed_reply(error: Exception) -> str | None:
+    """The model reply that failed to parse, when the error carries it."""
+    if isinstance(error, ValidationError):
+        # Only a top-level error (empty ``loc``) carries the whole reply as input;
+        # a field error carries just that field's value.
+        details = error.errors()
+        if not details or details[0]["loc"]:
+            return None
+        reply = details[0]["input"]
+        return reply if isinstance(reply, str) else json.dumps(reply, default=str)
+    if isinstance(error, OutputParserException):
+        return error.llm_output
+    return None
+
+
+def _repair_messages(
+    messages: list[BaseMessage], error: Exception
+) -> list[BaseMessage]:
+    """Original messages, the failed reply when known, and a request to answer again."""
+    reply = _failed_reply(error)
+    failed = [AIMessage(reply)] if reply is not None else []
+    repair_request = HumanMessage(
+        "Your previous reply could not be parsed into the required structured output.\n"
+        f"Error: {str(error)[:1000]}\n"
+        "Reply again with only a JSON object that matches the required schema. "
+        "Do not add any text outside the JSON object."
+    )
+    return [*messages, *failed, repair_request]
+
+
+async def _reprompt_on_parse_error[T](
+    call: Callable[[list[BaseMessage]], Awaitable[T]],
+    messages: list[BaseMessage],
+    *,
+    attempts: int,
+    label: str,
+) -> T:
+    """Run ``call``; after a parse error, re-prompt with the failed reply and the error.
+
+    Raises:
+        StructuredOutputError: every attempt failed to parse.
+    """
+    prompt = messages
+    for attempt in range(1, attempts + 1):
+        try:
+            return await call(prompt)
+        except _PARSE_ERRORS as error:
+            logger.warning(
+                "%s returned invalid structured output (attempt %d/%d): %s",
+                label,
+                attempt,
+                attempts,
+                error,
+            )
+            if attempt == attempts:
+                raise StructuredOutputError(label) from error
+            prompt = _repair_messages(messages, error)
+    raise StructuredOutputError(label)
+
+
+def _parsed_with_raw[T](result: dict[str, Any]) -> tuple[T, BaseMessage]:
+    """Parsed reply and raw reply; raise when ``include_raw`` parsing failed.
+
+    A parse error (or none at all) is raised as a parse error so it is re-prompted;
+    any other parsing error, such as a model refusal, is raised as is.
+    """
+    raw = cast(BaseMessage, result["raw"])
+    parsed = cast(T | None, result["parsed"])
+    if parsed is not None:
+        return parsed, raw
+    error = result.get("parsing_error")
+    if error is not None and not isinstance(error, _PARSE_ERRORS):
+        raise cast(Exception, error)
+    message = str(error) if error is not None else "empty structured output"
+    raise OutputParserException(message, llm_output=str(raw.text)) from error
 
 
 def _set(name: str, value: object) -> dict[str, Any]:

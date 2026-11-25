@@ -3,23 +3,26 @@
 from __future__ import annotations
 
 # ruff: noqa: E501
-import json
 import logging
 import re
 import time
-from collections.abc import Awaitable, Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from datetime import datetime
 from operator import add
-from typing import TYPE_CHECKING, Annotated, Any, Literal, TypedDict, cast
+from typing import TYPE_CHECKING, Annotated, Any, Literal, TypedDict
 from urllib.parse import urlparse, urlunparse
 
-from langchain_core.exceptions import OutputParserException
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
+from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, START, MessagesState, StateGraph
 from langgraph.types import Command, Overwrite, Send
-from pydantic import BaseModel, Field, ValidationError, model_validator
+from pydantic import BaseModel, Field, model_validator
 
+from mcps.common.ai_models import (
+    StructuredOutputError,
+    invoke_structured,
+    invoke_structured_with_raw,
+)
 from mcps.config import ResearchLimits
 from mcps.research.tools import SearchResult
 
@@ -33,7 +36,6 @@ __all__ = [
     "FETCH_QUERY_INSTRUCTIONS",
     "FetchQuery",
     "ResearchAgent",
-    "StructuredOutputError",
 ]
 
 logger = logging.getLogger(__name__)
@@ -114,7 +116,6 @@ End with a `Not found:` list of every part of the question the pages do not answ
 """
 
 _URL_PATTERN = re.compile(r"https?://[^\s<>\[\]\"'`]+")
-_PARSE_ERRORS: tuple[type[Exception], ...] = (ValidationError, OutputParserException)
 
 
 # ---------------------------------------------------------------------------
@@ -354,101 +355,6 @@ async def _report(config: RunnableConfig, message: str) -> None:
         await reporter(message, 0.0, None)
 
 
-class StructuredOutputError(Exception):
-    """A structured LLM call kept returning unparsable output after all re-prompts."""
-
-
-def _failed_reply(error: Exception) -> str | None:
-    """The model reply that failed to parse, when the error carries it."""
-    if isinstance(error, ValidationError):
-        # Only a top-level error (empty ``loc``) carries the whole reply as input;
-        # a field error carries just that field's value.
-        details = error.errors()
-        if not details or details[0]["loc"]:
-            return None
-        reply = details[0]["input"]
-        return reply if isinstance(reply, str) else json.dumps(reply, default=str)
-    if isinstance(error, OutputParserException):
-        return error.llm_output
-    return None
-
-
-def _repair_messages(messages: list[BaseMessage], error: Exception) -> list[BaseMessage]:
-    """Original messages, the failed reply when known, and a request to answer again."""
-    reply = _failed_reply(error)
-    failed = [AIMessage(reply)] if reply is not None else []
-    repair_request = HumanMessage(
-        "Your previous reply could not be parsed into the required structured output.\n"
-        f"Error: {str(error)[:1000]}\n"
-        "Reply again with only a JSON object that matches the required schema. "
-        "Do not add any text outside the JSON object."
-    )
-    return [*messages, *failed, repair_request]
-
-
-async def _reprompt_on_parse_error[T](
-    call: Callable[[list[BaseMessage]], Awaitable[T]],
-    messages: list[BaseMessage],
-    *,
-    attempts: int,
-    label: str,
-) -> T:
-    """Run ``call``; after a parse error, re-prompt with the failed reply and the error.
-
-    Raises:
-        StructuredOutputError: every attempt failed to parse.
-    """
-    prompt = messages
-    for attempt in range(1, attempts + 1):
-        try:
-            return await call(prompt)
-        except _PARSE_ERRORS as error:
-            logger.warning(
-                "%s returned invalid structured output (attempt %d/%d): %s",
-                label,
-                attempt,
-                attempts,
-                error,
-            )
-            if attempt == attempts:
-                raise StructuredOutputError(label) from error
-            prompt = _repair_messages(messages, error)
-    raise StructuredOutputError(label)
-
-
-async def _invoke_structured[T: BaseModel](
-    model: Any,
-    schema: type[T],
-    messages: list[BaseMessage],
-    *,
-    attempts: int,
-    label: str,
-) -> T:
-    """Invoke a model with structured output, re-prompting on parse errors."""
-    chain = model.with_structured_output(schema)
-    result = await _reprompt_on_parse_error(
-        chain.ainvoke, messages, attempts=attempts, label=label
-    )
-    return cast(T, result)
-
-
-def _parsed_reflection(result: dict[str, Any]) -> tuple[Reflection, BaseMessage]:
-    """Parsed reflection and raw reply; raise when ``include_raw`` parsing failed.
-
-    A parse error (or none at all) is raised as a parse error so it is re-prompted;
-    any other parsing error, such as a model refusal, is raised as is.
-    """
-    raw = cast(BaseMessage, result["raw"])
-    parsed = cast(Reflection | None, result["parsed"])
-    if parsed is not None:
-        return parsed, raw
-    error = result.get("parsing_error")
-    if error is not None and not isinstance(error, _PARSE_ERRORS):
-        raise cast(Exception, error)
-    message = str(error) if error is not None else "empty reflection output"
-    raise OutputParserException(message, llm_output=str(raw.text)) from error
-
-
 def _round_reset() -> dict[str, Overwrite]:
     """State update that clears the round buffers after reflection rendered them."""
     return {
@@ -537,7 +443,7 @@ class ResearchAgent:
         started_at = self.clock()
         await _report(config, "Generating search queries...")
         try:
-            result = await _invoke_structured(
+            result = await invoke_structured(
                 self.config.fast,
                 ResearchPlan,
                 [SystemMessage(_GENERATE_QUERY_PROMPT), HumanMessage(state["question"])],
@@ -651,7 +557,7 @@ class ResearchAgent:
         prompt = "\n".join(lines)
         logger.debug("[triage] prompt:\n%s", prompt)
         try:
-            selected = await _invoke_structured(
+            selected = await invoke_structured(
                 self.config.fast,
                 SelectedPages,
                 [SystemMessage(_SELECT_URLS_PROMPT), HumanMessage(prompt)],
@@ -711,19 +617,14 @@ class ResearchAgent:
             f"Fetched pages:\n{_render_pages(state.get('pages', []))}"
         )
         logger.debug("[reflection] round %d prompt:\n%s", loop_count, round_message.content)
-        chain = self.config.small.with_structured_output(
-            Reflection, include_raw=True, method="json_schema"
-        )
-
-        async def reflect(messages: list[BaseMessage]) -> tuple[Reflection, BaseMessage]:
-            return _parsed_reflection(cast(dict[str, Any], await chain.ainvoke(messages)))
-
         try:
-            parsed, raw = await _reprompt_on_parse_error(
-                reflect,
+            parsed, raw = await invoke_structured_with_raw(
+                self.config.small,
+                Reflection,
                 [*state["messages"], round_message],
                 attempts=self.limits.max_parse_attempts,
                 label=f"reflection round {loop_count}",
+                method="json_schema",
             )
         except StructuredOutputError:
             logger.warning("Reflection round %d returned unparsable output, finalizing", loop_count)
@@ -782,7 +683,7 @@ class ResearchAgent:
         """Answer from the whole conversation, whether research ended sufficient or at a limit."""
         await _report(config, "Synthesizing final answer...")
         try:
-            response = await _invoke_structured(
+            response = await invoke_structured(
                 self.config.small,
                 FinalAnswer,
                 [*state["messages"], HumanMessage(_FINALIZE_PROMPT)],

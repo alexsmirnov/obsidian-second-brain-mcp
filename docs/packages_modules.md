@@ -32,7 +32,7 @@ Abstract interface definitions for all RAG components using ABC and Pydantic mod
 
 ### [src/mcps/rag/vault.py](../src/mcps/rag/vault.py) #module
 High-level vault management orchestrating document processing, storage, search, reranking, and embeddings.
-**Uses**: interfaces, document_processing, database, search, embeddings, reranking, llm_reranker, proxy_reranker
+**Uses**: common.ai_models, interfaces, document_processing, database, search, embeddings, reranking, llm_reranker, proxy_reranker
 **Used by**: tools.obsidian_vault
 
 ### [src/mcps/rag/index_scheduler.py](../src/mcps/rag/index_scheduler.py) #module
@@ -67,7 +67,7 @@ Agentic search with query rewriting and search parameter estimation.
 
 ### [src/mcps/rag/reranking.py](../src/mcps/rag/reranking.py) #module
 Provider-neutral async LangChain reranking using structured output.
-**Uses**: interfaces, pydantic, langchain_core
+**Uses**: common.ai_models, interfaces, pydantic, langchain_core
 **Used by**: search
 
 ### [src/mcps/rag/llm_reranker.py](../src/mcps/rag/llm_reranker.py) #module
@@ -110,7 +110,7 @@ Research agent public interface and factory.
 
 ### [src/mcps/research/deep_research.py](../src/mcps/research/deep_research.py) #module
 Iterative deep research StateGraph: query generation, fetching, extraction, reflection, and final answer synthesis.
-**Uses**: langgraph, langchain_core, pydantic, research.tools
+**Uses**: langgraph, langchain_core, pydantic, common.ai_models, research.tools
 **Used by**: research.agent
 
 ### [src/mcps/research/config.py](../src/mcps/research/config.py) #module
@@ -181,6 +181,16 @@ fetch   = Filtered(routed, FilterChain(FilterSelector([html -> HtmlToMarkdown]),
 ## Sub-package: mcps.common
 
 Building blocks shared by the research and RAG packages.
+
+### [src/mcps/common/ai_models.py](../src/mcps/common/ai_models.py) #module
+The one place that creates and calls LLM clients. Research and RAG do not build `ChatOpenAI`, `ChatGoogleGenerativeAI` or `OpenAIEmbeddings` themselves.
+- `create_chat_model(name, router, http_client, ...)` picks the client from the model name: `gemini-*` uses the Google client, every other name uses OpenAI-style Chat Completions. Settings the client cannot take (such as `reasoning_effort` or `context_window`) are dropped with a debug log.
+- `create_embeddings_model(name, dimensions, router, http_client)` builds the embeddings client against the router.
+- Every chat client gets `DEFAULT_MAX_RETRIES` (2) retries for rate limits, timeouts and server errors, unless the caller passes `max_retries`. The Google client counts total attempts, so it is set to one more.
+- `invoke_structured(model, schema, messages, attempts=..., label=...)` asks a chat model for a Pydantic object. If the reply cannot be parsed, it calls the model again with the failed reply and the error, up to `attempts` times, then raises `StructuredOutputError`. Other errors are raised at once. Extra keyword arguments go to `with_structured_output` (for example `strict=True` or `method="json_schema"`). `invoke_structured_with_raw` does the same and also returns the raw model message; it sets `include_raw` itself, so callers must not pass it.
+- `strip_thinking` and `tokens_for_chars` are small helpers for local models.
+**Uses**: config, httpx, langchain_core, langchain_openai, langchain_google_genai, pydantic
+**Used by**: research.research_config, research.deep_research, rag.vault, rag.reranking
 
 ### [src/mcps/common/decisions/](../src/mcps/common/decisions/__init__.py) #package
 Typed decision calls to the router's TypeSafe System One endpoint, `POST /v1/systemone`. `DecisionClient(http_client, router_url=..., router_key=..., model=...)` borrows an `httpx.AsyncClient` and exposes `async decide(state, questions) -> DecisionResponse`. It makes one request, has no retries and no concurrency control; callers such as `DecisionRanker` decide how to fan out. Every failure (transport, non-2xx status, malformed or unsupported response) raises `DecisionError`, and logs never include the response body or the key. `decision_endpoint` accepts a router URL with or without the `/v1` suffix.

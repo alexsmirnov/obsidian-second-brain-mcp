@@ -2,11 +2,12 @@
 
 import logging
 from abc import ABC, abstractmethod
-from typing import Any
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel, Field
+
+from mcps.common.ai_models import invoke_structured
 
 from .interfaces import Chunk
 
@@ -41,19 +42,22 @@ class LangChainReranker(IRerankingService):
 
     def __init__(self, model: BaseChatModel) -> None:
         self.model = model
-        self.structured_model = model.with_structured_output(RelevantChunks, strict=True)
 
     async def rerank(self, query: str, chunks: list[Chunk]) -> list[Chunk]:
         if not chunks:
             return []
 
         try:
-            response: RelevantChunks = await self.structured_model.ainvoke(
+            response = await invoke_structured(
+                self.model,
+                RelevantChunks,
                 [
                     SystemMessage(content=RERANK_SYSTEM_PROMPT),
                     HumanMessage(content=self._create_user_prompt(query, chunks)),
-                ]
-            ) # type: ignore
+                ],
+                label="rerank",
+                strict=True,
+            )
         except Exception:
             logger.exception("Failed to rerank documents with LangChain chat model")
             raise
