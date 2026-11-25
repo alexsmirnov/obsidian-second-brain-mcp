@@ -36,14 +36,15 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.types import Command, Send
 from web_fetch_evaluation import CASES_DIR
 
+from mcps.common.ai_models import create_chat_model
 from mcps.config import ResearchLimits, ServerConfig, create_config
-from mcps.research.research_config import ResearchConfig, create_chat_model
 from mcps.research.deep_research import (
     OverallState,
     ResearchAgent,
     SearchRun,
     _normalize_url,
 )
+from mcps.research.research_config import ResearchConfig
 from mcps.research.tools.models import SearchResult
 
 DATASET_PATH = CASES_DIR / "select-urls-cases.json"
@@ -219,10 +220,9 @@ def create_agent(
     ):
         raise RuntimeError("RESEARCH_FAST_MODEL or router settings not set")
     model = create_chat_model(
-        model_name=model_name,
-        router_url=server_config.router.api_base,
-        router_key=server_config.router.api_key,
-        http_client=http_client,
+        model_name,
+        server_config.router,
+        http_client,
     )
     research_config = ResearchConfig(
         fast=model,

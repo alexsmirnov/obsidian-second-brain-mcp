@@ -4,18 +4,28 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from typing import Protocol
 
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
-from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_openai import ChatOpenAI
+from langchain_core.messages import HumanMessage, SystemMessage
+
+from mcps.common.ai_models import strip_thinking, tokens_for_chars
 from mcps.research.tools.common import failure, textual_mime
 from mcps.research.tools.models import FetchResult, FetchStatus
 
-__all__ = ["Chunker", "FilterModelError", "Fragment", "Ranker", "RelevanceFilter", "ChunkedRelevanceFilter"]
+__all__ = [
+    "ChunkedRelevanceFilter",
+    "Chunker",
+    "FilterModelError",
+    "Fragment",
+    "LlmRelevanceFilter",
+    "Ranker",
+    "RelevanceFilter",
+    "llm_filter_model_limits",
+]
 
 logger = logging.getLogger(__name__)
 
@@ -121,18 +131,28 @@ class ChunkedRelevanceFilter:
             return failure(result.url, FetchStatus.FILTER_FAILED)
         return replace(result, content=content)
 
+# Page and output sizes the LLM filter is sized for.
+LLM_FILTER_MAX_INPUT_CHARS = 200_000
+LLM_FILTER_MAX_OUTPUT_CHARS = 20_000
+# Room for the system prompt, reminder and a long research query.
+_LLM_FILTER_OVERHEAD_CHARS = 12_000
+# Output tokens a thinking model spends on reasoning before the extract;
+# local Gemma used about 1.5k on research pages.
+LLM_FILTER_REASONING_TOKENS = 2048
+# Round context windows up to this many tokens.
+_CONTEXT_STEP_TOKENS = 1024
+
 _FILTER_PROMPT = """You copy parts of a web page. You never write your own text.
 
 You get a QUERY and a DOCUMENT. Copy the parts of the DOCUMENT that help answer the QUERY.
 
 Rules:
 1. Copy text exactly, character for character. Do not reword, shorten, fix, or summarize.
-2. Copy whole paragraphs, lists, tables, and code blocks. Keep their markdown.
-3. Keep a paragraph if it talks about the topic of the QUERY, even if it gives only part of the answer.
-4. Keep the section heading above each copied paragraph.
-5. Drop menus, cookie notices, ads, sign-up forms, author lists, funding notes. Drop repeated links.
-6. If the QUERY is empty, copy the main article text and drop everything from rule 5.
-7. Output only copied text. No introduction, no comments, no headings of your own.
+2. Copy whole sentences, lists, tables, and code blocks.
+3. Do not worry about formatting, result will be used by machine, not human.
+4. Drop menus, cookie notices, ads, sign-up forms, author lists, funding notes. Drop repeated links.
+5. If the QUERY is empty, copy the main article text and drop everything from rule 5.
+6. Output only copied text. No introduction, no comments, no headings of your own.
 
 Example:
 QUERY: battery life of the X200 laptop
@@ -145,7 +165,6 @@ The screen is 14 inches with a matte finish.
 We use cookies to improve your experience.
 
 Output:
-## Battery
 The X200 ran for 11 hours in our video test. Charging to full takes 90 minutes.
 """
 
@@ -164,19 +183,64 @@ def _filter_message(query: str | None, document: str) -> str:
     )
 
 
-class LlmRelevanceFilter:
+def llm_filter_model_limits(
+    max_input_chars: int = LLM_FILTER_MAX_INPUT_CHARS,
+    max_output_chars: int = LLM_FILTER_MAX_OUTPUT_CHARS,
+    reasoning_tokens: int = LLM_FILTER_REASONING_TOKENS,
+) -> dict[str, int]:
+    """``create_chat_model`` token limits that fit a full page and its extract.
 
-    def __init__(self, model: BaseChatModel) -> None:
+    Local Ollama models default to a 4096-token context, far below a page.
+    The output limit counts reasoning tokens too, so they are reserved on top
+    of the extract.
+    """
+    output_tokens = tokens_for_chars(max_output_chars) + reasoning_tokens
+    input_tokens = tokens_for_chars(max_input_chars + _LLM_FILTER_OVERHEAD_CHARS)
+    context_window = (
+        math.ceil((input_tokens + output_tokens) / _CONTEXT_STEP_TOKENS)
+        * _CONTEXT_STEP_TOKENS
+    )
+    return {"context_window": context_window, "max_output_tokens": output_tokens}
+
+
+class LlmRelevanceFilter:
+    """Ask a chat model to copy the query-relevant parts of a page.
+
+    Pages longer than ``max_input_chars`` lose their end, so the model never
+    has to drop the start of the prompt, where its instructions are.
+    """
+
+    def __init__(
+        self,
+        model: BaseChatModel,
+        *,
+        max_input_chars: int = LLM_FILTER_MAX_INPUT_CHARS,
+    ) -> None:
         self.model = model
+        self._max_input_chars = max_input_chars
 
     async def __call__(
         self, result: FetchResult, query: str | None = None, 
     ) -> FetchResult:
-        extract_message = _filter_message(query, result.content)
+        document = result.content[: self._max_input_chars]
+        if len(document) < len(result.content):
+            logger.info(
+                "llm filter cut %s from %d to %d chars",
+                result.url,
+                len(result.content),
+                len(document),
+            )
+        extract_message = _filter_message(query, document)
         try:
             response = await self.model.ainvoke(input=[SystemMessage(_FILTER_PROMPT),HumanMessage(extract_message)])
-            text = response.text
-            logger.info("llm filter returned %d chars",len(text))
+            text = strip_thinking(response.text)
+            logger.info(
+                "llm filter returned %d chars for %s: usage=%s finish=%s",
+                len(text),
+                result.url,
+                getattr(response, "usage_metadata", None),
+                response.response_metadata.get("finish_reason"),
+            )
             return replace(result, content=text)
         except Exception as error:
             logger.warning(

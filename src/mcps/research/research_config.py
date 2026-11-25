@@ -16,10 +16,8 @@ from dataclasses import dataclass
 
 import httpx
 from langchain_core.language_models import BaseChatModel
-from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_openai import ChatOpenAI
-from pydantic import SecretStr
 
+from mcps.common.ai_models import create_chat_model
 from mcps.config import ServerConfig
 from mcps.research.tools import (
     Fetch,
@@ -33,7 +31,6 @@ from mcps.research.tools.fetch import build_fetch_tool
 __all__ = [
     "ResearchConfig",
     "SearchResult",
-    "create_chat_model",
     "build_research_config",
 ]
 
@@ -53,36 +50,6 @@ class ResearchConfig:
 def _is_google_cse_configured(config: ServerConfig) -> bool:
     """Return True when Google Custom Search credentials are present."""
     return bool(config.google.api_key and config.google.search_id)
-
-
-def create_chat_model(
-    *,
-    model_name: str,
-    router_url: str,
-    router_key: str,
-    http_client: httpx.AsyncClient | None = None,
-) -> BaseChatModel:
-    """Instantiate a router-backed chat model.
-
-    Gemini models are instantiated the router URL
-    Args:
-        model_name: Model identifier (e.g. "gemini-flash", "gpt-4o").
-        router_url: Base URL of the OpenAI-compatible model router.
-        router_key: Auth token for the model router.
-        http_client: Shared async httpx client for connection pooling
-    """
-    if "gemini" in model_name:
-        return ChatGoogleGenerativeAI(
-            model=model_name,
-            base_url=router_url,
-            google_api_key=SecretStr(router_key),
-        )
-    return ChatOpenAI(
-        model=model_name,
-        base_url=router_url,
-        api_key=SecretStr(router_key),
-        http_async_client=http_client,
-    )
 
 
 def create_search_tool(
@@ -121,16 +88,14 @@ async def build_research_config(
             return
         yield ResearchConfig(
             fast=create_chat_model(
-                model_name=config.research.fast_model,
-                router_url=config.router.api_base,
-                router_key=config.router.api_key,
-                http_client=http_client,
+                config.research.fast_model,
+                config.router,
+                http_client,
             ),
             small=create_chat_model(
-                model_name=config.research.infer_model,
-                router_url=config.router.api_base,
-                router_key=config.router.api_key,
-                http_client=http_client,
+                config.research.infer_model,
+                config.router,
+                http_client,
             ),
             search=create_search_tool(config=config, http_client=http_client),
             fetch=fetch,

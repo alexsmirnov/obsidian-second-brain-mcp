@@ -19,7 +19,8 @@ win on a shared case id. ``expectations.json`` lists,
 per case, passages the filter must keep and boilerplate it must drop.
 
 Outputs go to ``tmp/``: ``relevance-<filter>-<timestamp>.log`` and a
-``.jsonl`` report with one row per page. Each row lists the selected fragments
+``.jsonl`` report with one row per page; ``--save-output`` also writes each
+filtered page to ``tmp/<run>/<case_id>.md``. Each row lists the selected fragments
 (line range in the page and their first 30 characters; chunked filters only),
 the relevant passages that were missed and the irrelevant ones that leaked into
 the result.
@@ -35,7 +36,7 @@ import logging
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import httpx
 import nltk
@@ -44,10 +45,10 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
 from web_fetch_evaluation import CASES_DIR, FetchCase, load_cases
 
+from mcps.common.ai_models import create_chat_model
 from mcps.common.decisions import DecisionClient, Noul, NoulCriteria
 from mcps.config import ServerConfig, create_config
 from mcps.research.deep_research import FETCH_QUERY_INSTRUCTIONS, FetchQuery
-from mcps.research.research_config import create_chat_model
 from mcps.research.tools.bm25_ranker import Bm25Ranker
 from mcps.research.tools.decision_ranker import RELEVANCE_QUESTION, DecisionRanker
 from mcps.research.tools.fetch import (
@@ -62,6 +63,7 @@ from mcps.research.tools.filtering import (
     LlmRelevanceFilter,
     Ranker,
     RelevanceFilter,
+    llm_filter_model_limits,
 )
 from mcps.research.tools.markdown_chunker import MarkdownChunker
 from mcps.research.tools.models import FetchResult, FetchStatus
@@ -76,13 +78,19 @@ QUERY_SOURCES = ("dataset", "generated")
 CHUNKER_OPTIONS = ("max_chars", "overlap_chars", "threshold")
 BM25_OPTIONS = ("relative_cutoff", "smoothing", "link_penalty")
 DECISION_OPTIONS = ("decision_instructions", "decision_true", "decision_false")
+LLM_OPTIONS = (
+    "reasoning_effort",
+    "temperature",
+    "context_window",
+    "max_output_tokens",
+)
 # Tuning options each filter accepts; the rest must stay unset.
 FILTER_OPTIONS: dict[str, tuple[str, ...]] = {
     "bm25": CHUNKER_OPTIONS + BM25_OPTIONS,
     "decision": CHUNKER_OPTIONS + DECISION_OPTIONS,
-    "llm": (),
+    "llm": LLM_OPTIONS,
 }
-TUNING_OPTIONS = CHUNKER_OPTIONS + BM25_OPTIONS + DECISION_OPTIONS
+TUNING_OPTIONS = CHUNKER_OPTIONS + BM25_OPTIONS + DECISION_OPTIONS + LLM_OPTIONS
 
 
 def _configure_logging(log_path: Path) -> None:
@@ -136,17 +144,15 @@ def fetch_query_message(inp: FetchQueryInput) -> str:
 
 
 def router_chat_model(
-    config: ServerConfig, model_name: str | None, http_client: httpx.AsyncClient
+    config: ServerConfig,
+    model_name: str | None,
+    http_client: httpx.AsyncClient,
+    **options: Any,
 ) -> BaseChatModel:
     """Router-backed chat model; fail fast when the model or router is unset."""
     if not (model_name and config.router.api_key and config.router.api_base):
         raise RuntimeError("research model or router settings not set")
-    return create_chat_model(
-        model_name=model_name,
-        router_url=config.router.api_base,
-        router_key=config.router.api_key,
-        http_client=http_client,
-    )
+    return create_chat_model(model_name, config.router, http_client, **options)
 
 
 class RecordingRanker:
@@ -266,14 +272,23 @@ def decision_filter(
 
 
 def llm_filter(
-    _args: argparse.Namespace, config: ServerConfig, http_client: httpx.AsyncClient
+    args: argparse.Namespace, config: ServerConfig, http_client: httpx.AsyncClient
 ) -> FilterSetup:
     model_name = config.research.fast_model
+    limits = llm_filter_model_limits()
+    options = {
+        "reasoning_effort": args.reasoning_effort,
+        "temperature": args.temperature,
+        "context_window": _override(args.context_window, limits["context_window"]),
+        "max_output_tokens": _override(
+            args.max_output_tokens, limits["max_output_tokens"]
+        ),
+    }
     return FilterSetup(
         page_filter=LlmRelevanceFilter(
-            router_chat_model(config, model_name, http_client)
+            router_chat_model(config, model_name, http_client, **options)
         ),
-        settings={"model": model_name},
+        settings={"model": model_name, **options},
     )
 
 
@@ -483,8 +498,12 @@ async def evaluate_case(
     expected: dict,
     query: str,
     setup: FilterSetup,
+    output_dir: Path | None = None,
 ) -> tuple[CaseMetrics, dict[str, object]]:
-    """Filter one page and build its metrics and JSONL report row."""
+    """Filter one page and build its metrics and JSONL report row.
+
+    With ``output_dir`` the filtered content is saved as ``<case_id>.md``.
+    """
     content = (PAGES_DIR / expected["file"]).read_text(encoding="utf-8")
     page = FetchResult(
         url=case.url, status=FetchStatus.OK, mime=expected["mime"], content=content
@@ -493,6 +512,10 @@ async def evaluate_case(
     if result.status is not FetchStatus.OK:
         raise RuntimeError(f"{case.case_id}: filter returned {result.status}")
     kept = result.content
+    output_file = None
+    if output_dir is not None:
+        output_file = output_dir / f"{case.case_id}.md"
+        output_file.write_text(kept, encoding="utf-8")
     tp, fp, fn, tn = evaluate_retrieval(
         kept, expected["relevant"], expected["irrelevant"]
     )
@@ -504,6 +527,7 @@ async def evaluate_case(
         "query": query,
         "page_chars": len(content),
         "kept_chars": len(kept),
+        "output_file": str(output_file) if output_file else None,
         "precision": round(metrics.precision, 4),
         "recall": round(metrics.recall, 4),
         "f1": round(metrics.f1, 4),
@@ -531,6 +555,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--filter", choices=sorted(FILTERS), default="bm25")
     parser.add_argument(
         "--limit", type=int, help="number of dataset records (default: all)"
+    )
+    parser.add_argument(
+        "--save-output",
+        action="store_true",
+        help="save each filtered page to tmp/<run>/<case_id>.md",
     )
     parser.add_argument(
         "--query-source",
@@ -589,6 +618,27 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     decision.add_argument("--decision-instructions", help="question instructions")
     decision.add_argument("--decision-true", help="criteria for a yes answer")
     decision.add_argument("--decision-false", help="criteria for a no answer")
+    llm = parser.add_argument_group("llm model", "--filter llm")
+    llm.add_argument(
+        "--reasoning-effort",
+        choices=("none", "minimal", "low", "medium", "high"),
+        help="thinking depth (default: model default)",
+    )
+    llm.add_argument(
+        "--temperature", type=float, help="sampling temperature (default: model)"
+    )
+    llm.add_argument(
+        "--context-window",
+        type=int,
+        help="context tokens, local models only "
+        f"(default {llm_filter_model_limits()['context_window']})",
+    )
+    llm.add_argument(
+        "--max-output-tokens",
+        type=int,
+        help="output tokens "
+        f"(default {llm_filter_model_limits()['max_output_tokens']})",
+    )
     args = parser.parse_args(argv)
 
     prompt: Path | None = args.fetch_query_prompt
@@ -637,6 +687,9 @@ async def main(argv: list[str] | None = None) -> None:
     stem = f"relevance-{args.filter}-{args.query_source}-{stamp}"
     report_path = OUTPUT_DIR / f"{stem}.jsonl"
     _configure_logging(OUTPUT_DIR / f"{stem}.log")
+    output_dir = OUTPUT_DIR / stem if args.save_output else None
+    if output_dir is not None:
+        output_dir.mkdir(parents=True)
     ensure_nltk_data()
 
     load_dotenv(find_dotenv(usecwd=True))
@@ -674,7 +727,7 @@ async def main(argv: list[str] | None = None) -> None:
                     )
                 )
                 metrics, row = await evaluate_case(
-                    case, expectations[case_id], query, setup
+                    case, expectations[case_id], query, setup, output_dir
                 )
                 evaluation.cases.append(metrics)
                 row |= {
