@@ -121,12 +121,49 @@ class ChunkedRelevanceFilter:
             return failure(result.url, FetchStatus.FILTER_FAILED)
         return replace(result, content=content)
 
-_FILTER_PROMPT="""Extract text from document downloaded from internet,
-relevant to user QUERY. Keep surrounding text that may help to answer follow-up questions.
-If query is not provided, keep all that seems as a main page content,
-remove navigation, advertisizing, and other content unrelated to main body.
-Return only text from document, without any preface sentences. Keep original text from selected paragraphs, preserve formattings and markdown 
+_FILTER_PROMPT = """You copy parts of a web page. You never write your own text.
+
+You get a QUERY and a DOCUMENT. Copy the parts of the DOCUMENT that help answer the QUERY.
+
+Rules:
+1. Copy text exactly, character for character. Do not reword, shorten, fix, or summarize.
+2. Copy whole paragraphs, lists, tables, and code blocks. Keep their markdown.
+3. Keep a paragraph if it talks about the topic of the QUERY, even if it gives only part of the answer.
+4. Keep the section heading above each copied paragraph.
+5. Drop menus, cookie notices, ads, sign-up forms, author lists, funding notes. Drop repeated links.
+6. If the QUERY is empty, copy the main article text and drop everything from rule 5.
+7. Output only copied text. No introduction, no comments, no headings of your own.
+
+Example:
+QUERY: battery life of the X200 laptop
+DOCUMENT:
+Home | Laptops | Deals
+## Battery
+The X200 ran for 11 hours in our video test. Charging to full takes 90 minutes.
+## Display
+The screen is 14 inches with a matte finish.
+We use cookies to improve your experience.
+
+Output:
+## Battery
+The X200 ran for 11 hours in our video test. Charging to full takes 90 minutes.
 """
+
+_FILTER_REMINDER = (
+    "Now copy the parts of the DOCUMENT that help answer the QUERY. "
+    "Copy them exactly. Output only copied text."
+)
+
+
+def _filter_message(query: str | None, document: str) -> str:
+    """Wrap the query and page, repeating the task after the page for small models."""
+    return (
+        f"QUERY: {(query or '').strip()}\n\n"
+        f"<DOCUMENT>\n{document}\n</DOCUMENT>\n\n"
+        f"{_FILTER_REMINDER}"
+    )
+
+
 class LlmRelevanceFilter:
 
     def __init__(self, model: BaseChatModel) -> None:
@@ -135,7 +172,7 @@ class LlmRelevanceFilter:
     async def __call__(
         self, result: FetchResult, query: str | None = None, 
     ) -> FetchResult:
-        extract_message=f"""<QUERY>{query}</QUERY>\n\n\n<DOCUMENT>{result.content}<DOCUMENT>"""
+        extract_message = _filter_message(query, result.content)
         try:
             response = await self.model.ainvoke(input=[SystemMessage(_FILTER_PROMPT),HumanMessage(extract_message)])
             text = response.text
