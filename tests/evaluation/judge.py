@@ -10,7 +10,7 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel, Field
 
-from mcps.common.ai_models import create_chat_model
+from mcps.common.ai_models import create_chat_model, invoke_structured
 from mcps.config import ServerConfig
 
 from .dataset import RubricCriterion
@@ -76,7 +76,9 @@ async def judge_criterion(
 ) -> CriterionVerdict:
     """Judge a single criterion against the response.
 
-    Uses async invocation for concurrent evaluation of multiple criteria.
+    Uses async invocation for concurrent evaluation of multiple criteria. An
+    unparsable reply is re-prompted with the parse error; a call that still
+    fails gives an UNMET verdict that carries the error.
     """
     prompt = CRITERION_JUDGE_TEMPLATE.format(
         problem=problem,
@@ -85,16 +87,19 @@ async def judge_criterion(
     )
 
     try:
-        result = await model.with_structured_output(
-            CriterionJudgeResult
-        ).ainvoke([
-            SystemMessage(content=CRITERION_JUDGE_SYSTEM),
-            HumanMessage(content=prompt),
-        ])
+        result = await invoke_structured(
+            model,
+            CriterionJudgeResult,
+            [
+                SystemMessage(content=CRITERION_JUDGE_SYSTEM),
+                HumanMessage(content=prompt),
+            ],
+            label=f"judge criterion {criterion.id!r}",
+        )
         return CriterionVerdict(
             criterion_id=criterion.id,
-            met=result.met,  # type: ignore[union-attr]
-            justification=result.justification,  # type: ignore[union-attr]
+            met=result.met,
+            justification=result.justification,
         )
     except Exception as exc:
         logger.warning(

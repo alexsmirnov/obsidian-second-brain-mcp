@@ -45,6 +45,8 @@ class ResearchConfig:
     small: BaseChatModel
     search: Search
     fetch: Fetch
+    # Hostnames (and subdomains) the fetch tool refuses; not offered for triage.
+    restricted_domains: tuple[str, ...] = ()
 
 
 def _is_google_cse_configured(config: ServerConfig) -> bool:
@@ -99,4 +101,5 @@ async def build_research_config(
             ),
             search=create_search_tool(config=config, http_client=http_client),
             fetch=fetch,
+            restricted_domains=config.fetch.restricted_domains,
         )

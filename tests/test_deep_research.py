@@ -139,6 +139,7 @@ def _make_agent(
     search_by_query: Callable[[str], list[SearchResult]] | None = None,
     limits: ResearchLimits | None = None,
     clock: Callable[[], float] = time.monotonic,
+    restricted_domains: tuple[str, ...] = (),
 ) -> tuple[
     ResearchAgent,
     _StructuredModel,
@@ -160,7 +161,7 @@ def _make_agent(
     fast = _StructuredModel(
         {
             ResearchPlan: plan or ResearchPlan(search_queries=["q"], fetch_query="k"),
-            SelectedPages: select or SelectedPages(indices=[]),
+            SelectedPages: select or SelectedPages(candidates=[]),
         }
     )
     small = _StructuredModel(
@@ -175,6 +176,7 @@ def _make_agent(
             small=cast(Any, small),
             search=fake_search,
             fetch=fake_fetch,
+            restricted_domains=restricted_domains,
         ),
         limits=limits or ResearchLimits(),
         clock=clock,
@@ -524,7 +526,7 @@ class TestSelectUrls:
     async def test_select_urls_puts_links_first_dedupes_and_sends_to_web_fetch(self):
         agent, fast, _, _ = _make_agent(
             limits=ResearchLimits(max_pages_per_round=3),
-            select=SelectedPages(indices=[2, 0, 0, 99, -1]),
+            select=SelectedPages(candidates=[2, 0, 0, 99, -1]),
         )
         state = _state(
             fetch_query="qubit routing",
@@ -586,7 +588,7 @@ class TestSelectUrls:
         early = [_sr(f"https://early-{i}.example") for i in range(32)]
         agent, fast, _, _ = _make_agent(
             limits=ResearchLimits(max_pages_per_round=3),
-            select=SelectedPages(indices=[32, 0, 1]),
+            select=SelectedPages(candidates=[32, 0, 1]),
         )
         state = _state(
             search_queries=["q1", "q2"],
@@ -630,7 +632,7 @@ class TestSelectUrls:
     async def test_triage_receives_gap_only_when_meaningful(
         self, knowledge_gap: str, expected: str | None
     ):
-        agent, fast, _, _ = _make_agent(select=SelectedPages(indices=[0]))
+        agent, fast, _, _ = _make_agent(select=SelectedPages(candidates=[0]))
         state = _state(
             knowledge_gap=knowledge_gap,
             search_queries=["q"],
@@ -680,7 +682,7 @@ class TestSelectUrls:
     async def test_select_urls_skips_triage_when_links_fill_budget(self):
         agent, fast, _, _ = _make_agent(
             limits=ResearchLimits(max_pages_per_round=1),
-            select=SelectedPages(indices=[0]),
+            select=SelectedPages(candidates=[0]),
         )
         state = _state(
             pending_links=["https://link.example"],
@@ -694,8 +696,106 @@ class TestSelectUrls:
         assert isinstance(out, Command)
         assert _sent_urls(out) == ["https://link.example"]
 
+    @pytest.mark.parametrize(
+        ("max_pages", "links", "candidates", "expected_count"),
+        [
+            (3, [], 6, 3),
+            (3, ["https://link.example"], 6, 2),
+            (5, [], 2, 2),
+        ],
+    )
+    async def test_empty_triage_falls_back_to_random_candidates_within_budget(
+        self,
+        max_pages: int,
+        links: list[str],
+        candidates: int,
+        expected_count: int,
+    ):
+        agent, _, _, _ = _make_agent(
+            limits=ResearchLimits(max_pages_per_round=max_pages),
+            select=SelectedPages(candidates=[]),
+        )
+        urls = [f"https://c{i}.example/page" for i in range(candidates)]
+        state = _state(
+            pending_links=links,
+            search_queries=["q"],
+            searches=[{"query": "q", "results": [_sr(url) for url in urls]}],
+        )
+
+        out = await agent.select_urls(state, {})
+
+        sent = _sent_urls(out)
+        fallback = [url for url in sent if url not in links]
+        assert sent[: len(links)] == links
+        assert len(fallback) == expected_count
+        assert len(set(fallback)) == expected_count
+        assert set(fallback) <= set(urls)
+
+    async def test_non_empty_triage_choice_is_not_replaced_by_fallback(self):
+        agent, _, _, _ = _make_agent(select=SelectedPages(candidates=[1]))
+        state = _state(
+            search_queries=["q"],
+            searches=[
+                {
+                    "query": "q",
+                    "results": [_sr(f"https://c{i}.example") for i in range(4)],
+                }
+            ],
+        )
+
+        out = await agent.select_urls(state, {})
+
+        assert _sent_urls(out) == ["https://c1.example"]
+
+    async def test_restricted_domains_are_removed_before_triage_and_fallback(self):
+        agent, fast, _, _ = _make_agent(
+            limits=ResearchLimits(max_pages_per_round=10),
+            select=SelectedPages(candidates=[]),
+            restricted_domains=("blocked.example",),
+        )
+        state = _state(
+            search_queries=["q"],
+            searches=[
+                {
+                    "query": "q",
+                    "results": [
+                        _sr("https://blocked.example/a"),
+                        _sr("https://www.blocked.example/b"),
+                        _sr("https://ok.example/c"),
+                        _sr("https://notblocked.example/d"),
+                    ],
+                }
+            ],
+        )
+
+        out = await agent.select_urls(state, {})
+
+        text = str(fast.calls[-1][1][-1].content)
+        assert "blocked.example/a" not in text
+        assert "www.blocked.example" not in text
+        assert "https://ok.example/c" in text
+        assert "https://notblocked.example/d" in text
+        assert sorted(_sent_urls(out)) == [
+            "https://notblocked.example/d",
+            "https://ok.example/c",
+        ]
+
+    async def test_triage_is_skipped_when_every_candidate_is_restricted(self):
+        agent, fast, _, _ = _make_agent(restricted_domains=("blocked.example",))
+        state = _state(
+            search_queries=["q"],
+            searches=[
+                {"query": "q", "results": [_sr("https://blocked.example/a")]}
+            ],
+        )
+
+        out = await agent.select_urls(state, {})
+
+        assert fast.calls == []
+        assert out.goto == "reflection"
+
     async def test_select_urls_routes_to_reflection_when_no_urls_selected(self):
-        agent, _, _, _ = _make_agent(select=SelectedPages(indices=[]))
+        agent, _, _, _ = _make_agent(select=SelectedPages(candidates=[]))
         state = _state(
             pending_links=[],
             search_queries=["q"],
@@ -954,8 +1054,8 @@ class TestParseErrorRecovery:
     def test_selected_pages_accepts_bare_index_list(self):
         parsed = SelectedPages.model_validate_json("[0, 2, 19]")
 
-        assert parsed == SelectedPages(indices=[0, 2, 19])
-        assert SelectedPages.model_validate_json('{"indices": [1]}').indices == [1]
+        assert parsed == SelectedPages(candidates=[0, 2, 19])
+        assert SelectedPages.model_validate_json('{"indices": [1]}').candidates == [1]
 
     async def test_reflection_reprompts_with_parse_error(self):
         agent, _, small, _ = _make_agent()
@@ -983,7 +1083,7 @@ class TestParseErrorRecovery:
         agent, fast, _, _ = _make_agent()
         fast.handlers[SelectedPages] = _fail_then(
             lambda: SelectedPages.model_validate_json('{"indices": ["x"]}'),
-            SelectedPages(indices=[0]),
+            SelectedPages(candidates=[0]),
             failures=1,
         )
         state = _state(
@@ -1126,7 +1226,7 @@ class TestParseErrorRecovery:
         agent, _, small, _ = _make_agent(
             {url_one: _fetched("PAGE-ONE"), url_two: _fetched("PAGE-TWO")},
             plan=ResearchPlan(search_queries=["q"], fetch_query="k"),
-            select=SelectedPages(indices=[0]),
+            select=SelectedPages(candidates=[0]),
             search_by_query=lambda query: results[query],
             answer=answer,
         )
@@ -1234,7 +1334,7 @@ class TestGraphRound:
             fetch_results={"https://a.example": _fetched(_PAGE)},
             search_results=[_sr("https://a.example")],
             plan=ResearchPlan(search_queries=["q"], fetch_query="k"),
-            select=SelectedPages(indices=[0]),
+            select=SelectedPages(candidates=[0]),
             reflect=Reflection(is_sufficient=True),
             answer=FinalAnswer(
                 answer="A.", explanation="B.", sources=["https://a.example"]
@@ -1268,7 +1368,7 @@ class TestGraphRound:
                 "https://c.example": _fetched("page-two"),
             },
             plan=ResearchPlan(search_queries=["q1"], fetch_query="k1"),
-            select=SelectedPages(indices=[0]),
+            select=SelectedPages(candidates=[0]),
             reflect=reflections,
             answer=FinalAnswer(answer="A."),
             search_by_query=searches.__getitem__,
@@ -1294,7 +1394,7 @@ class TestGraphRound:
         agent, _, small, fetch_calls = _make_agent(
             search_results=[],
             plan=ResearchPlan(search_queries=["q"], fetch_query="k"),
-            select=SelectedPages(indices=[]),
+            select=SelectedPages(candidates=[]),
             reflect=Reflection(is_sufficient=False),
             answer=FinalAnswer(answer="none", explanation="Not found:\n- q"),
         )
@@ -1319,7 +1419,7 @@ class TestDebugTrace:
                 _sr("https://skipped.example"),
             ],
             plan=ResearchPlan(search_queries=["q"], fetch_query="k"),
-            select=SelectedPages(indices=[0]),
+            select=SelectedPages(candidates=[0]),
             reflect=Reflection(is_sufficient=True, knowledge_gap="gap-marker"),
             answer=FinalAnswer(answer="A.", sources=["https://picked.example"]),
         )

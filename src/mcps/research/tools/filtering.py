@@ -133,7 +133,7 @@ class ChunkedRelevanceFilter:
 
 # Page and output sizes the LLM filter is sized for.
 LLM_FILTER_MAX_INPUT_CHARS = 200_000
-LLM_FILTER_MAX_OUTPUT_CHARS = 20_000
+LLM_FILTER_MAX_OUTPUT_CHARS = 25_000
 # Room for the system prompt, reminder and a long research query.
 _LLM_FILTER_OVERHEAD_CHARS = 12_000
 # Output tokens a thinking model spends on reasoning before the extract;
@@ -144,11 +144,11 @@ _CONTEXT_STEP_TOKENS = 1024
 
 _FILTER_PROMPT = """You copy parts of a web page. You never write your own text.
 
-You get a QUERY and a DOCUMENT. Copy the parts of the DOCUMENT that help answer the QUERY.
+You get a QUERY and a DOCUMENT. Copy the parts of the DOCUMENT that help answer the QUERY, and those that preface, explain, or extend selected.
 
 Rules:
 1. Copy text exactly, character for character. Do not reword, shorten, fix, or summarize.
-2. Copy whole sentences, lists, tables, and code blocks.
+2. Copy whole sentences, lists, tables, and code blocks. When unsure whether a part is relevant, copy it: related background, methods, and numbers from similar setups are useful too.
 3. Do not worry about formatting, result will be used by machine, not human.
 4. Drop menus, cookie notices, ads, sign-up forms, author lists, funding notes. Drop repeated links.
 5. If the QUERY is empty, copy the main article text and drop everything from rule 5.
@@ -169,7 +169,7 @@ The X200 ran for 11 hours in our video test. Charging to full takes 90 minutes.
 """
 
 _FILTER_REMINDER = (
-    "Now copy the parts of the DOCUMENT that help answer the QUERY. "
+    "Now copy the parts of the DOCUMENT that help answer the QUERY and connected text. "
     "Copy them exactly. Output only copied text."
 )
 

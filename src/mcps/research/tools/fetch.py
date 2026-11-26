@@ -54,7 +54,7 @@ __all__ = ["build_fetch_tool", "create_fetch", "create_page_filter"]
 logger = logging.getLogger(__name__)
 
 
-def _is_restricted(domains: Sequence[str]):
+def is_restricted(domains: Sequence[str]):
     """Predicate: hostname equals or is a subdomain of a blocked domain."""
 
     def matches(url: str) -> bool:
@@ -112,7 +112,7 @@ def create_fetch(
 
     routed = UrlSelector(
         [
-            (_is_restricted(restricted_domains), Blocked()),
+            (is_restricted(restricted_domains), Blocked()),
             (is_arxiv_url, ArxivFetch(http)),
             (is_github_blob_url, GitHubBlobFetch(http)),
             (is_github_repo_url, GitHubRepoFetch(http)),

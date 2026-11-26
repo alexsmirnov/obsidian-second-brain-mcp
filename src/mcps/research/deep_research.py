@@ -4,6 +4,7 @@ from __future__ import annotations
 
 # ruff: noqa: E501
 import logging
+import random
 import re
 import time
 from collections.abc import Callable, Iterable, Sequence
@@ -25,6 +26,7 @@ from mcps.common.ai_models import (
 )
 from mcps.config import ResearchLimits
 from mcps.research.tools import SearchResult
+from mcps.research.tools.fetch import is_restricted
 
 if TYPE_CHECKING:
     from langgraph.graph.state import CompiledStateGraph
@@ -56,28 +58,28 @@ BAD: site:arxiv.org DiD
 """
 FILTER_QUERY_INSTRUCTIONS="""Fetch query rules:
 `fetch_query` is instruction for AI model to extract relevant content from web page.
-- ask for information required to answer question
-- With a KNOWLEDGE GAP, target the gap's questions plus core from the initial question.
+- Always cover the whole original question, not only the gap: the same page may hold useful material for other parts of it.
+- With a KNOWLEDGE GAP, add the gap's topics on top of the question's topics; never replace them.
+- Ask for what the page says on these topics. Do not ask the page to report what it lacks.
 """
 _WEB_SEARCH_INSTRUCTIONS="""Web search query rules:
-    1) Length: 2-5 keywords. Hard maximum of 6 words per query.
-    2) Named Entities: Every query MUST contain at least one primary named entity or technical keyword from the original user question.
-    3) Absolute Orthogonality: Each query must isolate and target a completely different dimension of the problem:
-    - Query 1 (Core Axis): Core entity + primary missing attribute/metric.
-    - Query 2 (Comparative Axis): Core entity + secondary alternative name, framework, or version modifier.
-    - Query 3 (Validation Axis): Specific technical constraint, data point, or official documentation source filter (e.g., site:domain.com).
-    4) Syntax Rules: 
-    - Never generate natural language questions or conversational phrases.
-    - Never use compound noun phrases.
-    - Preserved dates/versions must be represented as single tokens (e.g., "2026" or "v4.8")."""
+    1) Length: 3-8 words. Short natural phrases are fine.
+    2) Include a named entity or technical keyword from the original user question.
+    3) Each query should approach a different dimension of the problem, for example:
+    - core entity + the attribute or metric asked for;
+    - an alternative name, framework or version of the entity;
+    - a specific technical constraint, data point, or the official documentation or primary paper.
+    4) Syntax Rules:
+    - Use the words a source would use. Avoid full conversational questions.
+    - Write dates and versions as single tokens (e.g., "2026" or "v4.8")."""
 _DATE_CONTEXT = f"""Current date context: Today is {datetime.now().strftime("%A, %B %d, %Y")}. Use this to evaluate time-sensitivity, version obsolescence, and real-time data validity."""
 
 _GENERATE_QUERY_PROMPT = f"""You are a web search query generator for a research agent.
 {_DATE_CONTEXT}
 
 Produce a research plan:
-- split the question into 1-3 distinct subquestions, using fewer queries for simple questions. If you think you know an answer, the subquestion is how to confirm it.
-- `search_queries`: for each subquestion, generate exactly one web search query.
+- split the question into 1-3 distinct aspects. Cover every part of the question, broadly first: details can be followed up later.
+- `search_queries`: for each aspect, generate one web search query (two if the topic is broad).
     {_WEB_SEARCH_INSTRUCTIONS}
 - `links`: any concrete HTTP(S) URLs observed in the question, to read directly instead of searching.
 - `fetch_query`: the query used to select passages inside every fetched page for this round.
@@ -86,31 +88,35 @@ Produce a research plan:
 """
 
 _SELECT_URLS_PROMPT = """You choose which search results are worth reading.
-The goal of result selection is to reduce research context to the minimal data necessary to answer question.
 Consider the whole candidate pool against the user question, and the KNOWLEDGE GAP when present.
-Select complementary sources that cover question and may resolve knowledge gap, in priority order by relevance and authority.
-Prefer primary sources and official documentation: restpectful media, vendor documentation, official sites, known expert opinions.
-Return the 0-based indices of at most MAX PAGES candidates without duplicates of the same article, or fewer when fewer are useful, or an empty list when nothing is worth reading.
+Snippets are short and often hide the useful part of a page: select a candidate when its title or snippet is on the topic of the question, even if the snippet does not show the answer itself.
+Select complementary sources that cover every part of the question, in priority order by relevance and authority, and use the MAX PAGES budget when enough on-topic candidates exist.
+Prefer primary sources and official documentation: respectful media, vendor documentation, official sites, papers, known expert opinions. Related papers and articles linked from on-topic pages are relevant too.
+Return object with `candidates` array, the 0-based indices of at most MAX PAGES candidates without duplicates of the same article. 
+Return an empty `candidates` list only when no candidate is on the topic of the question, for example: all pages describe sports and celebrities for scientific question.
 """
 
 _REFLECTION_PROMPT = f"""You are the reasoning engine of a web research agent.
 Audit the fetched pages and search results gathered so far in the conversation, then decide the next step.
-Your output is evidence for an upstream agent that will draft the answer: collect the most relevant support as fast as possible.
+Your output is evidence for an upstream agent that will draft the answer: collect relevant support, not a confirmation of every claim.
 - Use domain knowledge to propose search hypotheses, naming relevant entities, methods, packages, standards, or authors.
 - Use the search view to see which queries failed, which results were not selected, and which links appeared in fetched pages.
-- Prefer primary sources when following links.
-- Set `is_sufficient` once the collected information support the core factual answer.
-- Do not extend research for peripheral details or unavailable private measurements. Disclose them as unresolved instead.
-- Follow-up queries may name hypothesized entities. Follow only exact HTTP(S) URLs observed in the question, search results, or fetched pages; never invent a URL.
+- Prefer primary sources when following links, and follow links to on-topic papers and articles.
+- Set `is_sufficient` once every part of the question has relevant sources, even when some details stay unconfirmed. Related evidence, benchmarks of similar setups, and expert reasoning are acceptable support: the answer may state what is known and flag what is not.
+- Sources are not required to confirm each claim. Some facts are not published: exact counts for a narrow sample, measurements on the user's own data or hardware, private or dataset-specific results. Never make them a goal.
+
+Avoid repeating work. The conversation above holds the earlier rounds, their queries, knowledge gaps and visited pages.
+- Never propose a query, link or gap that repeats or rephrases an earlier one. A topic searched without finding a direct answer is closed: report it as unresolved, do not search it again.
+- Open a new gap only for a part of the question that has no relevant source yet. Otherwise set `is_sufficient`.
 
 {_DATE_CONTEXT}
 
 If more work is needed, produce the next round plan:
-- `search_queries`: up to 2 distinct follow-up queries, each 2-5 keywords (hard maximum 6 words). Target one unresolved gap per query.
+- `search_queries`: up to 3 distinct follow-up queries, each about a part of the question not yet covered. Use none if only unconfirmed details remain.
     {_WEB_SEARCH_INSTRUCTIONS}
-- `links`: exact HTTP(S) URLs to read directly, when you already know the source.
-- `knowledge_gap`: the concrete missing data or validation step.
-- `fetch_query`: the shared page filtering query for the next round, applied to the knowledge gap.
+- `links`: exact HTTP(S) URLs to read directly, when you already know the source and it was not visited yet.
+- `knowledge_gap`: the part of the question that has no relevant source yet. Leave it empty when only unconfirmed details remain.
+- `fetch_query`: the shared page filtering query for the next round, covering the question and the knowledge gap.
 
 {FILTER_QUERY_INSTRUCTIONS}
 """
@@ -181,32 +187,38 @@ class FetchQuery(BaseModel):
 class ResearchPlan(FetchQuery):
     """Shared round plan produced by generate_query and reflection."""
 
-    search_queries: list[str] = Field(min_length=1, description="2-5 keyword queries")
+    search_queries: list[str] = Field(min_length=1, description="3-8 word search queries, one dimension each")
     links: list[str] = Field(default_factory=list, description="HTTP(S) URLs to read directly")
 
 
 class SelectedPages(BaseModel):
     """Triage output: 0-based candidate indices in priority order."""
 
-    indices: list[int] = Field(default_factory=list, description="0-based candidate indices, priority order")
+    candidates: list[int] = Field(default_factory=list, description="0-based candidate indices, priority order")
 
     @model_validator(mode="before")
     @classmethod
     def _wrap_bare_list(cls, data: Any) -> Any:
         """Accept a bare JSON array of indices, which some models return."""
-        return {"indices": data} if isinstance(data, list) else data
+        return {"candidates": data} if isinstance(data, list) else data
 
 
 class Reflection(ResearchPlan):
     """Structured output for the reflection node."""
 
     # Unlike the initial plan, reflection may need no further search.
-    search_queries: list[str] = Field(default_factory=list, description="2-5 keyword queries")
+    search_queries: list[str] = Field(
+        default_factory=list,
+        description="Up to 3 new 3-8 word queries, none repeating an earlier query; empty when no part is uncovered",
+    )
 
     is_sufficient: bool = Field(
-        description="Whether gathered info is sufficient and authoritative enough to answer the question"
+        description="True when every part of the question has relevant sources, even if some details stay unconfirmed"
     )
-    knowledge_gap: str = Field(default="", description="What information is still missing or unverified community claims")
+    knowledge_gap: str = Field(
+        default="",
+        description="Part of the question with no relevant source yet and not searched before; empty when none",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -527,7 +539,12 @@ class ResearchAgent:
             _normalize_url,
             self.limits.max_pages_per_round,
         )
-        candidates = _collect_candidates(searches, {_normalize_url(link) for link in links})
+        restricted = is_restricted(self.config.restricted_domains)
+        candidates = [
+            candidate
+            for candidate in _collect_candidates(searches, {_normalize_url(link) for link in links})
+            if not restricted(candidate.url)
+        ]
         budget = self.limits.max_pages_per_round - len(links)
         chosen: list[str] = []
         if candidates and budget > 0:
@@ -567,7 +584,11 @@ class ResearchAgent:
         candidates: list[SearchResult],
         budget: int,
     ) -> list[str]:
-        """Ask the fast model for candidate indices; fall back to no triage."""
+        """Ask the fast model for candidate indices.
+
+        An empty choice falls back to random candidates up to ``budget``; a model
+        error falls back to no triage.
+        """
         gap = state.get("knowledge_gap", "").strip()
         lines = [
             f"Question: {state['original_question']}",
@@ -593,14 +614,18 @@ class ResearchAgent:
             return []
         valid_urls = [
             candidates[index].url
-            for index in selected.indices
+            for index in selected.candidates
             if 0 <= index < len(candidates)
         ]
         chosen = _dedupe(valid_urls, str, budget)
+        if not chosen:
+            fallback = random.sample(candidates, min(budget, len(candidates)))
+            chosen = [candidate.url for candidate in fallback]
+            logger.warning("Triage selected no pages, falling back to %d random candidates", len(chosen))
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug(
                 "[triage] indices=%s chosen=%s not selected=%s",
-                selected.indices,
+                selected.candidates,
                 chosen,
                 [candidate.url for candidate in candidates if candidate.url not in chosen],
             )
