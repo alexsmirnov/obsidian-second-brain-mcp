@@ -230,6 +230,8 @@ class FetchSettings(_EnvGroup):
     # Router decision model for per-fragment relevance. Empty selects local
     # lexical filtering.
     decision_model: str = Field(default="", alias="DECISION_MODEL")
+    # Filters and cleans fetch results.
+    fetch_model: str = Field(default="", alias="FETCH_MODEL")
     # Hostnames (and their subdomains) fetch must never visit.
     restricted_domains: Annotated[tuple[str, ...], NoDecode] = Field(
         default=(), alias="FETCH_RESTRICTED_DOMAINS"

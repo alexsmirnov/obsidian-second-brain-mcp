@@ -196,7 +196,7 @@ def create_page_filter(
     config: ServerConfig, http_client: httpx.AsyncClient
 ) -> RelevanceFilter:
     """Build the LLM based filter."""
-    fetch_model = create_chat_model(config.research.fast_model,config.router,http_client,reasoning_effort="none",**llm_filter_model_limits())
+    fetch_model = create_chat_model(config.fetch.fetch_model,config.router,http_client,reasoning_effort="none",**llm_filter_model_limits())
     return LlmRelevanceFilter(fetch_model)
 
 

@@ -26,19 +26,19 @@ services:
       # - "127.0.0.1:9222:9222"
       - "127.0.0.1:8000:8000"
     restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "/obscura", "fetch", "http://localhost:9222/json/version", "--allow-private-network", "--dump", "original"]
-      interval: 15s
-      timeout: 10s
-      retries: 3
-      start_period: 10s
+    # healthcheck:
+    #   test: ["CMD", "/obscura", "fetch", "http://localhost:9222/json/version", "--allow-private-network", "--dump", "original"]
+    #   interval: 15s
+    #   timeout: 10s
+    #   retries: 3
+    #   start_period: 10s
 
   server:
     build: .
     network_mode: "service:browser"
     depends_on:
       browser:
-        condition: service_healthy
+        condition: service_started
         # Restarts this service when compose restarts the browser. A restart by
         # the Docker daemon (for example after an OOM kill) leaves this service
         # in a stale network namespace: run `docker compose restart server`.
