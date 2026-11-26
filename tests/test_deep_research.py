@@ -21,7 +21,7 @@ from langchain_core.exceptions import OutputParserException
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_openai import ChatOpenAI
 from langgraph.types import Command, Send
-from pydantic import BaseModel, SecretStr
+from pydantic import BaseModel, SecretStr, ValidationError
 
 from mcps.config import (
     BrowserSettings,
@@ -473,13 +473,16 @@ class TestGenerateQuery:
 
         assert out["fetch_query"] == _QUESTION
 
-    async def test_empty_plan_falls_back_to_question(self):
-        agent, _, _, _ = _make_agent(plan=ResearchPlan())
+    @pytest.mark.parametrize(
+        "payload",
+        [{}, {"search_queries": []}, {"subquestions": [{"search_queries": ["q"]}]}],
+    )
+    def test_research_plan_requires_search_queries(self, payload):
+        with pytest.raises(ValidationError):
+            ResearchPlan.model_validate(payload)
 
-        out = await agent.generate_query({"question": _QUESTION}, {})
-
-        assert out["search_queries"] == [_QUESTION]
-        assert out["pending_links"] == []
+    def test_reflection_allows_no_search_queries(self):
+        assert Reflection(is_sufficient=True).search_queries == []
 
 
 class TestRouteRound:

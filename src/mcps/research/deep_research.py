@@ -54,7 +54,22 @@ GOOD: staggered adoption parallel trends TWFE bias
 BAD: what are the problems with DiD
 BAD: site:arxiv.org DiD
 """
-
+FILTER_QUERY_INSTRUCTIONS="""Fetch query rules:
+`fetch_query` is instruction for AI model to extract relevant content from web page.
+- ask for information required to answer question
+- With a KNOWLEDGE GAP, target the gap's questions plus core from the initial question.
+"""
+_WEB_SEARCH_INSTRUCTIONS="""Web search query rules:
+    1) Length: 2-5 keywords. Hard maximum of 6 words per query.
+    2) Named Entities: Every query MUST contain at least one primary named entity or technical keyword from the original user question.
+    3) Absolute Orthogonality: Each query must isolate and target a completely different dimension of the problem:
+    - Query 1 (Core Axis): Core entity + primary missing attribute/metric.
+    - Query 2 (Comparative Axis): Core entity + secondary alternative name, framework, or version modifier.
+    - Query 3 (Validation Axis): Specific technical constraint, data point, or official documentation source filter (e.g., site:domain.com).
+    4) Syntax Rules: 
+    - Never generate natural language questions or conversational phrases.
+    - Never use compound noun phrases.
+    - Preserved dates/versions must be represented as single tokens (e.g., "2026" or "v4.8")."""
 _DATE_CONTEXT = f"""Current date context: Today is {datetime.now().strftime("%A, %B %d, %Y")}. Use this to evaluate time-sensitivity, version obsolescence, and real-time data validity."""
 
 _GENERATE_QUERY_PROMPT = f"""You are a web search query generator for a research agent.
@@ -62,11 +77,12 @@ _GENERATE_QUERY_PROMPT = f"""You are a web search query generator for a research
 
 Produce a research plan:
 - split the question into 1-3 distinct subquestions, using fewer queries for simple questions. If you think you know an answer, the subquestion is how to confirm it.
-- `search_queries`: concise keyword queries for each subquestion. Each query is 2-5 keywords (hard maximum 6 words) and uses relevant entities, including ones known from domain knowledge and not only names present in the question. Never produce natural-language questions. Keep the wording concise, as keyword queries.
+- `search_queries`: for each subquestion, generate exactly one web search query.
+    {_WEB_SEARCH_INSTRUCTIONS}
 - `links`: any concrete HTTP(S) URLs observed in the question, to read directly instead of searching.
 - `fetch_query`: the query used to select passages inside every fetched page for this round.
 
-{FETCH_QUERY_INSTRUCTIONS}
+{FILTER_QUERY_INSTRUCTIONS}
 """
 
 _SELECT_URLS_PROMPT = """You choose which search results are worth reading.
@@ -80,36 +96,39 @@ Return the 0-based indices of at most MAX PAGES candidates without duplicates of
 _REFLECTION_PROMPT = f"""You are the reasoning engine of a web research agent.
 Audit the fetched pages and search results gathered so far in the conversation, then decide the next step.
 Your output is evidence for an upstream agent that will draft the answer: collect the most relevant support as fast as possible.
-- Treat anything not present in the fetched pages as an unverified hypothesis; never assume it.
-- Use domain knowledge to propose search hypotheses, naming relevant entities, methods, packages, standards, or authors. Keep them unverified until fetched pages support them.
+- Use domain knowledge to propose search hypotheses, naming relevant entities, methods, packages, standards, or authors.
 - Use the search view to see which queries failed, which results were not selected, and which links appeared in fetched pages.
-- Rephrase failed queries, follow promising `not selected` results, and prefer primary sources when following links.
-- Set `is_sufficient` once the fetched pages support the core factual answer.
+- Prefer primary sources when following links.
+- Set `is_sufficient` once the collected information support the core factual answer.
 - Do not extend research for peripheral details or unavailable private measurements. Disclose them as unresolved instead.
 - Follow-up queries may name hypothesized entities. Follow only exact HTTP(S) URLs observed in the question, search results, or fetched pages; never invent a URL.
 
 {_DATE_CONTEXT}
 
 If more work is needed, produce the next round plan:
-- `search_queries`: up to 3 distinct follow-up queries, each 2-5 keywords (hard maximum 6 words). Target one unresolved gap per query.
+- `search_queries`: up to 2 distinct follow-up queries, each 2-5 keywords (hard maximum 6 words). Target one unresolved gap per query.
+    {_WEB_SEARCH_INSTRUCTIONS}
 - `links`: exact HTTP(S) URLs to read directly, when you already know the source.
-- `fetch_query`: the shared BM25 query for the next round, applied to the knowledge gap.
 - `knowledge_gap`: the concrete missing data or validation step.
+- `fetch_query`: the shared page filtering query for the next round, applied to the knowledge gap.
 
-{FETCH_QUERY_INSTRUCTIONS}
+{FILTER_QUERY_INSTRUCTIONS}
 """
 
 _FINALIZE_PROMPT = """Write the final answer to the user's question using ONLY the fetched pages in the conversation above.
 
 - `answer`: 1-3 short sentences that directly answer the question.
-- `explanation`: supporting detail. Preserve relevant metrics, identifiers, package names, and author names. Cite the source URL inline after each statement it supports. If sources contradict each other, state the conflict and cite both sides. End with a `Not found:` list of every part of the question the pages do not answer, including unavailable private measurements.
+- `explanation`: Extended answer. Use one section per part of the question.
+    - In each section, explain mechanisms, assumptions, trade-offs, and implications in depth, not only one-line facts. Preserve relevant metrics, numbers, dates, identifiers, package names, and author names.
+    - Cite the full source URL inline after each statement taken from a fetched page.
+    - You may add well-established domain background (definitions, standard results, known mechanisms) needed for a complete answer, without a citation. Never invent citations, URLs, figures, or recent facts that the fetched pages do not support.
+    - If sources conflict, state the conflict and cite both sides.
+    - End with a short `Not found:` list of checklist items that are open or unavailable, and other parts the fetched pages and established knowledge cannot answer.
 - `sources`: URLs of the fetched pages the answer rests on.
-- Use domain knowledge only to organize the evidence, never to add unsupported facts.
-- If the last reflection has `is_sufficient` false, research stopped at a time or round limit. Answer only what the fetched pages support, and list the open `knowledge_gap` and other uncertain points under `Not found:`.
-- If no fetched page supports an answer, say so in `answer` and list the questions under `Not found:`.
+- If no fetched page supports an answer, report it in explanation.
 """
 
-_PLAIN_FINALIZE_PROMPT = """Write the final answer to the user's question using ONLY the fetched pages in the conversation above.
+_PLAIN_FINALIZE_PROMPT = """Write the final answer to the user's question using the fetched pages in the conversation above.
 Reply in plain text, not JSON. Start with 1-3 sentences that directly answer the question.
 Then give supporting detail, citing the full source URL inline after each statement it supports.
 End with a `Not found:` list of every part of the question the pages do not answer.
@@ -156,13 +175,13 @@ class FinalAnswer(BaseModel):
 class FetchQuery(BaseModel):
     """Structured output of the fetch-query fragment (also the base of `ResearchPlan`)."""
 
-    fetch_query: str = Field(default="", description="keywords that select relevant passages inside fetched pages")
+    fetch_query: str = Field(default="", description="instructions that select relevant passages inside fetched pages")
 
 
 class ResearchPlan(FetchQuery):
     """Shared round plan produced by generate_query and reflection."""
 
-    search_queries: list[str] = Field(default_factory=list, description="2-5 keyword queries")
+    search_queries: list[str] = Field(min_length=1, description="2-5 keyword queries")
     links: list[str] = Field(default_factory=list, description="HTTP(S) URLs to read directly")
 
 
@@ -180,6 +199,9 @@ class SelectedPages(BaseModel):
 
 class Reflection(ResearchPlan):
     """Structured output for the reflection node."""
+
+    # Unlike the initial plan, reflection may need no further search.
+    search_queries: list[str] = Field(default_factory=list, description="2-5 keyword queries")
 
     is_sufficient: bool = Field(
         description="Whether gathered info is sufficient and authoritative enough to answer the question"
@@ -452,10 +474,12 @@ class ResearchAgent:
             )
         except StructuredOutputError:
             logger.warning("Query generation failed, searching the question itself")
-            result = ResearchPlan()
-        queries = _dedupe(result.search_queries, _query_key, self.limits.max_initial_queries)
+            result = ResearchPlan(search_queries=[state["question"]])
+        # queries = _dedupe(result.search_queries, _query_key, self.limits.max_initial_queries)
+        queries = result.search_queries[:self.limits.max_initial_queries]
         links = _valid_links(result.links)
         if not queries and not links:
+            logger.debug("No queries generated by planner, use uriginal question for web search")
             queries = [state["question"]]
         fetch_query = result.fetch_query.strip() or state["question"]
         logger.info("Initial plan: %d queries, %d links", len(queries), len(links))

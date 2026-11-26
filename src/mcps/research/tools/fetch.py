@@ -9,6 +9,7 @@ from urllib.parse import urlparse
 
 import httpx
 
+from mcps.common.ai_models import create_chat_model
 from mcps.common.decisions import DecisionClient
 from mcps.config import ServerConfig
 from mcps.research.tools.arxiv import ArxivFetch, is_arxiv_url
@@ -27,7 +28,7 @@ from mcps.research.tools.combinators import (
 from mcps.research.tools.decision_ranker import DecisionRanker
 from mcps.research.tools.default import HttpFetch
 from mcps.research.tools.extractors import extractor_for_mime, extractor_for_url
-from mcps.research.tools.filtering import Ranker, RelevanceFilter, ChunkedRelevanceFilter
+from mcps.research.tools.filtering import LlmRelevanceFilter, Ranker, RelevanceFilter, ChunkedRelevanceFilter, llm_filter_model_limits
 from mcps.research.tools.github import (
     GitHubBlobFetch,
     GitHubRepoFetch,
@@ -194,14 +195,9 @@ _RANKERS: tuple[
 def create_page_filter(
     config: ServerConfig, http_client: httpx.AsyncClient
 ) -> RelevanceFilter:
-    """Build the first ranker whose predicate holds for ``config`` and its chunker."""
-    for is_configured, build, (max_chars, overlap_chars) in _RANKERS:
-        if is_configured(config):
-            return ChunkedRelevanceFilter(
-                MarkdownChunker(max_chars=max_chars, overlap_chars=overlap_chars),
-                build(config, http_client),
-            )
-    raise AssertionError("ranker registry lacks a catch-all entry")
+    """Build the LLM based filter."""
+    fetch_model = create_chat_model(config.research.fast_model,config.router,http_client,reasoning_effort="none",**llm_filter_model_limits())
+    return LlmRelevanceFilter(fetch_model)
 
 
 @asynccontextmanager

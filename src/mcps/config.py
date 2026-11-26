@@ -248,7 +248,7 @@ class ResearchLimits(_EnvGroup):
     model_config = SettingsConfigDict(env_prefix="RESEARCH_")
 
     # Seconds since start; no new round begins after it.
-    round_start_budget: float = Field(default=180.0, gt=0)
+    round_start_budget: float = Field(default=500.0, gt=0)
     max_pages_per_round: int = Field(default=10, ge=1)
     max_initial_queries: int = Field(default=3, ge=1)
     # Independent limit for search_queries and for links.
